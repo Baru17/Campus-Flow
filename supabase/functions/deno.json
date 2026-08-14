@@ -1,0 +1,8 @@
+{
+  "lint": {
+    "include": ["generate-otp", "verify-otp"]
+  },
+  "fmt": {
+    "include": ["generate-otp", "verify-otp"]
+  }
+}
