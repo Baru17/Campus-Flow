@@ -341,7 +341,7 @@ export default function StudentDashboard() {
                     <span className="step-num">3</span>
                     <div className="step-text">
                       <b>Enter ID &amp; OTP</b>
-                      <span>Submit within 10 seconds to be marked PRESENT.</span>
+                      <span>Submit within 15 seconds to be marked PRESENT.</span>
                     </div>
                   </div>
                 </div>
