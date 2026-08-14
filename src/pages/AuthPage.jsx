@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import AttendanceSuccess from '../components/AttendanceSuccess'
 import BrandPanel from '../components/BrandPanel'
 import { ChevronLeftIcon, FingerprintIcon, LogoIcon } from '../components/Icons'
-import OtpInput from '../components/OtpInput'
+import OTPInput from '../components/OTPInput'
 import RoleSelection from '../components/RoleSelection'
 import StaffLogin from '../components/StaffLogin'
 import StatusMessage from '../components/StatusMessage'
@@ -109,7 +109,7 @@ export default function AuthPage() {
                 </span>
               </div>
 
-              <OtpInput
+              <OTPInput
                 value={otp}
                 onChange={(value) => {
                   setOtp(value)
