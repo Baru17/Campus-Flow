@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatChip from '../components/StatChip'
@@ -8,10 +9,11 @@ import StatusMessage from '../components/StatusMessage'
 import OTPDisplay from '../components/OTPDisplay'
 import { generateAttendanceOTP, getSubjects } from '../api/attendanceApi'
 import { BACKEND_CONFIGURED } from '../api/supabase'
-import { DEPARTMENTS, YEARS, SECTIONS, PERIODS, DEFAULT_STAFF_ID } from '../constants'
+import { DEPARTMENTS, YEARS, SECTIONS, PERIODS } from '../constants'
 import { formatClassName } from '../utils/format'
 import { generateOtpErrorMessage, notConfiguredMessage } from '../utils/messages'
 import { useClock } from '../hooks/useClock'
+import { useStaffAuth } from '../hooks/useStaffAuth'
 import {
   SparklesIcon,
   ShieldIcon,
@@ -28,6 +30,8 @@ const SUBJECT_PLACEHOLDER = 'Select subject'
 
 export default function StaffDashboard() {
   const clock = useClock()
+  const navigate = useNavigate()
+  const { staff, loading, logout } = useStaffAuth()
 
   const [department, setDepartment] = useState('')
   const [year, setYear] = useState('')
@@ -44,6 +48,17 @@ export default function StaffDashboard() {
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState(null)
   const [recentSessions, setRecentSessions] = useState([])
+
+  useEffect(() => {
+    if (!loading && !staff) {
+      navigate('/role-selection', { replace: true })
+    }
+  }, [loading, staff, navigate])
+
+  const handleLogout = async () => {
+    await logout()
+    navigate('/role-selection', { replace: true })
+  }
 
   const classSelected = Boolean(department && year && section)
   const sessionInProgress = Boolean(session && !sessionExpired)
@@ -84,7 +99,7 @@ export default function StaffDashboard() {
     setGenerating(true)
     try {
       const data = await generateAttendanceOTP({
-        staff_id: DEFAULT_STAFF_ID,
+        staff_id: staff.staff_id,
         department,
         year: Number(year),
         section,
@@ -128,9 +143,30 @@ export default function StaffDashboard() {
   const sessionStatus = sessionInProgress ? 'Active' : session ? 'Expired' : 'Idle'
   const sessionTone = sessionInProgress ? 'green' : session ? 'amber' : 'primary'
 
+  if (loading) {
+    return (
+      <div className="app-shell">
+        <div className="flex min-h-screen items-center justify-center">
+          <div className="flex flex-col items-center gap-3">
+            <span className="cf-spinner" role="status" aria-hidden="true" />
+            <p className="text-sm text-slate-500">Checking your session…</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!staff) return null
+
+  const staffLabel = `${staff.staff_name} · ${staff.department}`
+
   return (
     <div className="app-shell">
-      <Navbar title="Staff Dashboard" subtitle="Generate and manage attendance sessions" />
+      <Navbar
+        title="Staff Dashboard"
+        subtitle={staffLabel}
+        onLogout={handleLogout}
+      />
       <main className="container-cf py-4 lg:py-5 page-enter">
         {!BACKEND_CONFIGURED && (
           <div className="mb-4">
@@ -143,7 +179,7 @@ export default function StaffDashboard() {
         <DashboardHero
           icon={<StaffIcon size={26} />}
           title="Staff Dashboard"
-          subtitle={`${clock.greeting} — manage attendance sessions for your classes.`}
+          subtitle={`${clock.greeting}, ${staff.staff_name} — manage attendance sessions for your ${staff.department} classes.`}
           right={
             <div className="live-clock">
               <div className="time">{clock.time}</div>
