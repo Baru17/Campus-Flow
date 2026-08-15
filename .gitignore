@@ -30,3 +30,4 @@ supabase/.temp/
 
 # local admin/setup scripts — never commit
 create-it-students-auth.mjs
+create-it-staff-auth.mjs

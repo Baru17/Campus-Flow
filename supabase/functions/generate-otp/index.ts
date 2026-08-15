@@ -64,6 +64,51 @@ Deno.serve(async (req) => {
       );
     }
 
+    // --------------------------------------------------
+    // 1b. RESOLVE STAFF IDENTITY FROM THE AUTHENTICATED JWT
+    //
+    // When the caller presents a valid staff session, the staff member's
+    // identity (staff_id + department) is taken from public.staff via
+    // auth_user_id — a browser-supplied staff_id/department is never
+    // trusted for authenticated callers. Unauthenticated callers keep the
+    // legacy behavior of using the body values.
+    // --------------------------------------------------
+
+    let resolvedStaffId = Number(staff_id);
+    let resolvedDepartment = String(department);
+
+    const authHeader = req.headers.get("authorization");
+
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.slice(7);
+      const { data: userData } = await supabase.auth.getUser(token);
+
+      if (userData?.user) {
+        const { data: staff } = await supabase
+          .from("staff")
+          .select("staff_id, department")
+          .eq("auth_user_id", userData.user.id)
+          .maybeSingle();
+
+        if (staff) {
+          resolvedStaffId = Number(staff.staff_id);
+          resolvedDepartment = String(staff.department);
+        }
+      }
+    }
+
+    if (!Number.isInteger(resolvedStaffId) || resolvedStaffId <= 0 || !resolvedDepartment) {
+      return new Response(
+        JSON.stringify({
+          error: "Invalid staff identity",
+        }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json", ...corsHeaders },
+        }
+      );
+    }
+
     // Generate secure 6-digit OTP
     const random = new Uint32Array(1);
     crypto.getRandomValues(random);
@@ -78,9 +123,9 @@ Deno.serve(async (req) => {
     const { data, error } = await supabase
       .from("attendance_sessions")
       .insert({
-        staff_id,
+        staff_id: resolvedStaffId,
         subject_id,
-        department,
+        department: resolvedDepartment,
         year,
         section,
         period,

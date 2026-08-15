@@ -1,8 +1,16 @@
 import { useNavigate } from 'react-router-dom'
 import { LogoIcon, LogoutIcon } from './Icons'
 
-export default function Navbar({ title, subtitle }) {
+export default function Navbar({ title, subtitle, onLogout }) {
   const navigate = useNavigate()
+
+  const handleLogout = () => {
+    if (onLogout) {
+      onLogout()
+      return
+    }
+    navigate('/role-selection')
+  }
 
   return (
     <nav className="cf-navbar">
@@ -30,7 +38,7 @@ export default function Navbar({ title, subtitle }) {
           <button
             type="button"
             className="btn-cf-ghost inline-flex items-center gap-2 px-4 py-2 text-sm"
-            onClick={() => navigate('/role-selection')}
+            onClick={handleLogout}
           >
             <LogoutIcon size={15} />
             <span className="hide-sm">Logout</span>
