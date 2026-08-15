@@ -139,6 +139,53 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
+    // 1b. VERIFY AUTHENTICATED IDENTITY (IF A SESSION EXISTS)
+    //
+    // When the caller presents a valid user session, confirm the student
+    // ID they submitted belongs to that same authenticated user. This
+    // prevents a logged-in student from submitting another student's ID.
+    // Legacy unauthenticated callers keep the previous behavior.
+    // --------------------------------------------------
+
+    const authHeader = req.headers.get("authorization");
+    let authenticatedStudentId: string | null = null;
+
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.slice(7);
+      const { data: userData } = await supabase.auth.getUser(token);
+
+      if (userData?.user) {
+        const { data: linkedStudent } = await supabase
+          .from("it_students")
+          .select("student_id")
+          .eq("auth_user_id", userData.user.id)
+          .maybeSingle();
+
+        if (linkedStudent) {
+          authenticatedStudentId = linkedStudent.student_id;
+        }
+      }
+    }
+
+    if (
+      authenticatedStudentId &&
+      authenticatedStudentId.toLowerCase() !== student.student_id.toLowerCase()
+    ) {
+      return new Response(
+        JSON.stringify({
+          error: "Student identity does not match",
+        }),
+        {
+          status: 403,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders,
+          },
+        }
+      );
+    }
+
+    // --------------------------------------------------
     // 2. FIND ALL ACTIVE ATTENDANCE SESSIONS
     // --------------------------------------------------
 

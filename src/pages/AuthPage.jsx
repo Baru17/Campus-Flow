@@ -10,11 +10,13 @@ import StatusMessage from '../components/StatusMessage'
 import StudentLogin from '../components/StudentLogin'
 import { verifyAttendanceOTP } from '../api/attendanceApi'
 import { OTP_LENGTH } from '../constants'
+import { useAuth } from '../hooks/useAuth'
 import { isValidOTP } from '../utils/validation'
 import { verifyOtpErrorMessage } from '../utils/messages'
 
 export default function AuthPage() {
   const navigate = useNavigate()
+  const { student: authenticatedStudent } = useAuth()
   const [step, setStep] = useState('roles')
   const [studentId, setStudentId] = useState('')
   const [otp, setOtp] = useState('')
@@ -46,7 +48,8 @@ export default function AuthPage() {
     setError(null)
     setVerifying(true)
     try {
-      const data = await verifyAttendanceOTP({ student_id: studentId, otp })
+      const id = authenticatedStudent?.student_id || studentId
+      const data = await verifyAttendanceOTP({ student_id: id, otp })
       setResult(data)
       setStep('success')
     } catch (err) {
@@ -60,9 +63,8 @@ export default function AuthPage() {
   const handleAnother = () => {
     setResult(null)
     setOtp('')
-    setStudentId('')
     setError(null)
-    setStep('student-id')
+    setStep('otp')
   }
 
   const canSubmitOtp = otp.length === OTP_LENGTH && !verifying
@@ -71,18 +73,18 @@ export default function AuthPage() {
     switch (step) {
       case 'staff-login':
         return <StaffLogin key="staff" onBack={goRoles} onLogin={handleStaffLogin} />
-      case 'student-id':
+      case 'student-login':
         return <StudentLogin key="sid" onBack={goRoles} onContinue={handleStudentContinue} />
       case 'otp':
         return (
           <div key="otp" className="stage-enter flex flex-col">
             <button
               type="button"
-              onClick={() => setStep('student-id')}
+              onClick={() => setStep('student-login')}
               className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-slate-500 transition-colors hover:text-blue-600"
             >
               <ChevronLeftIcon size={16} />
-              Back to student ID
+              Back to student login
             </button>
 
             <div className="mt-6 flex items-center gap-3">
@@ -105,7 +107,7 @@ export default function AuthPage() {
                   Student
                 </span>
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700">
-                  {studentId}
+                  {authenticatedStudent?.student_id || studentId}
                 </span>
               </div>
 
@@ -196,7 +198,7 @@ export default function AuthPage() {
               <RoleSelection
                 key="roles"
                 onStaff={() => setStep('staff-login')}
-                onStudent={() => setStep('student-id')}
+                onStudent={() => setStep('student-login')}
               />
             ) : (
               renderStage()

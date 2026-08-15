@@ -17,6 +17,10 @@ export const OTP_LENGTH = 6
 
 export const OTP_VALIDITY_SECONDS = 15
 
+export const STUDENT_EMAIL_DOMAIN = 'kiot.ac.in'
+
+export const MIN_PASSWORD_LENGTH = 6
+
 // No staff login exists yet. This is the documented test staff id.
 // Replace with a real staff id / login integration when available.
 export const DEFAULT_STAFF_ID = 1

@@ -43,6 +43,11 @@ export function verifyOtpErrorMessage(error) {
         variant: 'info',
         text: 'Attendance already marked. Your attendance has already been recorded for this session.',
       }
+    case 'Student identity does not match':
+      return {
+        variant: 'danger',
+        text: 'Your identity could not be verified for this OTP. Please log in and try again.',
+      }
     default:
       return { variant: 'danger', text: 'Unable to verify the OTP. Please try again.' }
   }
