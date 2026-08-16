@@ -50,16 +50,19 @@ function assertBackend() {
 
 /**
  * Fetch subjects from the central `subjects` table, filtered by the
- * selected department, year and section.
+ * selected department and year.
+ *
+ * Subjects are shared across all sections of a department + year, so the
+ * section is intentionally ignored and duplicates (a subject stored for
+ * multiple sections) are removed by subject code.
  */
-export async function getSubjects(department, year, section) {
+export async function getSubjects(department, year) {
   assertBackend()
   const { data, error } = await supabase
     .from('subjects')
     .select('subject_id, subject_code, subject_name, department, year, section')
     .eq('department', department)
     .eq('year', year)
-    .eq('section', section)
     .order('subject_code', { ascending: true })
 
   if (error) {
@@ -67,7 +70,16 @@ export async function getSubjects(department, year, section) {
       code: error.code,
     })
   }
-  return data || []
+
+  const seen = new Set()
+  const unique = []
+  for (const row of data || []) {
+    const key = String(row.subject_code || '').toUpperCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    unique.push(row)
+  }
+  return unique
 }
 
 /**

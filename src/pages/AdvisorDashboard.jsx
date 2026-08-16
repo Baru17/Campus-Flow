@@ -117,7 +117,7 @@ export default function AdvisorDashboard() {
     if (!advisor) return
     let cancelled = false
     setSubjectsLoading(true)
-    getSubjects(advisor.department, advisor.year, advisor.section)
+    getSubjects(advisor.department, advisor.year)
       .then((rows) => {
         if (!cancelled) setSubjects(rows)
       })

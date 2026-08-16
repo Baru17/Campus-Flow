@@ -74,7 +74,7 @@ export default function StaffDashboard() {
     setSubjectsLoading(true)
     setSubjectsError(null)
     setSubjectId('')
-    getSubjects(department, year, section)
+    getSubjects(department, year)
       .then((rows) => {
         if (!cancelled) setSubjects(rows)
       })
