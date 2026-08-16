@@ -16,6 +16,7 @@ import {
   upsertAttendanceStatus,
 } from '../api/classAdvisorApi'
 import { buildAttendanceReport } from '../utils/attendanceReport'
+import { downloadAttendanceExcel } from '../utils/attendanceExcel'
 import { formatClassName } from '../utils/format'
 import { PERIODS } from '../constants'
 import { useClock } from '../hooks/useClock'
@@ -26,6 +27,7 @@ import {
   ClockIcon,
   CompassIcon,
   CopyIcon,
+  DownloadIcon,
   GraduationIcon,
   SearchIcon,
   ShieldIcon,
@@ -66,6 +68,8 @@ export default function AdvisorDashboard() {
   const [savingId, setSavingId] = useState(null)
   const [saveError, setSaveError] = useState(null)
   const [copied, setCopied] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [excelStatus, setExcelStatus] = useState(null)
 
   useEffect(() => {
     if (!loading && !staff) {
@@ -232,6 +236,41 @@ export default function AdvisorDashboard() {
       setSaveError('Could not copy the report. Please try again.')
     }
   }, [advisor, attendanceMap, date, students, subjectId, subjects])
+
+  const handleDownload = async () => {
+    setExcelStatus(null)
+    if (students.length === 0) {
+      setExcelStatus({ type: 'danger', text: 'No students are loaded for this class.' })
+      return
+    }
+    if (attendanceLoading) {
+      setExcelStatus({ type: 'danger', text: 'Attendance is still loading. Please wait.' })
+      return
+    }
+    if (!hasRecords) {
+      setExcelStatus({ type: 'danger', text: 'No attendance records found for this subject and hour.' })
+      return
+    }
+    const subject = subjects.find((s) => s.subject_id === Number(subjectId))
+    setDownloading(true)
+    try {
+      downloadAttendanceExcel({
+        department: advisor.department,
+        year: advisor.year,
+        section: advisor.section,
+        date,
+        subjectCode: subject?.subject_code || '',
+        period,
+        students,
+        attendanceMap,
+      })
+      setExcelStatus({ type: 'success', text: 'Excel downloaded successfully.' })
+    } catch {
+      setExcelStatus({ type: 'danger', text: 'Could not generate the Excel file. Please try again.' })
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   const filteredStudents = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -453,17 +492,36 @@ export default function AdvisorDashboard() {
                             marked
                           </p>
                         </div>
-                        <LoadingButton
-                          variant="primary"
-                          onClick={handleCopy}
-                          loading={false}
-                          disabled={!hasRecords}
-                          className="inline-flex items-center gap-2"
-                        >
-                          {copied ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
-                          {copied ? 'Copied!' : 'Copy Report'}
-                        </LoadingButton>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <LoadingButton
+                            variant="outline"
+                            onClick={handleDownload}
+                            loading={downloading}
+                            loadingText="Downloading…"
+                            disabled={students.length === 0 || attendanceLoading}
+                            className="inline-flex items-center gap-2"
+                          >
+                            <DownloadIcon size={16} />
+                            Download Excel
+                          </LoadingButton>
+                          <LoadingButton
+                            variant="primary"
+                            onClick={handleCopy}
+                            loading={false}
+                            disabled={!hasRecords}
+                            className="inline-flex items-center gap-2"
+                          >
+                            {copied ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
+                            {copied ? 'Copied!' : 'Copy Report'}
+                          </LoadingButton>
+                        </div>
                       </div>
+
+                      {excelStatus && (
+                        <div className="mb-3">
+                          <StatusMessage variant={excelStatus.type}>{excelStatus.text}</StatusMessage>
+                        </div>
+                      )}
 
                       <div className="mt-3">
                         <div className="relative">
