@@ -128,7 +128,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 5. DETERMINE TABLES USING SESSION DEPARTMENT
+    // 5. DETERMINE STUDENT AND ATTENDANCE TABLES
     // --------------------------------------------------
 
     let studentTable = "";
@@ -137,7 +137,24 @@ Deno.serve(async (req) => {
     switch (session.department.toUpperCase()) {
       case "IT":
         studentTable = "it_students";
-        attendanceTable = "it_attendance";
+
+        const itYear = Number(session.year);
+
+        if (![1, 2, 3, 4].includes(itYear)) {
+          return new Response(
+            JSON.stringify({
+              error: "Invalid IT attendance year",
+            }),
+            {
+              status: 400,
+              headers: {
+                "Content-Type": "application/json",
+              },
+            }
+          );
+        }
+
+        attendanceTable = `it_attendance_${itYear}`;
         break;
 
       case "CSE":
@@ -196,6 +213,10 @@ Deno.serve(async (req) => {
       );
     }
 
+    // --------------------------------------------------
+    // 7. NO STUDENTS FOUND
+    // --------------------------------------------------
+
     if (!students || students.length === 0) {
       await supabase
         .from("attendance_sessions")
@@ -220,34 +241,39 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 7. TODAY'S DATE
+    // 8. TODAY'S DATE
     // --------------------------------------------------
 
     const today = new Date().toISOString().split("T")[0];
 
     // --------------------------------------------------
-    // 8. FIND EXISTING ATTENDANCE
+    // 9. FIND EXISTING ATTENDANCE
     //
-    // IMPORTANT:
-    // We DO NOT filter by session_id here.
+    // We check by:
+    // register_no
+    // attendance_date
+    // period
+    // subject_id
     //
-    // Your unique constraint is:
-    //
-    // register_no + attendance_date + period + subject_id
-    //
-    // So we must check using those same fields.
+    // This allows both PRESENT and ABSENT records
+    // to be handled correctly.
     // --------------------------------------------------
 
-    const { data: existingAttendance, error: existingError } =
-      await supabase
-        .from(attendanceTable)
-        .select("register_no, status")
-        .eq("attendance_date", today)
-        .eq("period", session.period)
-        .eq("subject_id", session.subject_id);
+    const {
+      data: existingAttendance,
+      error: existingError,
+    } = await supabase
+      .from(attendanceTable)
+      .select("register_no, status")
+      .eq("attendance_date", today)
+      .eq("period", session.period)
+      .eq("subject_id", session.subject_id);
 
     if (existingError) {
-      console.error("Attendance lookup error:", existingError);
+      console.error(
+        "Attendance lookup error:",
+        existingError
+      );
 
       return new Response(
         JSON.stringify({
@@ -264,8 +290,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 9. CREATE SET OF STUDENTS WHO ALREADY HAVE
-    // ATTENDANCE RECORDS
+    // 10. CREATE SET OF STUDENTS ALREADY MARKED
     // --------------------------------------------------
 
     const attendanceRegisters = new Set(
@@ -275,7 +300,7 @@ Deno.serve(async (req) => {
     );
 
     // --------------------------------------------------
-    // 10. FIND STUDENTS WITHOUT ATTENDANCE
+    // 11. FIND STUDENTS WITHOUT ATTENDANCE
     // --------------------------------------------------
 
     const absentStudents = students.filter(
@@ -284,7 +309,7 @@ Deno.serve(async (req) => {
     );
 
     // --------------------------------------------------
-    // 11. MARK ABSENT STUDENTS
+    // 12. MARK ABSENT STUDENTS
     // --------------------------------------------------
 
     if (absentStudents.length > 0) {
@@ -324,7 +349,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 12. DEACTIVATE SESSION
+    // 13. DEACTIVATE SESSION
     // --------------------------------------------------
 
     const { error: deactivateError } = await supabase
@@ -355,7 +380,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 13. CALCULATE SUMMARY
+    // 14. CALCULATE SUMMARY
     // --------------------------------------------------
 
     const totalStudents = students.length;
@@ -363,7 +388,7 @@ Deno.serve(async (req) => {
     const presentCount = totalStudents - absentCount;
 
     // --------------------------------------------------
-    // 14. SUCCESS RESPONSE
+    // 15. SUCCESS RESPONSE
     // --------------------------------------------------
 
     return new Response(
@@ -378,6 +403,7 @@ Deno.serve(async (req) => {
           section: session.section,
           period: session.period,
           subject_id: session.subject_id,
+          attendance_table: attendanceTable,
         },
 
         attendance_summary: {

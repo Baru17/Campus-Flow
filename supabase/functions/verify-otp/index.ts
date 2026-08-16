@@ -6,8 +6,7 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-// CORS headers so the browser frontend can call this function.
-// Only headers are added — attendance logic is unchanged.
+// CORS headers
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -17,7 +16,10 @@ const corsHeaders = {
 
 Deno.serve(async (req) => {
   try {
-    // Handle browser CORS preflight requests.
+    // --------------------------------------------------
+    // 0. HANDLE CORS
+    // --------------------------------------------------
+
     if (req.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -40,6 +42,10 @@ Deno.serve(async (req) => {
       );
     }
 
+    // --------------------------------------------------
+    // 1. GET REQUEST DATA
+    // --------------------------------------------------
+
     const { student_id, otp } = await req.json();
 
     if (!student_id || !otp) {
@@ -58,70 +64,99 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 1. FIND THE STUDENT AND THEIR DEPARTMENT
+    // 2. FIND STUDENT AND DEPARTMENT
     // --------------------------------------------------
 
     let student: any = null;
     let studentDepartment = "";
-    let attendanceTable = "";
 
+    // --------------------------------------------------
     // IT
-    const { data: itStudent } = await supabase
+    // --------------------------------------------------
+
+    const { data: itStudent, error: itStudentError } = await supabase
       .from("it_students")
-      .select("student_id, register_no, student_name")
+      .select(
+        "student_id, register_no, student_name, year, section, auth_user_id"
+      )
       .ilike("student_id", student_id)
       .maybeSingle();
+
+    if (itStudentError) {
+      console.error("IT student lookup error:", itStudentError);
+    }
 
     if (itStudent) {
       student = itStudent;
       studentDepartment = "IT";
-      attendanceTable = "it_attendance";
     }
 
+    // --------------------------------------------------
     // CSE
+    // --------------------------------------------------
+
     if (!student) {
-      const { data: cseStudent } = await supabase
+      const { data: cseStudent, error: cseStudentError } = await supabase
         .from("cse_students")
-        .select("student_id, register_no, student_name")
+        .select("student_id, register_no, student_name, year, section")
         .ilike("student_id", student_id)
         .maybeSingle();
+
+      if (cseStudentError) {
+        console.error("CSE student lookup error:", cseStudentError);
+      }
 
       if (cseStudent) {
         student = cseStudent;
         studentDepartment = "CSE";
-        attendanceTable = "cse_attendance";
       }
     }
 
+    // --------------------------------------------------
     // ECE
+    // --------------------------------------------------
+
     if (!student) {
-      const { data: eceStudent } = await supabase
+      const { data: eceStudent, error: eceStudentError } = await supabase
         .from("ece_students")
-        .select("student_id, register_no, student_name")
+        .select("student_id, register_no, student_name, year, section")
         .ilike("student_id", student_id)
         .maybeSingle();
+
+      if (eceStudentError) {
+        console.error("ECE student lookup error:", eceStudentError);
+      }
 
       if (eceStudent) {
         student = eceStudent;
         studentDepartment = "ECE";
-        attendanceTable = "ece_attendance";
       }
     }
 
+    // --------------------------------------------------
     // EEE
+    // --------------------------------------------------
+
     if (!student) {
-      const { data: eeeStudent } = await supabase
+      const { data: eeeStudent, error: eeeStudentError } = await supabase
         .from("eee_students")
-        .select("student_id, register_no, student_name")
+        .select("student_id, register_no, student_name, year, section")
         .ilike("student_id", student_id)
         .maybeSingle();
+
+      if (eeeStudentError) {
+        console.error("EEE student lookup error:", eeeStudentError);
+      }
 
       if (eeeStudent) {
         student = eeeStudent;
         studentDepartment = "EEE";
-        attendanceTable = "eee_attendance";
       }
     }
+
+    // --------------------------------------------------
+    // STUDENT NOT FOUND
+    // --------------------------------------------------
 
     if (!student) {
       return new Response(
@@ -139,63 +174,63 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 1b. VERIFY AUTHENTICATED IDENTITY (IF A SESSION EXISTS)
-    //
-    // When the caller presents a valid user session, confirm the student
-    // ID they submitted belongs to that same authenticated user. This
-    // prevents a logged-in student from submitting another student's ID.
-    // Legacy unauthenticated callers keep the previous behavior.
+    // 3. VERIFY AUTHENTICATED STUDENT ID
     // --------------------------------------------------
 
     const authHeader = req.headers.get("authorization");
-    let authenticatedStudentId: string | null = null;
 
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.slice(7);
+
       const { data: userData } = await supabase.auth.getUser(token);
 
       if (userData?.user) {
-        const { data: linkedStudent } = await supabase
-          .from("it_students")
-          .select("student_id")
-          .eq("auth_user_id", userData.user.id)
-          .maybeSingle();
+        // Currently student authentication is linked through IT students.
+        if (studentDepartment === "IT") {
+          const { data: linkedStudent } = await supabase
+            .from("it_students")
+            .select("student_id")
+            .eq("auth_user_id", userData.user.id)
+            .maybeSingle();
 
-        if (linkedStudent) {
-          authenticatedStudentId = linkedStudent.student_id;
+          if (
+            linkedStudent &&
+            linkedStudent.student_id.toLowerCase() !==
+              student.student_id.toLowerCase()
+          ) {
+            return new Response(
+              JSON.stringify({
+                error: "Student identity does not match",
+              }),
+              {
+                status: 403,
+                headers: {
+                  "Content-Type": "application/json",
+                  ...corsHeaders,
+                },
+              }
+            );
+          }
         }
       }
     }
 
-    if (
-      authenticatedStudentId &&
-      authenticatedStudentId.toLowerCase() !== student.student_id.toLowerCase()
-    ) {
-      return new Response(
-        JSON.stringify({
-          error: "Student identity does not match",
-        }),
-        {
-          status: 403,
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders,
-          },
-        }
-      );
-    }
-
     // --------------------------------------------------
-    // 2. FIND ALL ACTIVE ATTENDANCE SESSIONS
+    // 4. FIND ALL ACTIVE ATTENDANCE SESSIONS
     // --------------------------------------------------
 
     const { data: sessions, error: sessionError } = await supabase
       .from("attendance_sessions")
       .select("*")
       .eq("is_active", true)
+      .eq("department", studentDepartment)
+      .eq("year", student.year)
+      .eq("section", student.section)
       .order("created_at", { ascending: false });
 
     if (sessionError) {
+      console.error("Session lookup error:", sessionError);
+
       return new Response(
         JSON.stringify({
           error: "Failed to find attendance sessions",
@@ -227,7 +262,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 3. CHECK ALL ACTIVE SESSIONS FOR OTP
+    // 5. CHECK OTP
     // --------------------------------------------------
 
     const now = new Date();
@@ -236,8 +271,7 @@ Deno.serve(async (req) => {
     for (const currentSession of sessions) {
       const expiresAt = new Date(currentSession.expires_at);
 
-      // If OTP/session has expired,
-      // mark it inactive and continue checking others.
+      // Expired session
       if (now >= expiresAt) {
         await supabase
           .from("attendance_sessions")
@@ -249,7 +283,7 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // Check whether entered OTP matches this session
+      // OTP matches
       if (
         otp.toString().trim() ===
         currentSession.otp.toString().trim()
@@ -260,7 +294,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 4. OTP NOT FOUND
+    // 6. OTP NOT FOUND
     // --------------------------------------------------
 
     if (!matchedSession) {
@@ -279,7 +313,108 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 5. CHECK DUPLICATE ATTENDANCE
+    // 7. VERIFY SESSION BELONGS TO STUDENT
+    // --------------------------------------------------
+
+    if (
+      matchedSession.department.toUpperCase() !==
+      studentDepartment.toUpperCase()
+    ) {
+      return new Response(
+        JSON.stringify({
+          error: "Student does not belong to this department",
+        }),
+        {
+          status: 403,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders,
+          },
+        }
+      );
+    }
+
+    if (Number(matchedSession.year) !== Number(student.year)) {
+      return new Response(
+        JSON.stringify({
+          error: "Student does not belong to this year",
+        }),
+        {
+          status: 403,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders,
+          },
+        }
+      );
+    }
+
+    if (
+      matchedSession.section.toUpperCase() !==
+      student.section.toUpperCase()
+    ) {
+      return new Response(
+        JSON.stringify({
+          error: "Student does not belong to this section",
+        }),
+        {
+          status: 403,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders,
+          },
+        }
+      );
+    }
+
+    // --------------------------------------------------
+    // 8. DETERMINE ATTENDANCE TABLE
+    // --------------------------------------------------
+
+    let attendanceTable = "";
+
+    if (studentDepartment === "IT") {
+      const year = Number(matchedSession.year);
+
+      if (![1, 2, 3, 4].includes(year)) {
+        return new Response(
+          JSON.stringify({
+            error: "Invalid attendance year",
+          }),
+          {
+            status: 400,
+            headers: {
+              "Content-Type": "application/json",
+              ...corsHeaders,
+            },
+          }
+        );
+      }
+
+      attendanceTable = `it_attendance_${year}`;
+    } else if (studentDepartment === "CSE") {
+      attendanceTable = "cse_attendance";
+    } else if (studentDepartment === "ECE") {
+      attendanceTable = "ece_attendance";
+    } else if (studentDepartment === "EEE") {
+      attendanceTable = "eee_attendance";
+    } else {
+      return new Response(
+        JSON.stringify({
+          error: "Invalid student department",
+        }),
+        {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders,
+          },
+        }
+      );
+    }
+
+    // --------------------------------------------------
+    // 9. CHECK DUPLICATE ATTENDANCE
     // --------------------------------------------------
 
     const today = new Date().toISOString().split("T")[0];
@@ -297,6 +432,11 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (existingError) {
+      console.error(
+        "Existing attendance lookup error:",
+        existingError
+      );
+
       return new Response(
         JSON.stringify({
           error: "Failed to check existing attendance",
@@ -328,7 +468,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 6. MARK ATTENDANCE
+    // 10. MARK PRESENT
     // --------------------------------------------------
 
     const {
@@ -349,6 +489,11 @@ Deno.serve(async (req) => {
       .single();
 
     if (attendanceError) {
+      console.error(
+        "Attendance insertion error:",
+        attendanceError
+      );
+
       return new Response(
         JSON.stringify({
           error: "Failed to mark attendance",
@@ -365,7 +510,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 7. SUCCESS
+    // 11. SUCCESS
     // --------------------------------------------------
 
     return new Response(
@@ -377,6 +522,8 @@ Deno.serve(async (req) => {
           register_no: student.register_no,
           student_name: student.student_name,
           department: studentDepartment,
+          year: student.year,
+          section: student.section,
         },
         attendance,
       }),
@@ -388,9 +535,8 @@ Deno.serve(async (req) => {
         },
       }
     );
-
   } catch (error) {
-    console.error(error);
+    console.error("Unexpected error:", error);
 
     return new Response(
       JSON.stringify({
