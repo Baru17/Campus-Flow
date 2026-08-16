@@ -155,15 +155,29 @@ export default function AdvisorDashboard() {
   useEffect(() => {
     if (!advisor || !date || !period || !subjectId) return
     let cancelled = false
+
+    console.log('ATTENDANCE FETCH:', {
+  attendanceTable,
+  date,
+  period,
+  subjectId: Number(subjectId),
+})
+
     setAttendanceLoading(true)
     setAttendanceError(null)
     getAttendanceRows(attendanceTable, date, period, Number(subjectId))
-      .then((map) => {
-        if (!cancelled) setAttendanceMap(map)
-      })
-      .catch((err) => {
-        if (!cancelled) setAttendanceError(err.message)
-      })
+  .then((map) => {
+    console.log('ATTENDANCE RESULT:', map)
+
+    if (!cancelled) setAttendanceMap(map)
+  })
+  .catch((err) => {
+    console.error('ATTENDANCE FETCH ERROR:', err)
+    console.error('ERROR MESSAGE:', err?.message)
+    console.error('ERROR CODE:', err?.code)
+
+    if (!cancelled) setAttendanceError(err.message)
+  })
       .finally(() => {
         if (!cancelled) setAttendanceLoading(false)
       })
