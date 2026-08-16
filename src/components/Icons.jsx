@@ -234,3 +234,41 @@ export function ActivityIcon({ size = 18, className }) {
     </svg>
   )
 }
+
+export function GraduationIcon({ size = 18, className }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...base} className={className}>
+      <path d="M22 10 12 5 2 10l10 5 10-5Z" />
+      <path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5" />
+      <path d="M22 10v6" />
+      <path d="M5 9.5V6.5" />
+    </svg>
+  )
+}
+
+export function CopyIcon({ size = 18, className }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...base} className={className}>
+      <rect width="14" height="14" x="8" y="8" rx="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </svg>
+  )
+}
+
+export function SearchIcon({ size = 18, className }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...base} className={className}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  )
+}
+
+export function XIcon({ size = 18, className }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...base} className={className}>
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  )
+}

@@ -6,6 +6,7 @@ import ResetPassword from './pages/ResetPassword'
 import RoleSelection from './pages/RoleSelection'
 import StaffDashboard from './pages/StaffDashboard'
 import StudentDashboard from './pages/StudentDashboard'
+import AdvisorDashboard from './pages/AdvisorDashboard'
 import NotFound from './pages/NotFound'
 
 export default function App() {
@@ -18,6 +19,7 @@ export default function App() {
             <Route path="/role-selection" element={<RoleSelection />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/staff" element={<StaffDashboard />} />
+            <Route path="/advisor" element={<AdvisorDashboard />} />
             <Route path="/student" element={<StudentDashboard />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

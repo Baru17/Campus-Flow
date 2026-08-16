@@ -11,7 +11,7 @@ import {
 import { ApiError } from '../api/attendanceApi'
 import { useStaffAuth } from '../hooks/useStaffAuth'
 
-export default function StaffLogin({ onBack, onLogin }) {
+export default function StaffLogin({ onBack, onLogin, title = 'Staff Login', subtitle }) {
   const { login, resetPassword } = useStaffAuth()
   const [staffEmail, setStaffEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -40,10 +40,12 @@ export default function StaffLogin({ onBack, onLogin }) {
     setLoading(true)
     try {
       const staff = await login(identifier, password)
-      onLogin(staff)
+      await onLogin(staff)
     } catch (err) {
       setError(
-        err instanceof ApiError ? err.message : 'Unable to log in right now. Please try again.'
+        err instanceof ApiError
+          ? err.message
+          : err?.message || 'Unable to log in right now. Please try again.'
       )
     } finally {
       setLoading(false)
@@ -103,12 +105,13 @@ export default function StaffLogin({ onBack, onLogin }) {
         </span>
         <div>
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 sm:text-3xl">
-            Staff Login
+            {title}
           </h1>
           <p className="mt-0.5 text-sm text-slate-500">
             {forgotMode
               ? 'Enter your staff email to receive a reset link.'
-              : 'Sign in to generate attendance sessions and manage classroom attendance.'}
+              : subtitle ||
+                'Sign in to generate attendance sessions and manage classroom attendance.'}
           </p>
         </div>
       </div>

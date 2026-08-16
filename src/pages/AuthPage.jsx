@@ -9,6 +9,7 @@ import StaffLogin from '../components/StaffLogin'
 import StatusMessage from '../components/StatusMessage'
 import StudentLogin from '../components/StudentLogin'
 import { verifyAttendanceOTP } from '../api/attendanceApi'
+import { getAdvisorAssignment } from '../api/classAdvisorApi'
 import { OTP_LENGTH } from '../constants'
 import { useAuth } from '../hooks/useAuth'
 import { isValidOTP } from '../utils/validation'
@@ -31,6 +32,14 @@ export default function AuthPage() {
 
   const handleStaffLogin = () => {
     navigate('/staff')
+  }
+
+  const handleAdvisorLogin = async (staff) => {
+    const assignment = await getAdvisorAssignment(staff.staff_id)
+    if (!assignment) {
+      throw new Error('This account is not assigned as a Class Advisor. Please contact the administrator.')
+    }
+    navigate('/advisor')
   }
 
   const handleStudentContinue = (id) => {
@@ -73,6 +82,16 @@ export default function AuthPage() {
     switch (step) {
       case 'staff-login':
         return <StaffLogin key="staff" onBack={goRoles} onLogin={handleStaffLogin} />
+      case 'advisor-login':
+        return (
+          <StaffLogin
+            key="advisor"
+            title="Class Advisor Login"
+            subtitle="Sign in to view and manage your class attendance and reports."
+            onBack={goRoles}
+            onLogin={handleAdvisorLogin}
+          />
+        )
       case 'student-login':
         return <StudentLogin key="sid" onBack={goRoles} onContinue={handleStudentContinue} />
       case 'otp':
@@ -199,6 +218,7 @@ export default function AuthPage() {
                 key="roles"
                 onStaff={() => setStep('staff-login')}
                 onStudent={() => setStep('student-login')}
+                onAdvisor={() => setStep('advisor-login')}
               />
             ) : (
               renderStage()
