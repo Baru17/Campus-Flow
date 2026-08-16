@@ -219,13 +219,14 @@ Deno.serve(async (req) => {
     // 4. FIND ALL ACTIVE ATTENDANCE SESSIONS
     // --------------------------------------------------
 
+    // Subjects are common across sections for a department + year, so the
+    // section is intentionally not filtered here.
     const { data: sessions, error: sessionError } = await supabase
       .from("attendance_sessions")
       .select("*")
       .eq("is_active", true)
       .eq("department", studentDepartment)
       .eq("year", student.year)
-      .eq("section", student.section)
       .order("created_at", { ascending: false });
 
     if (sessionError) {
@@ -349,23 +350,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    if (
-      matchedSession.section.toUpperCase() !==
-      student.section.toUpperCase()
-    ) {
-      return new Response(
-        JSON.stringify({
-          error: "Student does not belong to this section",
-        }),
-        {
-          status: 403,
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders,
-          },
-        }
-      );
-    }
+    // NOTE: No section check is performed here. Since subjects are common
+    // across all sections of a department + year, a student from any section
+    // can mark attendance against a session for the same department and year.
 
     // --------------------------------------------------
     // 8. DETERMINE ATTENDANCE TABLE
