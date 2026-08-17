@@ -15,21 +15,69 @@ function normalizeDepartment(department) {
 }
 
 /**
- * The students table for a department (e.g. IT -> it_students).
+ * The students table for a department.
+ * IT uses one permanent table per batch:
+ * 1st year  -> it_students_2026_2030
+ * 2nd year  -> it_students_2025_2029
+ * 3rd year  -> it_students_2024_2028
+ * 4th year  -> it_students_2023_2027
+ * Other departments use a single table.
  */
-export function getStudentTable(department) {
-  const map = { IT: 'it_students', CSE: 'cse_students', ECE: 'ece_students', EEE: 'eee_students' }
-  return map[normalizeDepartment(department)] || null
-}
+export function getStudentTable(department, year) {
+  const dept = normalizeDepartment(department)
 
+  if (dept === 'IT') {
+    const itYear = Number(year)
+
+    const batchTables = {
+      1: 'it_students_2026_2030',
+      2: 'it_students_2025_2029',
+      3: 'it_students_2024_2028',
+      4: 'it_students_2023_2027',
+    }
+
+    return batchTables[itYear] || null
+  }
+
+  const map = {
+    CSE: 'cse_students',
+    ECE: 'ece_students',
+    EEE: 'eee_students',
+  }
+
+  return map[dept] || null
+}
 /**
- * The attendance table for a department + year. IT uses one table per
- * year (it_attendance_1..4); other departments use a single table.
+ * The students table for a department.
+ * IT uses one permanent table per batch:
+ * 1st year  -> it_students_2026_2030
+ * 2nd year  -> it_students_2025_2029
+ * 3rd year  -> it_students_2024_2028
+ * 4th year  -> it_students_2023_2027
+ * Other departments use a single table.
  */
 export function getAttendanceTable(department, year) {
   const dept = normalizeDepartment(department)
-  if (dept === 'IT') return `it_attendance_${year}`
-  const map = { CSE: 'cse_attendance', ECE: 'ece_attendance', EEE: 'eee_attendance' }
+
+  if (dept === 'IT') {
+    const itYear = Number(year)
+
+    const batchTables = {
+      1: 'it_attendance_2026_2030',
+      2: 'it_attendance_2025_2029',
+      3: 'it_attendance_2024_2028',
+      4: 'it_attendance_2023_2027',
+    }
+
+    return batchTables[itYear] || null
+  }
+
+  const map = {
+    CSE: 'cse_attendance',
+    ECE: 'ece_attendance',
+    EEE: 'eee_attendance',
+  }
+
   return map[dept] || null
 }
 
@@ -59,7 +107,7 @@ export async function getAdvisorAssignment(staffId) {
  */
 export async function getClassStudents(department, year, section) {
   assertBackend()
-  const table = getStudentTable(department)
+  const table = getStudentTable(department, year)
   if (!table) return []
   const { data, error } = await supabase
     .from(table)

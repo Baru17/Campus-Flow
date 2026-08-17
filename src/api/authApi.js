@@ -133,14 +133,29 @@ export async function getCurrentUser() {
 export async function getCurrentStudent(userId) {
   assertBackend()
   if (!userId) return null
-  const { data, error } = await supabase
-    .from('it_students')
-    .select('student_id, register_no, student_name, year, section, email')
-    .eq('auth_user_id', userId)
-    .maybeSingle()
-  if (error) throw mapAuthError(error)
-  if (!data) return null
-  return { ...data, department: 'IT' }
+
+ const itStudentTables = [
+  'it_students_2026_2030',
+  'it_students_2025_2029',
+  'it_students_2024_2028',
+  'it_students_2023_2027',
+]
+
+  for (const table of itStudentTables) {
+    const { data, error } = await supabase
+      .from(table)
+      .select('student_id, register_no, student_name, year, section, email')
+      .eq('auth_user_id', userId)
+      .maybeSingle()
+
+    if (error) throw mapAuthError(error)
+
+    if (data) {
+      return { ...data, department: 'IT' }
+    }
+  }
+
+  return null
 }
 
 export async function getCurrentSession() {

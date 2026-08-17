@@ -135,12 +135,53 @@ Deno.serve(async (req) => {
     let attendanceTable = "";
 
     switch (session.department.toUpperCase()) {
-      case "IT":
-        studentTable = "it_students";
+      // --------------------------------------------------
+      // IT
+      // --------------------------------------------------
 
+      case "IT": {
         const itYear = Number(session.year);
 
-        if (![1, 2, 3, 4].includes(itYear)) {
+        /*
+         * IT academic batch mapping:
+         *
+         * Year 1 -> 2026-2030
+         * Year 2 -> 2025-2029
+         * Year 3 -> 2024-2028
+         * Year 4 -> 2023-2027
+         *
+         * The session still stores year as 1, 2, 3 or 4.
+         * We dynamically select the correct batch table.
+         */
+
+        const itBatchMap: Record<
+  number,
+  {
+    studentTable: string;
+    attendanceTable: string;
+  }
+> = {
+  1: {
+    studentTable: "it_students_2026_2030",
+    attendanceTable: "it_attendance_2026_2030",
+  },
+  2: {
+    studentTable: "it_students_2025_2029",
+    attendanceTable: "it_attendance_2025_2029",
+  },
+  3: {
+    studentTable: "it_students_2024_2028",
+    attendanceTable: "it_attendance_2024_2028",
+  },
+  4: {
+    studentTable: "it_students_2023_2027",
+    attendanceTable: "it_attendance_2023_2027",
+  },
+};
+
+        const batchTables = itBatchMap[itYear];
+
+        if (!batchTables) {
           return new Response(
             JSON.stringify({
               error: "Invalid IT attendance year",
@@ -154,23 +195,42 @@ Deno.serve(async (req) => {
           );
         }
 
-        attendanceTable = `it_attendance_${itYear}`;
+        studentTable = batchTables.studentTable;
+        attendanceTable = batchTables.attendanceTable;
+
         break;
+      }
+
+      // --------------------------------------------------
+      // CSE
+      // --------------------------------------------------
 
       case "CSE":
         studentTable = "cse_students";
         attendanceTable = "cse_attendance";
         break;
 
+      // --------------------------------------------------
+      // ECE
+      // --------------------------------------------------
+
       case "ECE":
         studentTable = "ece_students";
         attendanceTable = "ece_attendance";
         break;
 
+      // --------------------------------------------------
+      // EEE
+      // --------------------------------------------------
+
       case "EEE":
         studentTable = "eee_students";
         attendanceTable = "eee_attendance";
         break;
+
+      // --------------------------------------------------
+      // INVALID DEPARTMENT
+      // --------------------------------------------------
 
       default:
         return new Response(

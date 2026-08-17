@@ -6,13 +6,104 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-// CORS headers
+// --------------------------------------------------
+// CORS HEADERS
+// --------------------------------------------------
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
 };
+
+// --------------------------------------------------
+// IT BATCH TABLES
+// --------------------------------------------------
+
+const IT_STUDENT_TABLES = [
+  "it_students_2026_2030",
+  "it_students_2025_2029",
+  "it_students_2024_2028",
+  "it_students_2023_2027",
+];
+
+// --------------------------------------------------
+// GET IT BATCH FROM STUDENT ID
+// Example:
+// 2k24it001 -> 2024_2028
+// 2k25it001 -> 2025_2029
+// --------------------------------------------------
+
+function getITBatchFromStudentId(studentId: string) {
+  const normalizedId = String(studentId || "").trim().toLowerCase();
+
+  const match = normalizedId.match(/^2k(\d{2})it\d+$/i);
+
+  if (!match) {
+    return null;
+  }
+
+  const startYear = 2000 + Number(match[1]);
+  const endYear = startYear + 4;
+
+  const allowedBatches = [
+    "2026_2030",
+    "2025_2029",
+    "2024_2028",
+    "2023_2027",
+  ];
+
+  const batch = `${startYear}_${endYear}`;
+
+  if (!allowedBatches.includes(batch)) {
+    return null;
+  }
+
+  return batch;
+}
+
+// --------------------------------------------------
+// GET IT STUDENT TABLE FROM BATCH
+// --------------------------------------------------
+
+function getITStudentTable(batch: string) {
+  const allowedBatches = [
+    "2026_2030",
+    "2025_2029",
+    "2024_2028",
+    "2023_2027",
+  ];
+
+  if (!allowedBatches.includes(batch)) {
+    return null;
+  }
+
+  return `it_students_${batch}`;
+}
+
+// --------------------------------------------------
+// GET IT ATTENDANCE TABLE FROM BATCH
+// --------------------------------------------------
+
+function getITAttendanceTable(batch: string) {
+  const allowedBatches = [
+    "2026_2030",
+    "2025_2029",
+    "2024_2028",
+    "2023_2027",
+  ];
+
+  if (!allowedBatches.includes(batch)) {
+    return null;
+  }
+
+  return `it_attendance_${batch}`;
+}
+
+// --------------------------------------------------
+// MAIN FUNCTION
+// --------------------------------------------------
 
 Deno.serve(async (req) => {
   try {
@@ -69,26 +160,81 @@ Deno.serve(async (req) => {
 
     let student: any = null;
     let studentDepartment = "";
+    let studentBatch = "";
 
     // --------------------------------------------------
     // IT
     // --------------------------------------------------
 
-    const { data: itStudent, error: itStudentError } = await supabase
-      .from("it_students")
-      .select(
-        "student_id, register_no, student_name, year, section, auth_user_id"
-      )
-      .ilike("student_id", student_id)
-      .maybeSingle();
+    for (const table of IT_STUDENT_TABLES) {
+      const { data: itStudent, error: itStudentError } =
+        await supabase
+          .from(table)
+          .select(
+            "student_id, register_no, student_name, year, section, auth_user_id"
+          )
+          .ilike("student_id", student_id)
+          .maybeSingle();
 
-    if (itStudentError) {
-      console.error("IT student lookup error:", itStudentError);
-    }
+      if (itStudentError) {
+        console.error(
+          `IT student lookup error in ${table}:`,
+          itStudentError
+        );
+        continue;
+      }
 
-    if (itStudent) {
-      student = itStudent;
-      studentDepartment = "IT";
+      if (itStudent) {
+        student = itStudent;
+        studentDepartment = "IT";
+
+        const batch = getITBatchFromStudentId(
+          itStudent.student_id
+        );
+
+        if (!batch) {
+          return new Response(
+            JSON.stringify({
+              error: "Invalid IT student batch",
+            }),
+            {
+              status: 400,
+              headers: {
+                "Content-Type": "application/json",
+                ...corsHeaders,
+              },
+            }
+          );
+        }
+
+        studentBatch = batch;
+
+        // Make sure the student was found in the correct
+        // permanent batch table.
+        const expectedStudentTable =
+          getITStudentTable(batch);
+
+        if (expectedStudentTable !== table) {
+          console.error(
+            `Student ${itStudent.student_id} found in ${table}, expected ${expectedStudentTable}`
+          );
+
+          return new Response(
+            JSON.stringify({
+              error: "Student is stored in an incorrect batch table",
+            }),
+            {
+              status: 500,
+              headers: {
+                "Content-Type": "application/json",
+                ...corsHeaders,
+              },
+            }
+          );
+        }
+
+        break;
+      }
     }
 
     // --------------------------------------------------
@@ -96,14 +242,22 @@ Deno.serve(async (req) => {
     // --------------------------------------------------
 
     if (!student) {
-      const { data: cseStudent, error: cseStudentError } = await supabase
+      const {
+        data: cseStudent,
+        error: cseStudentError,
+      } = await supabase
         .from("cse_students")
-        .select("student_id, register_no, student_name, year, section")
+        .select(
+          "student_id, register_no, student_name, year, section"
+        )
         .ilike("student_id", student_id)
         .maybeSingle();
 
       if (cseStudentError) {
-        console.error("CSE student lookup error:", cseStudentError);
+        console.error(
+          "CSE student lookup error:",
+          cseStudentError
+        );
       }
 
       if (cseStudent) {
@@ -117,14 +271,22 @@ Deno.serve(async (req) => {
     // --------------------------------------------------
 
     if (!student) {
-      const { data: eceStudent, error: eceStudentError } = await supabase
+      const {
+        data: eceStudent,
+        error: eceStudentError,
+      } = await supabase
         .from("ece_students")
-        .select("student_id, register_no, student_name, year, section")
+        .select(
+          "student_id, register_no, student_name, year, section"
+        )
         .ilike("student_id", student_id)
         .maybeSingle();
 
       if (eceStudentError) {
-        console.error("ECE student lookup error:", eceStudentError);
+        console.error(
+          "ECE student lookup error:",
+          eceStudentError
+        );
       }
 
       if (eceStudent) {
@@ -138,14 +300,22 @@ Deno.serve(async (req) => {
     // --------------------------------------------------
 
     if (!student) {
-      const { data: eeeStudent, error: eeeStudentError } = await supabase
+      const {
+        data: eeeStudent,
+        error: eeeStudentError,
+      } = await supabase
         .from("eee_students")
-        .select("student_id, register_no, student_name, year, section")
+        .select(
+          "student_id, register_no, student_name, year, section"
+        )
         .ilike("student_id", student_id)
         .maybeSingle();
 
       if (eeeStudentError) {
-        console.error("EEE student lookup error:", eeeStudentError);
+        console.error(
+          "EEE student lookup error:",
+          eeeStudentError
+        );
       }
 
       if (eeeStudent) {
@@ -179,19 +349,40 @@ Deno.serve(async (req) => {
 
     const authHeader = req.headers.get("authorization");
 
-    if (authHeader && authHeader.startsWith("Bearer ")) {
+    if (
+      authHeader &&
+      authHeader.startsWith("Bearer ")
+    ) {
       const token = authHeader.slice(7);
 
-      const { data: userData } = await supabase.auth.getUser(token);
+      const { data: userData } =
+        await supabase.auth.getUser(token);
 
       if (userData?.user) {
-        // Currently student authentication is linked through IT students.
+        // --------------------------------------------------
+        // IT AUTHENTICATION
+        // --------------------------------------------------
+
         if (studentDepartment === "IT") {
-          const { data: linkedStudent } = await supabase
-            .from("it_students")
-            .select("student_id")
-            .eq("auth_user_id", userData.user.id)
-            .maybeSingle();
+          let linkedStudent: {
+            student_id: string;
+          } | null = null;
+
+          for (const table of IT_STUDENT_TABLES) {
+            const { data } = await supabase
+              .from(table)
+              .select("student_id")
+              .eq(
+                "auth_user_id",
+                userData.user.id
+              )
+              .maybeSingle();
+
+            if (data) {
+              linkedStudent = data;
+              break;
+            }
+          }
 
           if (
             linkedStudent &&
@@ -219,18 +410,28 @@ Deno.serve(async (req) => {
     // 4. FIND ALL ACTIVE ATTENDANCE SESSIONS
     // --------------------------------------------------
 
-    // Subjects are common across sections for a department + year, so the
-    // section is intentionally not filtered here.
-    const { data: sessions, error: sessionError } = await supabase
+    // Subjects are common across sections for a
+    // department + year, so section is intentionally
+    // not filtered here.
+
+    const {
+      data: sessions,
+      error: sessionError,
+    } = await supabase
       .from("attendance_sessions")
       .select("*")
       .eq("is_active", true)
       .eq("department", studentDepartment)
       .eq("year", student.year)
-      .order("created_at", { ascending: false });
+      .order("created_at", {
+        ascending: false,
+      });
 
     if (sessionError) {
-      console.error("Session lookup error:", sessionError);
+      console.error(
+        "Session lookup error:",
+        sessionError
+      );
 
       return new Response(
         JSON.stringify({
@@ -267,10 +468,13 @@ Deno.serve(async (req) => {
     // --------------------------------------------------
 
     const now = new Date();
+
     let matchedSession: any = null;
 
     for (const currentSession of sessions) {
-      const expiresAt = new Date(currentSession.expires_at);
+      const expiresAt = new Date(
+        currentSession.expires_at
+      );
 
       // Expired session
       if (now >= expiresAt) {
@@ -279,7 +483,10 @@ Deno.serve(async (req) => {
           .update({
             is_active: false,
           })
-          .eq("session_id", currentSession.session_id);
+          .eq(
+            "session_id",
+            currentSession.session_id
+          );
 
         continue;
       }
@@ -323,7 +530,8 @@ Deno.serve(async (req) => {
     ) {
       return new Response(
         JSON.stringify({
-          error: "Student does not belong to this department",
+          error:
+            "Student does not belong to this department",
         }),
         {
           status: 403,
@@ -335,7 +543,10 @@ Deno.serve(async (req) => {
       );
     }
 
-    if (Number(matchedSession.year) !== Number(student.year)) {
+    if (
+      Number(matchedSession.year) !==
+      Number(student.year)
+    ) {
       return new Response(
         JSON.stringify({
           error: "Student does not belong to this year",
@@ -350,9 +561,10 @@ Deno.serve(async (req) => {
       );
     }
 
-    // NOTE: No section check is performed here. Since subjects are common
-    // across all sections of a department + year, a student from any section
-    // can mark attendance against a session for the same department and year.
+    // NOTE:
+    // No section check is performed here.
+    // Subjects are common across all sections
+    // of a department + year.
 
     // --------------------------------------------------
     // 8. DETERMINE ATTENDANCE TABLE
@@ -361,12 +573,21 @@ Deno.serve(async (req) => {
     let attendanceTable = "";
 
     if (studentDepartment === "IT") {
-      const year = Number(matchedSession.year);
+      // IMPORTANT:
+      // IT attendance is selected using the student's
+      // permanent batch, NOT the current year.
+      //
+      // Example:
+      // 2k24IT001 -> 2024_2028
+      // -> it_attendance_2024_2028
 
-      if (![1, 2, 3, 4].includes(year)) {
+      attendanceTable =
+        getITAttendanceTable(studentBatch) || "";
+
+      if (!attendanceTable) {
         return new Response(
           JSON.stringify({
-            error: "Invalid attendance year",
+            error: "Invalid IT attendance batch",
           }),
           {
             status: 400,
@@ -377,8 +598,6 @@ Deno.serve(async (req) => {
           }
         );
       }
-
-      attendanceTable = `it_attendance_${year}`;
     } else if (studentDepartment === "CSE") {
       attendanceTable = "cse_attendance";
     } else if (studentDepartment === "ECE") {
@@ -404,7 +623,9 @@ Deno.serve(async (req) => {
     // 9. CHECK DUPLICATE ATTENDANCE
     // --------------------------------------------------
 
-    const today = new Date().toISOString().split("T")[0];
+    const today = new Date()
+      .toISOString()
+      .split("T")[0];
 
     const {
       data: existingAttendance,
@@ -412,10 +633,22 @@ Deno.serve(async (req) => {
     } = await supabase
       .from(attendanceTable)
       .select("attendance_id")
-      .eq("register_no", student.register_no)
-      .eq("attendance_date", today)
-      .eq("period", matchedSession.period)
-      .eq("subject_id", matchedSession.subject_id)
+      .eq(
+        "register_no",
+        student.register_no
+      )
+      .eq(
+        "attendance_date",
+        today
+      )
+      .eq(
+        "period",
+        matchedSession.period
+      )
+      .eq(
+        "subject_id",
+        matchedSession.subject_id
+      )
       .maybeSingle();
 
     if (existingError) {
@@ -426,7 +659,8 @@ Deno.serve(async (req) => {
 
       return new Response(
         JSON.stringify({
-          error: "Failed to check existing attendance",
+          error:
+            "Failed to check existing attendance",
           details: existingError.message,
         }),
         {
@@ -504,6 +738,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         success: true,
         message: "Attendance marked successfully",
+
         student: {
           student_id: student.student_id,
           register_no: student.register_no,
@@ -511,7 +746,11 @@ Deno.serve(async (req) => {
           department: studentDepartment,
           year: student.year,
           section: student.section,
+          ...(studentDepartment === "IT"
+            ? { batch: studentBatch }
+            : {}),
         },
+
         attendance,
       }),
       {
@@ -523,7 +762,10 @@ Deno.serve(async (req) => {
       }
     );
   } catch (error) {
-    console.error("Unexpected error:", error);
+    console.error(
+      "Unexpected error:",
+      error
+    );
 
     return new Response(
       JSON.stringify({
@@ -539,3 +781,4 @@ Deno.serve(async (req) => {
     );
   }
 });
+
