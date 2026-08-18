@@ -219,6 +219,7 @@ export default function AuthPage() {
                 onStaff={() => setStep('staff-login')}
                 onStudent={() => setStep('student-login')}
                 onAdvisor={() => setStep('advisor-login')}
+                onAdmin={() => navigate('/admin')}
               />
             ) : (
               renderStage()

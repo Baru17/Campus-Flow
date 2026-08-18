@@ -1,6 +1,6 @@
-import { ChevronRightIcon, GraduationIcon, LockIcon, ShieldIcon, StudentIcon } from './Icons'
+import { ChevronRightIcon, GraduationIcon, KeyIcon, LockIcon, ShieldIcon, StudentIcon } from './Icons'
 
-export default function RoleSelection({ onStaff, onStudent, onAdvisor }) {
+export default function RoleSelection({ onStaff, onStudent, onAdvisor, onAdmin }) {
   return (
     <div className="stage-enter flex flex-col">
       <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-blue-700">
@@ -79,6 +79,27 @@ export default function RoleSelection({ onStaff, onStudent, onAdvisor }) {
           <ChevronRightIcon
             size={20}
             className="shrink-0 text-slate-300 transition-all group-hover:translate-x-1 group-hover:text-violet-500"
+          />
+        </button>
+
+        <button type="button" onClick={onAdmin} className="auth-role-card group w-full text-left">
+          <span className="auth-role-icon auth-role-icon-rose">
+            <KeyIcon size={24} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-2 text-lg font-bold text-slate-900 transition-colors group-hover:text-rose-700">
+              Admin Login
+              <span className="rounded-full border border-rose-100 bg-rose-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-rose-600">
+                Restricted
+              </span>
+            </span>
+            <span className="mt-1 block text-sm text-slate-500 transition-colors group-hover:text-slate-600">
+              Manage students and staff across all departments.
+            </span>
+          </span>
+          <ChevronRightIcon
+            size={20}
+            className="shrink-0 text-slate-300 transition-all group-hover:translate-x-1 group-hover:text-rose-500"
           />
         </button>
       </div>
