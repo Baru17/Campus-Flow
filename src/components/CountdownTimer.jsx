@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useCountdown } from '../hooks/useCountdown'
+import { OTP_VALIDITY_SECONDS } from '../constants'
 
 export default function CountdownTimer({
-  initialSeconds = 15,
+  initialSeconds = OTP_VALIDITY_SECONDS,
   running = true,
   onExpire,
   label,

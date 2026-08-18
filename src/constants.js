@@ -15,7 +15,7 @@ export const PERIODS = [1, 2, 3, 4, 5, 6, 7, 8]
 
 export const OTP_LENGTH = 6
 
-export const OTP_VALIDITY_SECONDS = 15
+export const OTP_VALIDITY_SECONDS = 20
 
 export const STUDENT_EMAIL_DOMAIN = 'kiot.ac.in'
 

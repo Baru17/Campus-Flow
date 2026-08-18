@@ -117,7 +117,7 @@ Deno.serve(async (req) => {
 
     // OTP valid for 15 seconds
     const createdAt = new Date();
-    const expiresAt = new Date(createdAt.getTime() + 15 * 1000);
+    const expiresAt = new Date(createdAt.getTime() + 20 * 1000);
 
     // Create attendance session
     const { data, error } = await supabase

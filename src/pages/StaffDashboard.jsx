@@ -411,7 +411,7 @@ export default function StaffDashboard() {
                     <span className="step-num">2</span>
                     <div className="step-text">
                       <b>Generate OTP</b>
-                      <span>A 6-digit OTP valid for 15 seconds is created.</span>
+                      <span>A 6-digit OTP valid for 20 seconds is created.</span>
                     </div>
                   </div>
                   <div className="step">
