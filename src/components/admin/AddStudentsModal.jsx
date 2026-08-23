@@ -16,7 +16,7 @@ const PREVIEW_COLUMNS = [
 
 const COLUMN_HINTS = {
   student_id: 'e.g. 24IT101',
-  register_no: 'e.g. 727824TUIT001',
+  register_no: 'e.g. 611224205001',
   student_name: 'Full name of the student',
   year: '1, 2, 3 or 4',
   section: 'e.g. A or B',
