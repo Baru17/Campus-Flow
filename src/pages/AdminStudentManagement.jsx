@@ -220,7 +220,7 @@ export default function AdminStudentManagement() {
 
   const renderBatchStep = () => (
     <div className="page-enter">
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <button
           type="button"
           onClick={handleBack}
@@ -228,6 +228,14 @@ export default function AdminStudentManagement() {
         >
           <ChevronLeftIcon size={16} />
           Back to departments
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowAdd(true)}
+          className="btn-cf-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
+        >
+          <PlusIcon size={16} />
+          Add Students
         </button>
       </div>
       <div className="cf-card p-4 md:p-6">
