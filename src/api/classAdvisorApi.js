@@ -15,69 +15,62 @@ function normalizeDepartment(department) {
 }
 
 /**
- * The students table for a department.
- * IT uses one permanent table per batch:
- * 1st year  -> it_students_2026_2030
- * 2nd year  -> it_students_2025_2029
- * 3rd year  -> it_students_2024_2028
- * 4th year  -> it_students_2023_2027
- * Other departments use a single table.
+ * Compute the batch key for a given department + year based on the
+ * current academic calendar.
+ *
+ * Formula: batchStartYear = currentYear - (year - 1)
+ * e.g. currentYear=2026, year=2 => 2025 => batch 2025_2029
+ */
+function computeBatchKeyForYear(year) {
+  if (!Number.isInteger(year) || year < 1 || year > 4) return null
+  const currentYear = new Date().getFullYear()
+  const batchStartYear = currentYear - (year - 1)
+  return `${batchStartYear}_${batchStartYear + 4}`
+}
+
+/**
+ * The students table for a department + year.
+ * All departments now use batch-based tables: {dept}_students_{batch}.
+ * Falls back to legacy non-batch tables for backward compatibility.
  */
 export function getStudentTable(department, year) {
   const dept = normalizeDepartment(department)
+  const yr = Number(year)
 
-  if (dept === 'IT') {
-    const itYear = Number(year)
-
-    const batchTables = {
-      1: 'it_students_2026_2030',
-      2: 'it_students_2025_2029',
-      3: 'it_students_2024_2028',
-      4: 'it_students_2023_2027',
-    }
-
-    return batchTables[itYear] || null
+  const batchKey = computeBatchKeyForYear(yr)
+  if (batchKey) {
+    return `${dept.toLowerCase()}_students_${batchKey}`
   }
 
+  // Legacy fallback for non-batch tables.
   const map = {
     CSE: 'cse_students',
     ECE: 'ece_students',
     EEE: 'eee_students',
   }
-
   return map[dept] || null
 }
+
 /**
- * The students table for a department.
- * IT uses one permanent table per batch:
- * 1st year  -> it_students_2026_2030
- * 2nd year  -> it_students_2025_2029
- * 3rd year  -> it_students_2024_2028
- * 4th year  -> it_students_2023_2027
- * Other departments use a single table.
+ * The attendance table for a department + year.
+ * All departments now use batch-based tables: {dept}_attendance_{batch}.
+ * Falls back to legacy non-batch tables for backward compatibility.
  */
 export function getAttendanceTable(department, year) {
   const dept = normalizeDepartment(department)
+  const yr = Number(year)
 
-  if (dept === 'IT') {
-    const itYear = Number(year)
-
-    const batchTables = {
-      1: 'it_attendance_2026_2030',
-      2: 'it_attendance_2025_2029',
-      3: 'it_attendance_2024_2028',
-      4: 'it_attendance_2023_2027',
-    }
-
-    return batchTables[itYear] || null
+  const batchKey = computeBatchKeyForYear(yr)
+  if (batchKey) {
+    return `${dept.toLowerCase()}_attendance_${batchKey}`
   }
 
+  // Legacy fallback for non-batch tables.
   const map = {
     CSE: 'cse_attendance',
     ECE: 'ece_attendance',
     EEE: 'eee_attendance',
   }
-
   return map[dept] || null
 }
 

@@ -79,13 +79,19 @@ export default function AdminStudentManagement() {
     }
   }, [])
 
-  const selectedBatch = useMemo(() => {
-    if (department !== 'IT' || !meta) return null
-    return (meta.it_batches || []).find((b) => b.key === batch) || null
-  }, [department, batch, meta])
+  // All departments now use batches.
+  const departmentBatches = useMemo(() => {
+    if (!meta || !department) return []
+    return meta.batches_by_dept?.[department] || []
+  }, [department, meta])
 
-  const batchNeeded = department === 'IT'
-  const studentsReady = Boolean(department) && (!batchNeeded || Boolean(batch))
+  const selectedBatch = useMemo(() => {
+    if (!department || !batch) return null
+    return departmentBatches.find((b) => b.key === batch) || null
+  }, [department, batch, departmentBatches])
+
+  const batchNeeded = true
+  const studentsReady = Boolean(department) && Boolean(batch)
 
   useEffect(() => {
     if (!studentsReady) {
@@ -157,7 +163,7 @@ export default function AdminStudentManagement() {
   }
 
   const handleBack = () => {
-    if (batchNeeded && batch) {
+    if (batch) {
       setBatch('')
       setSearch('')
       setPage(1)
@@ -251,7 +257,7 @@ export default function AdminStudentManagement() {
           </span>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {meta.it_batches.map((b) => (
+          {departmentBatches.map((b) => (
             <button
               key={b.key}
               type="button"
@@ -274,14 +280,21 @@ export default function AdminStudentManagement() {
               />
             </button>
           ))}
+          {departmentBatches.length === 0 && (
+            <div className="col-span-full rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+              <p className="text-sm text-slate-500">
+                No batches found for {department}. Click &quot;Add Students&quot; to create the first batch.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>
   )
 
   const renderStudentsStep = () => {
-    const heading = department === 'IT'
-      ? `${department} → ${selectedBatch ? selectedBatch.label : batch}`
+    const heading = selectedBatch
+      ? `${department} → ${selectedBatch.label}`
       : department
 
     return (
@@ -293,7 +306,7 @@ export default function AdminStudentManagement() {
             className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-500 transition-colors hover:text-blue-600"
           >
             <ChevronLeftIcon size={16} />
-            Back to {batchNeeded ? 'batches' : 'departments'}
+            Back to batches
           </button>
           <button
             type="button"
@@ -441,19 +454,18 @@ export default function AdminStudentManagement() {
         {metaError && <StatusMessage variant="danger">{metaError.message}</StatusMessage>}
 
         {!metaLoading && !metaError && meta && !department && renderDepartmentStep()}
-        {!metaLoading && !metaError && meta && department && batchNeeded && !batch && renderBatchStep()}
-        {!metaLoading && !metaError && meta && department && (!batchNeeded || batch) && renderStudentsStep()}
+        {!metaLoading && !metaError && meta && department && !batch && renderBatchStep()}
+        {!metaLoading && !metaError && meta && department && batch && renderStudentsStep()}
 
         {showAdd && (
           <AddStudentsModal
             department={department}
             batch={selectedBatch}
-            batches={meta?.it_batches || []}
+            batches={departmentBatches}
             onClose={() => setShowAdd(false)}
             onImported={(result) => {
               setShowAdd(false)
               if (result?.batch) {
-                setDepartment('IT')
                 setBatch(result.batch)
                 setSearch('')
                 setPage(1)

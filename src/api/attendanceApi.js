@@ -49,15 +49,59 @@ function assertBackend() {
 }
 
 /**
- * Fetch subjects from the central `subjects` table, filtered by the
- * selected department and year.
+ * Compute the batch key for a given department + year based on the
+ * current academic calendar.
+ *
+ * Formula: batchStartYear = currentYear - (year - 1)
+ * e.g. currentYear=2026, year=2 => 2025 => batch 2025_2029
+ */
+function computeBatchKeyForYear(year) {
+  if (!Number.isInteger(year) || year < 1 || year > 4) return null
+  const currentYear = new Date().getFullYear()
+  const batchStartYear = currentYear - (year - 1)
+  return `${batchStartYear}_${batchStartYear + 4}`
+}
+
+/**
+ * Fetch subjects for a department + year. First tries the batch-specific
+ * subject table ({dept}_subjects_{batch}), then falls back to the central
+ * `subjects` table for backward compatibility.
  *
  * Subjects are shared across all sections of a department + year, so the
- * section is intentionally ignored and duplicates (a subject stored for
- * multiple sections) are removed by subject code.
+ * section is intentionally ignored and duplicates are removed by subject code.
  */
 export async function getSubjects(department, year) {
   assertBackend()
+  const dept = String(department || '').toUpperCase()
+  const yr = Number(year)
+
+  // Try the batch-specific subject table first.
+  const batchKey = computeBatchKeyForYear(yr)
+  if (batchKey) {
+    const batchTable = `${dept.toLowerCase()}_subjects_${batchKey}`
+    try {
+      const { data, error } = await supabase
+        .from(batchTable)
+        .select('subject_id, subject_code, subject_name, year, section')
+        .order('subject_code', { ascending: true })
+
+      if (!error && data && data.length > 0) {
+        const seen = new Set()
+        const unique = []
+        for (const row of data) {
+          const key = String(row.subject_code || '').toUpperCase()
+          if (!key || seen.has(key)) continue
+          seen.add(key)
+          unique.push({ ...row, department: dept })
+        }
+        return unique
+      }
+    } catch {
+      // Batch table doesn't exist or has no data — fall through.
+    }
+  }
+
+  // Fall back to the central `subjects` table.
   const { data, error } = await supabase
     .from('subjects')
     .select('subject_id, subject_code, subject_name, department, year, section')

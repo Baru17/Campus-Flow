@@ -127,31 +127,64 @@ export async function getCurrentUser() {
 }
 
 /**
- * Resolve the authenticated user's student record. The lookup is always
- * keyed by the authenticated user's UUID via `auth_user_id`.
+ * Resolve the authenticated user's student record. Newer accounts carry the
+ * exact student table they belong to in `app_metadata.student_table` (set
+ * automatically when the admin imports them), so the record resolves for any
+ * department/batch. Older accounts fall back to scanning the original batch
+ * tables. The lookup is always keyed by the authenticated user's UUID.
  */
+// Matches both batch tables (e.g. it_students_2027_2031, cse_students_2027_2031)
+// and legacy non-batch tables (e.g. cse_students, ece_students, eee_students).
+const ROUTED_STUDENT_TABLE_PATTERN = /^(it|cse|ece|eee)_students(_\d{4}_\d{4})?$/
+
+function departmentFromStudentTable(table) {
+  const dept = table.split('_')[0].toUpperCase()
+  return ['IT', 'CSE', 'ECE', 'EEE'].includes(dept) ? dept : 'IT'
+}
+
+async function fetchStudentRow(table, userId) {
+  const { data, error } = await supabase
+    .from(table)
+    .select('student_id, register_no, student_name, year, section, email')
+    .eq('auth_user_id', userId)
+    .maybeSingle()
+
+  if (error) throw mapAuthError(error)
+  return data
+}
+
 export async function getCurrentStudent(userId) {
   assertBackend()
   if (!userId) return null
 
- const itStudentTables = [
-  'it_students_2026_2030',
-  'it_students_2025_2029',
-  'it_students_2024_2028',
-  'it_students_2023_2027',
-]
+  const { data: userData } = await supabase.auth.getUser()
+  const routedTable = String(userData?.user?.app_metadata?.student_table || '')
 
-  for (const table of itStudentTables) {
-    const { data, error } = await supabase
-      .from(table)
-      .select('student_id, register_no, student_name, year, section, email')
-      .eq('auth_user_id', userId)
-      .maybeSingle()
+  if (ROUTED_STUDENT_TABLE_PATTERN.test(routedTable)) {
+    const row = await fetchStudentRow(routedTable, userId)
+    return row ? { ...row, department: departmentFromStudentTable(routedTable) } : null
+  }
 
-    if (error) throw mapAuthError(error)
+  // Legacy accounts created before routing metadata existed.
+  // Try all known student tables across all departments.
+  const legacyTables = [
+    'it_students_2026_2030',
+    'it_students_2025_2029',
+    'it_students_2024_2028',
+    'it_students_2023_2027',
+    'cse_students',
+    'ece_students',
+    'eee_students',
+  ]
 
-    if (data) {
-      return { ...data, department: 'IT' }
+  for (const table of legacyTables) {
+    try {
+      const row = await fetchStudentRow(table, userId)
+      if (row) {
+        return { ...row, department: departmentFromStudentTable(table) }
+      }
+    } catch {
+      // Table may not exist — continue.
     }
   }
 

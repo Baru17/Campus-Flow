@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { XIcon, UploadIcon, CheckIcon, AlertIcon } from '../Icons'
+import { XIcon, UploadIcon, CheckIcon, AlertIcon, PlusIcon, TrashIcon } from '../Icons'
 import { parseImportFile, validateStudentRows } from '../../utils/adminImport'
 import { adminStudents } from '../../api/adminApi'
 import ImportPreviewTable from './ImportPreviewTable'
@@ -15,7 +15,7 @@ const PREVIEW_COLUMNS = [
 ]
 
 const COLUMN_HINTS = {
-  student_id: 'e.g. 24IT101',
+  student_id: 'e.g. 2K27IT001',
   register_no: 'e.g. 611224205001',
   student_name: 'Full name of the student',
   year: '1, 2, 3 or 4',
@@ -24,7 +24,8 @@ const COLUMN_HINTS = {
 
 const NEW_BATCH = '__new__'
 
-/** Normalize a user-typed batch ("2027 - 2031", "2027-2031") to "2027_2031". */
+const SUBJECT_YEAR_OPTIONS = [1, 2, 3, 4]
+
 function normalizeBatchInput(raw) {
   return String(raw || '')
     .trim()
@@ -33,7 +34,6 @@ function normalizeBatchInput(raw) {
     .replace(/-/g, '_')
 }
 
-/** A valid batch key is YYYY_YYYY where the end year = start year + 4. */
 function isValidBatchKey(key) {
   const match = /^(\d{4})_(\d{4})$/.exec(key)
   if (!match) return false
@@ -45,8 +45,28 @@ function formatBatchLabel(key) {
   return `${start} - ${end}`
 }
 
+function emptySubject() {
+  return { subject_code: '', subject_name: '', year: 2, section: 'A' }
+}
+
+function normalizeSubject(raw) {
+  return {
+    subject_code: String(raw?.subject_code || '').trim().toUpperCase(),
+    subject_name: String(raw?.subject_name || '').trim(),
+    year: Number(raw?.year) || 2,
+    section: String(raw?.section || 'A').trim().toUpperCase(),
+  }
+}
+
+function validateSubject(sub) {
+  if (!sub.subject_code) return 'Subject code is required'
+  if (!sub.subject_name) return 'Subject name is required'
+  if (!Number.isInteger(sub.year) || sub.year < 1 || sub.year > 4) return 'Year must be 1-4'
+  if (!sub.section) return 'Section is required'
+  return null
+}
+
 export default function AddStudentsModal({ department, batch, batches, onClose, onImported }) {
-  const isIT = department === 'IT'
   const [selectedBatch, setSelectedBatch] = useState(batch?.key || '')
   const [newBatchText, setNewBatchText] = useState('')
   const [fileName, setFileName] = useState('')
@@ -58,10 +78,13 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef(null)
 
-  // Resolve the batch key that will actually be used for the import.
-  const { batchKey, batchLabel, batchError } = useMemo(() => {
-    if (!isIT) return { batchKey: null, batchLabel: null, batchError: '' }
+  // Subject management state
+  const [subjects, setSubjects] = useState([emptySubject()])
+  const [subjectErrors, setSubjectErrors] = useState([])
+  const [subjectResult, setSubjectResult] = useState(null)
 
+  // Resolve the batch key that will actually be used.
+  const { batchKey, batchLabel, batchError } = useMemo(() => {
     if (selectedBatch === NEW_BATCH) {
       const normalized = normalizeBatchInput(newBatchText)
       if (!normalized) {
@@ -90,9 +113,9 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
       batchLabel: found ? found.label : selectedBatch,
       batchError: '',
     }
-  }, [isIT, selectedBatch, newBatchText, batches])
+  }, [selectedBatch, newBatchText, batches])
 
-  const isReady = isIT ? Boolean(batchKey) : true
+  const isReady = Boolean(batchKey)
 
   const handleFile = async (file) => {
     setFileError('')
@@ -124,22 +147,75 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
     if (file) handleFile(file)
   }
 
+  // Subject management helpers
+  const handleSubjectChange = (index, field, value) => {
+    setSubjects((prev) => {
+      const next = [...prev]
+      next[index] = { ...next[index], [field]: value }
+      return next
+    })
+  }
+
+  const addSubject = () => {
+    setSubjects((prev) => [...prev, emptySubject()])
+  }
+
+  const removeSubject = (index) => {
+    setSubjects((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const validSubjects = useMemo(() => {
+    return subjects.map(normalizeSubject).filter((s) => s.subject_code || s.subject_name)
+  }, [subjects])
+
+  const completeSubjects = useMemo(
+    () => validSubjects.filter((s) => s.subject_code && s.subject_name && !validateSubject(s)),
+    [validSubjects]
+  )
+
   const handleSubmit = async () => {
-    if (!validation || validation.validRows.length === 0 || !isReady) return
+    if (!isReady) return
+    if (completeSubjects.length === 0) {
+      setSubmitError('Add at least one complete subject before importing.')
+      return
+    }
     setSubmitting(true)
     setSubmitError(null)
     try {
       const data = await adminStudents('add', {
         department,
-        batch: isIT ? batchKey : undefined,
-        rows: validation.validRows,
+        batch: batchKey,
+        rows: validation?.validRows || [],
       })
       setResult(data)
+
+      // After students are imported, add subjects if any were provided.
+      const subjectsToAdd = completeSubjects
+      if (subjectsToAdd.length > 0) {
+        try {
+          const subResult = await adminStudents('add-subjects', {
+            department,
+            batch: batchKey,
+            subjects: subjectsToAdd,
+          })
+          setSubjectResult(subResult)
+        } catch (subErr) {
+          // Students were imported but subjects failed — report both.
+          setSubmitError(
+            `Students imported but subjects failed: ${subErr.message || 'Unknown error'}`
+          )
+        }
+      }
     } catch (err) {
       setSubmitError(err)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const renderBatchSelection = () => {
+    if (!result) return null
+    return null // Batch selection is hidden after result.
   }
 
   const renderFilePicker = () => (
@@ -177,7 +253,6 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
             <span className="font-semibold text-slate-500">
               student_id, register_no, student_name, year, section
             </span>
-            {isIT ? '' : ', email (optional)'}
           </span>
         </button>
       </div>
@@ -205,12 +280,6 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
               <span>{COLUMN_HINTS[col]}</span>
             </li>
           ))}
-          <li className="flex items-baseline gap-2 text-xs text-slate-600">
-            <code className="shrink-0 rounded bg-slate-200/70 px-1.5 py-0.5 font-bold text-slate-700">
-              email
-            </code>
-            <span>Optional</span>
-          </li>
         </ul>
       </div>
     </div>
@@ -316,6 +385,152 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
     )
   }
 
+  const renderSubjects = () => (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-white">
+      <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+        <div>
+          <h3 className="text-sm font-bold text-slate-700">Subjects</h3>
+          <p className="text-xs text-slate-500">
+            Add subjects for this batch. These will be available to staff for attendance.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addSubject}
+          className="btn-cf-outline inline-flex items-center gap-1 px-3 py-1.5 text-xs"
+        >
+          <PlusIcon size={14} />
+          Add Subject
+        </button>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wider text-slate-500">
+              <th className="px-4 py-2 font-bold">Code</th>
+              <th className="px-4 py-2 font-bold">Name</th>
+              <th className="px-4 py-2 font-bold">Year</th>
+              <th className="px-4 py-2 font-bold">Section</th>
+              <th className="px-4 py-2 font-bold text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {subjects.map((sub, index) => {
+              const norm = normalizeSubject(sub)
+              const error = sub.subject_code || sub.subject_name ? validateSubject(norm) : null
+              return (
+                <tr
+                  key={index}
+                  className={`border-b border-slate-100 last:border-b-0 ${error ? 'bg-amber-50/40' : ''}`}
+                >
+                  <td className="px-4 py-2 align-top">
+                    <input
+                      type="text"
+                      value={sub.subject_code}
+                      onChange={(e) => handleSubjectChange(index, 'subject_code', e.target.value)}
+                      placeholder="e.g. ADC"
+                      className={`cf-input w-full text-sm ${error && !sub.subject_code ? 'border-red-300' : ''}`}
+                      maxLength={20}
+                    />
+                    {error === 'Subject code is required' && (
+                      <p className="mt-0.5 text-[11px] font-semibold text-red-500">{error}</p>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 align-top">
+                    <input
+                      type="text"
+                      value={sub.subject_name}
+                      onChange={(e) => handleSubjectChange(index, 'subject_name', e.target.value)}
+                      placeholder="e.g. Analog and Digital Communication"
+                      className={`cf-input w-full text-sm ${error && !sub.subject_name ? 'border-red-300' : ''}`}
+                    />
+                    {error === 'Subject name is required' && (
+                      <p className="mt-0.5 text-[11px] font-semibold text-red-500">{error}</p>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 align-top">
+                    <select
+                      value={sub.year}
+                      onChange={(e) => handleSubjectChange(index, 'year', Number(e.target.value))}
+                      className="cf-select w-full text-sm"
+                    >
+                      {SUBJECT_YEAR_OPTIONS.map((y) => (
+                        <option key={y} value={y}>
+                          {y}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-4 py-2 align-top">
+                    <input
+                      type="text"
+                      value={sub.section}
+                      onChange={(e) => handleSubjectChange(index, 'section', e.target.value)}
+                      placeholder="A"
+                      className="cf-input w-full text-sm"
+                      maxLength={5}
+                    />
+                  </td>
+                  <td className="px-4 py-2 align-top text-right">
+                    {subjects.length > 1 ? (
+                      <button
+                        type="button"
+                        onClick={() => removeSubject(index)}
+                        className="inline-flex items-center gap-1 text-slate-400 transition-colors hover:text-red-500"
+                        aria-label={`Remove subject ${index + 1}`}
+                        title="Remove"
+                      >
+                        <TrashIcon size={14} />
+                      </button>
+                    ) : (
+                      <span className="text-slate-300" title="At least one subject is required">
+                        <TrashIcon size={14} />
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {validSubjects.length > 0 && (
+        <div className="border-t border-slate-200 bg-slate-50 px-4 py-3">
+          <p className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
+            Ready — {completeSubjects.length} of {validSubjects.length} subject
+            {validSubjects.length === 1 ? '' : 's'} complete
+          </p>
+          <div className="space-y-1">
+            {validSubjects.map((sub, i) => {
+              const error = validateSubject(sub)
+              return (
+                <div
+                  key={i}
+                  className={`flex items-center gap-2 text-xs ${error ? 'text-amber-600' : 'text-slate-700'}`}
+                >
+                  {error ? (
+                    <AlertIcon size={12} className="shrink-0" />
+                  ) : (
+                    <CheckIcon size={12} className="shrink-0 text-emerald-500" />
+                  )}
+                  <span className="font-bold">{sub.subject_code}</span>
+                  <span className="truncate">{sub.subject_name}</span>
+                  <span className="text-slate-400">·</span>
+                  <span>Year {sub.year}</span>
+                  <span className="text-slate-400">·</span>
+                  <span>Sec {sub.section}</span>
+                  {error && <span className="ml-auto text-amber-600">{error}</span>}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
   const renderResult = () => (
     <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
       <div className="flex items-center gap-2 font-bold">
@@ -323,24 +538,71 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
         Import complete
       </div>
       <ul className="mt-1.5 space-y-0.5 text-xs">
-        {result.table_created && isIT && (
+        {result.table_created && (
           <li>
             Created a new batch table for <span className="font-bold">{batchLabel}</span> and imported
             students into it.
           </li>
         )}
-        <li>
-          <span className="font-bold">{result.inserted || 0}</span> student
-          {result.inserted === 1 ? '' : 's'} added to {department}
-          {isIT ? ` → ${batchLabel}` : ''}.
-        </li>
+        {validation?.validRows?.length > 0 && (
+          <li>
+            <span className="font-bold">{result.inserted || 0}</span> student
+            {result.inserted === 1 ? '' : 's'} added to {department} → {batchLabel}.
+          </li>
+        )}
+        {validation?.validRows?.length === 0 && (
+          <li>
+            <span className="font-bold">0</span> students imported (no student file uploaded).
+          </li>
+        )}
         <li>
           <span className="font-bold">{result.skippedExisting || 0}</span> already existed and were
           skipped.
         </li>
+        {result.auth_backfilled > 0 && (
+          <li>
+            <span className="font-bold">{result.auth_backfilled}</span> previously imported
+            student{result.auth_backfilled === 1 ? '' : 's'} had missing login setup repaired.
+          </li>
+        )}
+        {(result.auth_accounts_created > 0 || result.auth_linked_existing > 0) && (
+          <li>
+            <span className="font-bold">
+              {(result.auth_accounts_created || 0) + (result.auth_linked_existing || 0)}
+            </span>{' '}
+            login account{(result.auth_accounts_created || 0) + (result.auth_linked_existing || 0) === 1 ? '' : 's'} ready
+            {result.auth_accounts_created > 0 && (
+              <>
+                {' '}— initial password{' '}
+                <code className="rounded bg-emerald-100 px-1 py-0.5 font-mono font-bold">
+                  1234
+                </code>
+              </>
+            )}
+            . Students log in with their student ID.
+          </li>
+        )}
+        {result.auth_failed > 0 && (
+          <li className="font-semibold text-amber-700">
+            <span className="font-bold">{result.auth_failed}</span> login account
+            {result.auth_failed === 1 ? '' : 's'} could not be created
+            {Array.isArray(result.auth_failures) && result.auth_failures.length > 0 &&
+              ` (first: ${result.auth_failures[0].student_id} — ${result.auth_failures[0].reason})`}
+            .
+          </li>
+        )}
         {validation?.invalidRows?.length > 0 && (
           <li>
             <span className="font-bold">{validation.invalidRows.length}</span> invalid rows skipped.
+          </li>
+        )}
+        {subjectResult && (
+          <li>
+            <span className="font-bold">{subjectResult.inserted || 0}</span> subject
+            {subjectResult.inserted === 1 ? '' : 's'} added.
+            {subjectResult.skippedExisting > 0 && (
+              <> <span className="font-bold">{subjectResult.skippedExisting}</span> already existed.</>
+            )}
           </li>
         )}
       </ul>
@@ -349,16 +611,16 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
 
   return (
     <div className="admin-modal-backdrop" role="dialog" aria-modal="true" aria-label="Add students">
-      <div className="admin-modal max-w-2xl">
+      <div className="admin-modal max-w-3xl">
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
           <div>
             <h2 className="text-lg font-extrabold tracking-tight text-slate-900">
               Add Students — {department}
             </h2>
             <p className="mt-0.5 text-sm text-slate-500">
-              {isIT
-                ? 'Choose an existing batch or create a new one, then upload a CSV/Excel file.'
-                : 'Upload a CSV/Excel file.'}
+              {isReady
+                ? `Batch: ${batchLabel} — choose a file and optionally add subjects.`
+                : 'Choose an existing batch or create a new one.'}
             </p>
           </div>
           <button
@@ -371,8 +633,8 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
           </button>
         </div>
 
-        <div className="space-y-4 p-5">
-          {isIT && !result && (
+        <div className="max-h-[70vh] overflow-y-auto space-y-4 p-5">
+          {!result && (
             <div>
               <label htmlFor="adminBatchSelect" className="cf-form-label">
                 Batch
@@ -422,7 +684,7 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
                   {batchKey && (
                     <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-emerald-600">
                       <CheckIcon size={13} />
-                      New batch {batchLabel} — a table will be created automatically on import.
+                      New batch {batchLabel} — tables will be created automatically on import.
                     </p>
                   )}
                 </div>
@@ -430,8 +692,31 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
             </div>
           )}
 
+          {!result && isReady && renderSubjects()}
           {!result && renderFilePicker()}
           {!result && renderValidation()}
+
+          {/* Summary before submission */}
+          {!result && isReady && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm">
+              <p className="font-bold text-blue-800 mb-2">Summary before import</p>
+              <div className="space-y-1 text-xs text-blue-700">
+                <p>Department: <span className="font-bold">{department}</span></p>
+                <p>Batch: <span className="font-bold">{batchLabel}</span></p>
+                <p>Tables to be created:</p>
+                <ul className="ml-4 space-y-0.5">
+                  <li>✓ {department.toLowerCase()}_students_{batchKey}</li>
+                  <li>✓ {department.toLowerCase()}_attendance_{batchKey}</li>
+                  <li>✓ {department.toLowerCase()}_subjects_{batchKey}</li>
+                </ul>
+                <p>
+                  Students: <span className="font-bold">{validation?.validRows?.length || 0}</span>
+                  {' · '}
+                  Subjects: <span className="font-bold">{completeSubjects.length}</span>
+                </p>
+              </div>
+            </div>
+          )}
 
           {submitError && (
             <div
@@ -439,7 +724,7 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
               className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700"
             >
               <AlertIcon size={16} className="mt-0.5 shrink-0" />
-              {submitError.message}
+              {typeof submitError === 'string' ? submitError : submitError.message}
             </div>
           )}
 
@@ -470,13 +755,18 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={
-                  submitting || !isReady || !validation || validation.validRows.length === 0
+                disabled={submitting || !isReady || completeSubjects.length === 0}
+                title={
+                  completeSubjects.length === 0
+                    ? 'Add at least one complete subject before importing'
+                    : undefined
                 }
                 className="btn-cf-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
               >
                 {submitting && <span className="cf-spinner" role="status" aria-hidden="true" />}
-                {submitting ? 'Importing…' : `Import ${validation?.validRows?.length || 0} students`}
+                {submitting
+                  ? 'Importing…'
+                  : `Import${validation?.validRows?.length ? ` ${validation.validRows.length} students` : ''}`}
               </button>
             </>
           )}
