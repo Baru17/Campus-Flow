@@ -9,6 +9,9 @@ const HEADER_ALIASES = {
   email: ['email', 'emailid'],
   staff_id: ['staffid', 'staffidno', 'employeeid'],
   staff_name: ['staffname', 'fullname', 'name'],
+  semester: ['semester', 'sem'],
+  subject_code: ['subjectcode', 'code'],
+  subject_name: ['subjectname', 'subject'],
 }
 
 const KEY_TO_CANONICAL = {
@@ -20,6 +23,9 @@ const KEY_TO_CANONICAL = {
   email: 'email',
   staff_id: 'staff_id',
   staff_name: 'staff_name',
+  semester: 'semester',
+  subject_code: 'subject_code',
+  subject_name: 'subject_name',
 }
 
 /**
@@ -255,4 +261,25 @@ export function validateStaffRows(rows) {
     kind: 'staff',
     idColumn: 'email',
   })
+}
+
+export function validateSubjectRows(rows) {
+  const present = new Set(rows[0] ? Object.keys(rows[0]) : [])
+  const missingColumns = ['semester', 'subject_code', 'subject_name'].filter((key) => !present.has(key))
+  if (missingColumns.length) return { missingColumns, total: 0, validRows: [], invalidRows: [] }
+  const seen = new Set(), validRows = [], invalidRows = []
+  rows.forEach((raw, index) => {
+    const semester = Number(raw.semester)
+    const subject_code = trimString(raw.subject_code).toUpperCase()
+    const subject_name = trimString(raw.subject_name)
+    let reason = ''
+    if (!Number.isInteger(semester) || semester < 1 || semester > 8) reason = 'Semester must be an integer from 1 to 8'
+    else if (!subject_code) reason = 'Missing subject_code'
+    else if (!subject_name) reason = 'Missing subject_name'
+    else if (seen.has(`${semester}:${subject_code}`)) reason = 'Duplicate semester + subject code in upload'
+    else seen.add(`${semester}:${subject_code}`)
+    if (reason) invalidRows.push({ rowNumber: index + 2, reason })
+    else validRows.push({ semester, subject_code, subject_name })
+  })
+  return { missingColumns: [], total: rows.length, validRows, invalidRows }
 }

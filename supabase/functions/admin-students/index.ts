@@ -228,29 +228,25 @@ async function ensureBatchTables(
   }
 
   // Ensure the students table has a select-own RLS policy.
-  if (created[tables.students]) {
-    const policyName = `${department.toLowerCase()}_students_select_own`;
-    try {
-      await runDb(async (sql) => {
-        await sql.unsafe(
-          `drop policy if exists "${policyName}" on public.${tables.students}`
-        );
-        await sql.unsafe(
-          `create policy "${policyName}"
-             on public.${tables.students}
-             for select to authenticated
-             using (auth_user_id = auth.uid())`
-        );
-      });
-    } catch (error) {
-      console.error(`Policy creation failed for ${tables.students}:`, error);
-    }
-  }
-
-  if (!created[tables.students]) {
-    throw new Error(
-      `Failed to create batch tables for ${department} ${batchKey} (students table missing)`
-    );
+  // This must happen whether the table was just created or already existed.
+  const policyName = `${department.toLowerCase()}_students_select_own`;
+  try {
+    await runDb(async (sql) => {
+      await sql.unsafe(
+        `alter table if exists public.${tables.students} enable row level security`
+      );
+      await sql.unsafe(
+        `drop policy if exists "${policyName}" on public.${tables.students}`
+      );
+      await sql.unsafe(
+        `create policy "${policyName}"
+           on public.${tables.students}
+           for select to authenticated
+           using (auth_user_id = auth.uid())`
+      );
+    });
+  } catch (error) {
+    console.error(`Policy creation failed for ${tables.students}:`, error);
   }
 
   return tables;
@@ -878,6 +874,13 @@ async function handleAdd(payload: Record<string, unknown>) {
       });
     }
   }
+
+  // Register the batch without assigning a semester.  An administrator must
+  // explicitly configure it in Subject & Semester Management.
+  const { error: batchMetaError } = await supabase
+    .from("academic_batches")
+    .upsert({ department, batch_code: batch }, { onConflict: "department,batch_code" });
+  if (batchMetaError) console.error("Failed to register academic batch metadata:", batchMetaError);
 
   return json({
     success: true,

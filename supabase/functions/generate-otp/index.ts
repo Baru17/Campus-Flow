@@ -6,8 +6,6 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-// CORS headers so the browser frontend can call this function.
-// Only headers are added — attendance logic is unchanged.
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -17,7 +15,6 @@ const corsHeaders = {
 
 Deno.serve(async (req) => {
   try {
-    // Handle browser CORS preflight requests.
     if (req.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -36,27 +33,24 @@ Deno.serve(async (req) => {
     }
 
     const {
-      staff_id,
       subject_id,
+      batch_code,
       department,
       year,
       section,
       period,
     } = await req.json();
 
-    // Validate required fields
     if (
-      !staff_id ||
       !subject_id ||
+      !batch_code ||
       !department ||
       !year ||
       !section ||
       !period
     ) {
       return new Response(
-        JSON.stringify({
-          error: "Missing required fields",
-        }),
+        JSON.stringify({ error: "Missing required fields" }),
         {
           status: 400,
           headers: { "Content-Type": "application/json", ...corsHeaders },
@@ -67,46 +61,73 @@ Deno.serve(async (req) => {
     // --------------------------------------------------
     // 1b. RESOLVE STAFF IDENTITY FROM THE AUTHENTICATED JWT
     //
-    // When the caller presents a valid staff session, the staff member's
-    // identity (staff_id + department) is taken from public.staff via
-    // auth_user_id — a browser-supplied staff_id/department is never
-    // trusted for authenticated callers. Unauthenticated callers keep the
-    // legacy behavior of using the body values.
+    // The caller MUST present a valid staff session.
+    // The staff member's identity (staff_id + department)
+    // is resolved from public.staff via auth_user_id.
+    // A browser-supplied staff_id/department is NEVER trusted.
     // --------------------------------------------------
-
-    let resolvedStaffId = Number(staff_id);
-    let resolvedDepartment = String(department);
 
     const authHeader = req.headers.get("authorization");
 
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      const token = authHeader.slice(7);
-      const { data: userData } = await supabase.auth.getUser(token);
-
-      if (userData?.user) {
-        const { data: staff } = await supabase
-          .from("staff")
-          .select("staff_id, department")
-          .eq("auth_user_id", userData.user.id)
-          .maybeSingle();
-
-        if (staff) {
-          resolvedStaffId = Number(staff.staff_id);
-          resolvedDepartment = String(staff.department);
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return new Response(
+        JSON.stringify({ error: "Authentication required" }),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/json", ...corsHeaders },
         }
+      );
+    }
+
+    const token = authHeader.slice(7);
+    const { data: userData } = await supabase.auth.getUser(token);
+
+    let resolvedStaffId = 0;
+    let resolvedDepartment = "";
+
+    if (userData?.user) {
+      const { data: staff } = await supabase
+        .from("staff")
+        .select("staff_id, department")
+        .eq("auth_user_id", userData.user.id)
+        .maybeSingle();
+
+      if (staff) {
+        resolvedStaffId = Number(staff.staff_id);
+        resolvedDepartment = String(staff.department);
       }
     }
 
     if (!Number.isInteger(resolvedStaffId) || resolvedStaffId <= 0 || !resolvedDepartment) {
       return new Response(
-        JSON.stringify({
-          error: "Invalid staff identity",
-        }),
+        JSON.stringify({ error: "Invalid staff identity" }),
         {
-          status: 400,
+          status: 401,
           headers: { "Content-Type": "application/json", ...corsHeaders },
         }
       );
+    }
+
+    // Resolve the selected subject from the central semester master.
+    // The batch semester is authoritative and is never inferred from year.
+    const normalizedBatch = String(batch_code).trim();
+    const { data: batch, error: batchError } = await supabase
+      .from("academic_batches")
+      .select("current_semester")
+      .eq("department", resolvedDepartment.toUpperCase())
+      .eq("batch_code", normalizedBatch)
+      .maybeSingle();
+    if (batchError || !batch?.current_semester) {
+      return new Response(JSON.stringify({ error: "The selected batch has no current semester configured" }), { status: 400, headers: { "Content-Type": "application/json", ...corsHeaders } });
+    }
+    const { data: subject, error: subjectError } = await supabase
+      .from("semester_subjects")
+      .select("id, semester, subject_code, subject_name")
+      .eq("id", Number(subject_id))
+      .eq("semester", batch.current_semester)
+      .maybeSingle();
+    if (subjectError || !subject) {
+      return new Response(JSON.stringify({ error: "Subject is not available for this batch's current semester" }), { status: 400, headers: { "Content-Type": "application/json", ...corsHeaders } });
     }
 
     // Generate secure 6-digit OTP
@@ -115,7 +136,7 @@ Deno.serve(async (req) => {
 
     const otp = (100000 + (random[0] % 900000)).toString();
 
-    // OTP valid for 15 seconds
+    // OTP valid for 20 seconds
     const createdAt = new Date();
     const expiresAt = new Date(createdAt.getTime() + 20 * 1000);
 
@@ -125,6 +146,11 @@ Deno.serve(async (req) => {
       .insert({
         staff_id: resolvedStaffId,
         subject_id,
+        batch_code: normalizedBatch,
+        semester_subject_id: subject.id,
+        subject_code: subject.subject_code,
+        subject_name: subject.subject_name,
+        semester: subject.semester,
         department: resolvedDepartment,
         year,
         section,

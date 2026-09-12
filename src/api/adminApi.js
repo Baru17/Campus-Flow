@@ -72,3 +72,8 @@ export async function adminStudents(action, payload = {}) {
 export async function adminStaff(action, payload = {}) {
   return invokeAdmin('admin-staff', { action, ...payload })
 }
+
+/** Semester master and explicit batch-semester administration. */
+export async function adminSubjects(action, payload = {}) {
+  return invokeAdmin('admin-subjects', { action, ...payload })
+}

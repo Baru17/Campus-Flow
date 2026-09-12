@@ -47,19 +47,6 @@ async function tableExists(table: string): Promise<boolean> {
   });
 }
 
-/**
- * For a given department + year, compute which batch should contain
- * students of that year based on the current academic calendar.
- */
-function batchKeyForYear(
-  year: number
-): string | null {
-  if (!Number.isInteger(year) || year < 1 || year > 4) return null;
-  const currentYear = new Date().getFullYear();
-  const batchStartYear = currentYear - (year - 1);
-  return `${batchStartYear}_${batchStartYear + 4}`;
-}
-
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -71,24 +58,45 @@ function json(body: unknown, status = 200) {
 // RESOLVE STUDENT + ATTENDANCE TABLES
 // ------------------------------------------------------------------
 
+/**
+ * Resolve student and attendance tables from a session.
+ *
+ * For batch-based sessions, session.batch_code is the authoritative
+ * batch identifier. For legacy sessions without batch_code, the
+ * batch is derived from session.year.
+ */
 async function resolveTables(
-  department: string,
-  year: number
+  session: any
 ): Promise<{
   studentTable: string;
   attendanceTable: string;
 } | null> {
-  const dept = department.toUpperCase();
+  const dept = String(session.department || "").toUpperCase();
 
-  // Try the batch-based approach first.
-  const batchKey = batchKeyForYear(year);
-  if (batchKey) {
+  // For batch-based sessions, use session.batch_code directly.
+  if (session.batch_code) {
+    const batchKey = String(session.batch_code).trim();
     const studentTable = `${dept.toLowerCase()}_students_${batchKey}`;
     const attendanceTable = `${dept.toLowerCase()}_attendance_${batchKey}`;
 
     if (await tableExists(studentTable)) {
       return { studentTable, attendanceTable };
     }
+    return null;
+  }
+
+  // Legacy fallback: derive batch from year.
+  const yr = Number(session.year);
+  if (!Number.isInteger(yr) || yr < 1 || yr > 4) return null;
+  const currentYear = new Date().getFullYear();
+  const batchStartYear = currentYear - (yr - 1);
+  const batchKey = `${batchStartYear}_${batchStartYear + 4}`;
+
+  const studentTable = `${dept.toLowerCase()}_students_${batchKey}`;
+  const attendanceTable = `${dept.toLowerCase()}_attendance_${batchKey}`;
+
+  if (await tableExists(studentTable)) {
+    return { studentTable, attendanceTable };
   }
 
   // Fall back to legacy non-batch tables.
@@ -176,7 +184,7 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
-    // 4. VALIDATE DEPARTMENT
+    // 4. VALIDATE DEPARTMENT AND BATCH
     // --------------------------------------------------
 
     const dept = String(session.department || "").toUpperCase();
@@ -187,11 +195,19 @@ Deno.serve(async (req) => {
       );
     }
 
+    // For sessions targeting batch tables, batch_code must be present.
+    if (!session.batch_code) {
+      return json(
+        { error: "Attendance session is missing batch_code" },
+        400
+      );
+    }
+
     // --------------------------------------------------
     // 5. DETERMINE STUDENT AND ATTENDANCE TABLES
     // --------------------------------------------------
 
-    const tables = await resolveTables(dept, Number(session.year));
+    const tables = await resolveTables(session);
 
     if (!tables) {
       return json(
@@ -295,6 +311,10 @@ Deno.serve(async (req) => {
         attendance_date: today,
         period: session.period,
         subject_id: session.subject_id,
+        semester_subject_id: session.semester_subject_id || session.subject_id,
+        subject_code: session.subject_code,
+        subject_name: session.subject_name,
+        semester: session.semester,
         status: "ABSENT",
         marked_at: new Date().toISOString(),
         session_id: session.session_id,

@@ -80,7 +80,6 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
 
   // Subject management state
   const [subjects, setSubjects] = useState([emptySubject()])
-  const [subjectErrors, setSubjectErrors] = useState([])
   const [subjectResult, setSubjectResult] = useState(null)
 
   // Resolve the batch key that will actually be used.
@@ -211,11 +210,6 @@ export default function AddStudentsModal({ department, batch, batches, onClose, 
     } finally {
       setSubmitting(false)
     }
-  }
-
-  const renderBatchSelection = () => {
-    if (!result) return null
-    return null // Batch selection is hidden after result.
   }
 
   const renderFilePicker = () => (

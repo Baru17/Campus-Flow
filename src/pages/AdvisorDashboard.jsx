@@ -6,7 +6,7 @@ import StatChip from '../components/StatChip'
 import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
-import { getSubjects } from '../api/attendanceApi'
+import { getLegacySubjects } from '../api/attendanceApi'
 import {
   getAdvisorAssignment,
   getAttendanceRows,
@@ -121,7 +121,7 @@ export default function AdvisorDashboard() {
     if (!advisor) return
     let cancelled = false
     setSubjectsLoading(true)
-    getSubjects(advisor.department, advisor.year)
+    getLegacySubjects(advisor.department, advisor.year)
       .then((rows) => {
         if (!cancelled) setSubjects(rows)
       })

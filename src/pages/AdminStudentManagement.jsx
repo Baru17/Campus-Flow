@@ -90,7 +90,6 @@ export default function AdminStudentManagement() {
     return departmentBatches.find((b) => b.key === batch) || null
   }, [department, batch, departmentBatches])
 
-  const batchNeeded = true
   const studentsReady = Boolean(department) && Boolean(batch)
 
   useEffect(() => {

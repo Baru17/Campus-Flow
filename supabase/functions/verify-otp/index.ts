@@ -354,6 +354,41 @@ Deno.serve(async (req) => {
     }
 
     // --------------------------------------------------
+    // 5b. VALIDATE BATCH_CODE
+    // --------------------------------------------------
+
+    if (studentBatch) {
+      if (!matchedSession.batch_code) {
+        return json(
+          { error: "Session is missing batch information" },
+          400
+        );
+      }
+      if (studentBatch !== matchedSession.batch_code) {
+        return json(
+          { error: "Student does not belong to this batch" },
+          403
+        );
+      }
+    }
+
+    // --------------------------------------------------
+    // 5c. VALIDATE SESSION SNAPSHOT FIELDS
+    // --------------------------------------------------
+
+    if (
+      !matchedSession.semester_subject_id ||
+      !matchedSession.subject_code ||
+      !matchedSession.subject_name ||
+      !matchedSession.semester
+    ) {
+      return json(
+        { error: "Attendance session is missing required subject information" },
+        400
+      );
+    }
+
+    // --------------------------------------------------
     // 6. DETERMINE ATTENDANCE TABLE
     // --------------------------------------------------
 
@@ -433,6 +468,10 @@ Deno.serve(async (req) => {
         attendance_date: today,
         period: matchedSession.period,
         subject_id: matchedSession.subject_id,
+        semester_subject_id: matchedSession.semester_subject_id,
+        subject_code: matchedSession.subject_code,
+        subject_name: matchedSession.subject_name,
+        semester: matchedSession.semester,
         status: "PRESENT",
         marked_at: new Date().toISOString(),
         session_id: matchedSession.session_id,

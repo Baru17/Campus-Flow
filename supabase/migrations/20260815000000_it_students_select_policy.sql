@@ -1,22 +1,32 @@
 -- ------------------------------------------------------------------
--- Allow authenticated students to read their own record in
--- public.it_students.
+-- Allow authenticated students to read their own record.
 --
--- The frontend resolves the signed-in student through their Supabase
--- Auth UUID (auth_user_id = auth.uid()) — never through a
--- browser-supplied student ID — so each student can only ever see
--- their own row. No passwords or auth.users data are exposed.
+-- The project now uses batch tables (it_students_2026_2030, etc.)
+-- instead of a single public.it_students table. This migration
+-- gracefully handles the case where public.it_students no longer
+-- exists.
 --
--- Run this in the Supabase Dashboard → SQL Editor, or via
--- `supabase db push`.
+-- Student RLS on batch tables is handled by:
+--   - 20260823000000_student_tables_select_own_policy.sql
+--   - 20260912000000_staff_auth_rls_updated_at.sql
 -- ------------------------------------------------------------------
 
-alter table public.it_students enable row level security;
+-- Only enable RLS and create policy if the legacy table exists.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.tables
+    where table_schema = 'public'
+      and table_name = 'it_students'
+  ) then
+    alter table public.it_students enable row level security;
 
-drop policy if exists "it_students_select_own" on public.it_students;
+    drop policy if exists "it_students_select_own" on public.it_students;
 
-create policy "it_students_select_own"
-  on public.it_students
-  for select
-  to authenticated
-  using (auth_user_id = auth.uid());
+    create policy "it_students_select_own"
+      on public.it_students
+      for select
+      to authenticated
+      using (auth_user_id = auth.uid());
+  end if;
+end $$;

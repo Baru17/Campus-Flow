@@ -6,6 +6,7 @@ import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
   StudentIcon,
   StaffIcon,
+  BookIcon,
   ChevronRightIcon,
   ShieldIcon,
 } from '../components/Icons'
@@ -38,6 +39,14 @@ export default function AdminDashboard() {
       icon: <StaffIcon size={30} />,
       tone: 'violet',
       onClick: () => navigate('/admin/staff'),
+    },
+    {
+      title: 'SUBJECTS',
+      subtitle: 'Semester Master',
+      description: 'Import semester-wise subjects and configure each batch’s current semester.',
+      icon: <BookIcon size={30} />,
+      tone: 'blue',
+      onClick: () => navigate('/admin/subjects'),
     },
   ]
 

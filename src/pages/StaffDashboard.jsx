@@ -7,7 +7,7 @@ import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
 import OTPDisplay from '../components/OTPDisplay'
-import { generateAttendanceOTP, getSubjects } from '../api/attendanceApi'
+import { generateAttendanceOTP, getAcademicBatches, getSubjects } from '../api/attendanceApi'
 import { BACKEND_CONFIGURED } from '../api/supabase'
 import { DEPARTMENTS, YEARS, SECTIONS, PERIODS } from '../constants'
 import { formatClassName } from '../utils/format'
@@ -35,6 +35,8 @@ export default function StaffDashboard() {
 
   const [department, setDepartment] = useState('')
   const [year, setYear] = useState('')
+  const [batch, setBatch] = useState('')
+  const [batches, setBatches] = useState([])
   const [section, setSection] = useState('')
   const [subjectId, setSubjectId] = useState('')
   const [period, setPeriod] = useState('')
@@ -60,7 +62,7 @@ export default function StaffDashboard() {
     navigate('/role-selection', { replace: true })
   }
 
-  const classSelected = Boolean(department && year && section)
+  const classSelected = Boolean(department && batch && year && section)
   const sessionInProgress = Boolean(session && !sessionExpired)
 
   useEffect(() => {
@@ -74,7 +76,7 @@ export default function StaffDashboard() {
     setSubjectsLoading(true)
     setSubjectsError(null)
     setSubjectId('')
-    getSubjects(department, year)
+    getSubjects(department, batch)
       .then((rows) => {
         if (!cancelled) setSubjects(rows)
       })
@@ -87,7 +89,15 @@ export default function StaffDashboard() {
     return () => {
       cancelled = true
     }
-  }, [classSelected, department, year, section])
+  }, [classSelected, department, batch, year, section])
+
+  useEffect(() => {
+    if (!department) { setBatches([]); setBatch(''); return }
+    let cancelled = false
+    getAcademicBatches(department).then((rows) => { if (!cancelled) setBatches(rows) }).catch(() => { if (!cancelled) setBatches([]) })
+    setBatch('')
+    return () => { cancelled = true }
+  }, [department])
 
   const canGenerate =
     classSelected && Boolean(subjectId) && Boolean(period) && !generating && !sessionInProgress
@@ -98,9 +108,9 @@ export default function StaffDashboard() {
     setSessionExpired(false)
     setGenerating(true)
     try {
-      const data = await generateAttendanceOTP({
-        staff_id: staff.staff_id,
+const data = await generateAttendanceOTP({
         department,
+        batch_code: batch,
         year: Number(year),
         section,
         subject_id: Number(subjectId),
@@ -139,7 +149,7 @@ export default function StaffDashboard() {
     label: `${subject.subject_code} - ${subject.subject_name}`,
   }))
 
-  const selectedClass = classSelected ? formatClassName(department, year, section) : '—'
+  const selectedClass = classSelected ? `${formatClassName(department, year, section)} · ${batch.replace('_', '–')}` : '—'
   const sessionStatus = sessionInProgress ? 'Active' : session ? 'Expired' : 'Idle'
   const sessionTone = sessionInProgress ? 'green' : session ? 'amber' : 'primary'
 
@@ -222,6 +232,17 @@ export default function StaffDashboard() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <DropdownField
+                    label="Batch"
+                    name="batch"
+                    value={batch}
+                    onChange={setBatch}
+                    options={batches.map((item) => ({ value: item.batch_code, label: `${item.batch_code.replace('_', '–')} · Semester ${item.current_semester || 'not configured'}` }))}
+                    placeholder="Select batch"
+                    disabled={sessionInProgress || !department}
+                  />
+                </div>
                 <div>
                   <DropdownField
                     label="Department"

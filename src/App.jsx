@@ -12,6 +12,7 @@ import AdminLoginPage from './pages/AdminLoginPage'
 import AdminDashboard from './pages/AdminDashboard'
 import AdminStudentManagement from './pages/AdminStudentManagement'
 import AdminStaffManagement from './pages/AdminStaffManagement'
+import AdminSubjectManagement from './pages/AdminSubjectManagement'
 import AdminRoute from './components/AdminRoute'
 import NotFound from './pages/NotFound'
 
@@ -53,6 +54,7 @@ export default function App() {
                   </AdminRoute>
                 }
               />
+              <Route path="/admin/subjects" element={<AdminRoute><AdminSubjectManagement /></AdminRoute>} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
