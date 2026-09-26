@@ -38,7 +38,10 @@
 	 * Note: Use secrets to store sensitive data.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/
 	 */
-	"vars": { "NODE_ENV": "development" },
+	"vars": {
+		"NODE_ENV": "development",
+		"ALLOWED_ORIGINS": "https://campus-flow-cdl.pages.dev,https://d47477a0.campus-flow-cdl.pages.dev"
+	},
 	"triggers": { "crons": ["* * * * *"] }
 	/**
 	 * Static Assets

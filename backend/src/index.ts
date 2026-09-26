@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import auth from "./api/auth";
 import attendance, { finalizeSession } from "./api/attendance";
@@ -6,23 +6,51 @@ import { requireAuth, requireClassAdvisor } from "./middleware/auth";
 
 type Bindings = {
   DB: D1Database;
+  ALLOWED_ORIGINS?: string;
+  NODE_ENV?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-app.use("/*", cors({
-  origin: (origin: string) => {
-    const allowedOrigins = [
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-      "http://localhost:8787",
-      "https://backend.bdharan06.workers.dev",
-    ];
-    if (allowedOrigins.includes(origin) || !origin) {
-      return origin;
+const LOCAL_ORIGINS = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:8787",
+  "https://backend.bdharan06.workers.dev",
+];
+
+const PAGES_PROJECT_HOSTS = ["campus-flow-cdl.pages.dev"];
+
+function isAllowedOrigin(origin: string, configured: string): boolean {
+  if (!origin) {
+    return true;
+  }
+  if (LOCAL_ORIGINS.includes(origin)) {
+    return true;
+  }
+  const configuredOrigins = configured
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  if (configuredOrigins.includes(origin)) {
+    return true;
+  }
+  try {
+    const { protocol, hostname } = new URL(origin);
+    if (protocol !== "https:") {
+      return false;
     }
-    return null;
-  },
+    return PAGES_PROJECT_HOSTS.some(
+      (host) => hostname === host || hostname.endsWith(`.${host}`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+app.use("/*", cors({
+  origin: (origin: string, c: Context) =>
+    isAllowedOrigin(origin, c.env.ALLOWED_ORIGINS ?? "") ? origin : null,
   credentials: true,
   allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowHeaders: ["Content-Type", "Authorization", "Cookie"],
