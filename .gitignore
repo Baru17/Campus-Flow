@@ -3,6 +3,7 @@ node_modules
 
 # build output
 dist
+.wrangler/
 
 # local env — never commit real secrets
 .env

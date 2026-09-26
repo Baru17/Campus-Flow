@@ -7,4 +7,14 @@ export default defineConfig({
 			wrangler: { configPath: "./wrangler.jsonc" },
 		}),
 	],
+	test: {
+		exclude: [
+			"**/node_modules/**",
+			"**/dist/**",
+			"**/cypress/**",
+			"**/.{idea,git,cache,output,temp}/**",
+			"**/coverage/**",
+			"test/attendance.integration.spec.ts",
+		],
+	},
 });

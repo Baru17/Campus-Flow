@@ -46,10 +46,10 @@ async function apiRequest(url, options) {
     })
     const body = await response.json().catch(() => ({}))
     if (!response.ok) {
-      const error = new Error(body.error || 'Request failed')
-      error.status = response.status
-      error.code = body.code || null
-      throw error
+      throw new ApiError(body.error || 'Request failed', {
+        status: response.status,
+        code: body.code || null,
+      })
     }
     return { data: body, error: body.error || null }
   } catch (error) {
@@ -69,6 +69,12 @@ function mapAuthError(error, kind = 'generic') {
   const code = String(error?.code || '')
 
   if (kind === 'login') {
+    if (error?.status === 503) {
+      return new ApiError('The authentication service is temporarily busy. Please retry shortly.', { status: 503, code: 'database-busy' })
+    }
+    if (error?.status >= 500) {
+      return new ApiError('The authentication service encountered an error. Please retry shortly.', { status: error.status, code: error.code })
+    }
     if (
       code === 'invalid_credentials' ||
       message.includes('invalid login credentials') ||
@@ -138,7 +144,7 @@ export async function staffLogin(identifier, password) {
   if (!data?.user) {
     throw mapAuthError({ message: 'Invalid credentials' }, 'login')
   }
-  const staff = data.staff || (await apiRequest(`/api/auth/staff/${data.user.auth_user_id}`).then(r => r.data).catch(() => null))
+  const staff = data.staff || (await apiRequest(`/api/auth/staff/${data.user.auth_user_id}`).then(r => r.data))
   if (!staff) {
     await apiRequest('/api/auth/staff/logout', { method: 'POST' }).catch(() => {})
     throw new ApiError(
@@ -161,8 +167,9 @@ export async function getCurrentUser() {
     const { data } = await apiRequest('/api/auth/user')
     if (!data?.user) return null
     return data.user
-  } catch {
-    return null
+  } catch (error) {
+    if (error?.status === 401) return null
+    throw error
   }
 }
 
@@ -173,8 +180,9 @@ export async function getCurrentStaff(userId) {
     const { data } = await apiRequest(`/api/auth/staff/${userId}`)
     if (!data) return null
     return data
-  } catch {
-    return null
+  } catch (error) {
+    if (error?.status === 401 || error?.status === 404) return null
+    throw error
   }
 }
 
@@ -183,8 +191,9 @@ export async function getCurrentSession() {
   try {
     const { data } = await apiRequest('/api/auth/session')
     return data?.session || null
-  } catch {
-    return null
+  } catch (error) {
+    if (error?.status === 401) return null
+    throw error
   }
 }
 

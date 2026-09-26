@@ -59,17 +59,23 @@ export default function AuthPage() {
     setVerifying(true)
     try {
       const currentUser = await getCurrentUser()
+      if (!currentUser) {
+        setError({
+          variant: 'warning',
+          text: 'The server did not receive a valid student session. Sign in again; if this persists, check that your browser allows this site to store cookies.',
+        })
+        return
+      }
       const currentStudent = currentUser?.role === 'student'
         ? await getCurrentStudent(currentUser.id)
         : null
 
       if (!currentStudent) {
         setError({
-          variant: 'warning',
-          text:
-            'Your student login is not active, so this OTP cannot be submitted. ' +
-            'This usually means the browser blocked the sign-in cookie. ' +
-            'Allow cookies for this site, then sign in again and re-enter the OTP.',
+          variant: currentUser.role === 'student' ? 'danger' : 'warning',
+          text: currentUser.role === 'student'
+            ? 'Your signed-in account has no linked student record. Contact the administrator.'
+            : 'Sign in with a student account before submitting this OTP.',
         })
         return
       }

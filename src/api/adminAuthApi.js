@@ -40,10 +40,10 @@ async function apiRequest(url, options) {
     })
     const body = await response.json().catch(() => ({}))
     if (!response.ok) {
-      const error = new Error(body.error || 'Request failed')
-      error.status = response.status
-      error.code = body.code || null
-      throw error
+      throw new ApiError(body.error || 'Request failed', {
+        status: response.status,
+        code: body.code || null,
+      })
     }
     return { data: body, error: body.error || null }
   } catch (error) {
@@ -115,8 +115,9 @@ export async function getCurrentAdmin() {
     const { data } = await apiRequest('/api/auth/user')
     if (!data?.user) return null
     return isAdminUser(data.user) ? data.user : null
-  } catch {
-    return null
+  } catch (error) {
+    if (error?.status === 401) return null
+    throw error
   }
 }
 
@@ -125,7 +126,8 @@ export async function getCurrentSession() {
   try {
     const { data } = await apiRequest('/api/auth/session')
     return data?.session || null
-  } catch {
-    return null
+  } catch (error) {
+    if (error?.status === 401) return null
+    throw error
   }
 }

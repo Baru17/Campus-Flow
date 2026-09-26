@@ -2,10 +2,24 @@ import { Hono } from "hono";
 import bcrypt from "bcryptjs";
 import { hashToken, generateToken, setSessionCookie, clearSessionCookie, getSessionExpiry, getSessionCookie } from "../utils/auth";
 import { requireAuth, requireRole, requireStaff, requireAdmin, requireStudent, type AuthUser } from "../middleware/auth";
+import { isTransientD1Error } from "../utils/databaseErrors";
 
 const app = new Hono<{ Bindings: { DB: D1Database } }>();
 
 class InvalidJsonError extends Error {}
+
+function serverError(c: any, error: unknown, message: string, code: string) {
+  console.error(message, error);
+  const transient = isTransientD1Error(error);
+  return c.json(
+    {
+      success: false,
+      error: transient ? "Authentication service is temporarily busy. Please retry." : message,
+      code: transient ? "database-busy" : code,
+    },
+    transient ? 503 : 500
+  );
+}
 
 function safeUser(user: { id: number; auth_user_id: string; user_name: string; role: string }) {
   return {
@@ -95,8 +109,7 @@ app.post("/login", async (c) => {
     if (error instanceof InvalidJsonError) {
       return c.json({ success: false, error: "Invalid JSON body", code: "invalid_json" }, 400);
     }
-    console.error("Login error:", error);
-    return c.json({ success: false, error: "Login failed", code: "login_failed" }, 500);
+    return serverError(c, error, "Login failed", "login_failed");
   }
 });
 
@@ -178,8 +191,7 @@ app.post("/staff/login", async (c) => {
     if (error instanceof InvalidJsonError) {
       return c.json({ success: false, error: "Invalid JSON body", code: "invalid_json" }, 400);
     }
-    console.error("Staff login error:", error);
-    return c.json({ success: false, error: "Login failed", code: "login_failed" }, 500);
+    return serverError(c, error, "Login failed", "login_failed");
   }
 });
 
@@ -198,8 +210,7 @@ app.post("/staff/logout", requireAuth, requireRole("staff", "class_advisor"), as
     await deleteCurrentSession(c);
     return c.json({ success: true, message: "Logged out" });
   } catch (error) {
-    console.error("Logout error:", error);
-    return c.json({ success: false, error: "Logout failed" }, 500);
+    return serverError(c, error, "Logout failed", "logout_failed");
   }
 });
 
@@ -251,8 +262,7 @@ app.post("/admin/login", async (c) => {
     if (error instanceof InvalidJsonError) {
       return c.json({ success: false, error: "Invalid JSON body", code: "invalid_json" }, 400);
     }
-    console.error("Admin login error:", error);
-    return c.json({ success: false, error: "Login failed", code: "login_failed" }, 500);
+    return serverError(c, error, "Login failed", "login_failed");
   }
 });
 
@@ -262,8 +272,7 @@ app.post("/admin/logout", requireAuth, requireAdmin, async (c) => {
     await deleteCurrentSession(c);
     return c.json({ success: true, message: "Logged out" });
   } catch (error) {
-    console.error("Admin logout error:", error);
-    return c.json({ success: false, error: "Logout failed" }, 500);
+    return serverError(c, error, "Logout failed", "logout_failed");
   }
 });
 
@@ -273,8 +282,7 @@ app.post("/logout", requireAuth, async (c) => {
     await deleteCurrentSession(c);
     return c.json({ success: true, message: "Logged out" });
   } catch (error) {
-    console.error("Logout error:", error);
-    return c.json({ success: false, error: "Logout failed" }, 500);
+    return serverError(c, error, "Logout failed", "logout_failed");
   }
 });
 
@@ -304,8 +312,7 @@ app.get("/staff/resolve/:id", async (c) => {
     }
     return c.json({ success: true, email: staff.email.trim().toLowerCase() });
   } catch (error) {
-    console.error("Resolve staff error:", error);
-    return c.json({ success: false, error: "Failed to resolve staff", code: "resolve_failed" }, 500);
+    return serverError(c, error, "Failed to resolve staff", "resolve_failed");
   }
 });
 
@@ -321,8 +328,7 @@ app.get("/staff/:authUserId", requireAuth, requireStaff, async (c) => {
     }
     return c.json({ success: true, ...staffRecord });
   } catch (error) {
-    console.error("Get staff error:", error);
-    return c.json({ success: false, error: "Failed to fetch staff", code: "staff_fetch_failed" }, 500);
+    return serverError(c, error, "Failed to fetch staff", "staff_fetch_failed");
   }
 });
 
@@ -357,8 +363,7 @@ app.get("/auth/student", requireAuth, requireStudent, async (c) => {
     }
     return c.json({ success: true, student: null });
   } catch (error) {
-    console.error("Get student error:", error);
-    return c.json({ success: false, error: "Failed to fetch student", code: "student_fetch_failed" }, 500);
+    return serverError(c, error, "Failed to fetch student", "student_fetch_failed");
   }
 });
 

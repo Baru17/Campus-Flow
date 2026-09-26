@@ -9,6 +9,12 @@ export function notConfiguredMessage() {
 
 export function generateOtpErrorMessage(error) {
   if (error instanceof ApiError && error.code === 'not-configured') return notConfiguredMessage()
+  if (error?.status === 503) {
+    return { variant: 'warning', text: 'Attendance is temporarily busy. Your login is still valid; please retry in a few seconds.' }
+  }
+  if (error?.status >= 500) {
+    return { variant: 'danger', text: 'The attendance service encountered an error. Please retry shortly.' }
+  }
   if (error?.status === 401) {
     return { variant: 'warning', text: 'Your staff session has expired. Please sign in again.' }
   }
@@ -32,10 +38,28 @@ export function generateOtpErrorMessage(error) {
 export function verifyOtpErrorMessage(error) {
   if (error instanceof ApiError && error.code === 'not-configured') return notConfiguredMessage()
   if (error?.status === 401) {
-    return { variant: 'warning', text: 'Your student session has expired. Please sign in again.' }
+    return { variant: 'warning', text: 'The server did not receive a valid student session. Sign in again; if this persists, check that your browser allows this site to store cookies.' }
+  }
+  if (error?.code === 'session-class-mismatch') {
+    return { variant: 'danger', text: 'This OTP belongs to a different class or section.' }
   }
   if (error?.status === 403) {
     return { variant: 'danger', text: 'Your student account could not be verified. Please sign in again or contact the administrator.' }
+  }
+  if (error?.status === 503) {
+    return { variant: 'warning', text: 'Attendance is temporarily busy. Your login is still valid; please retry in a few seconds.' }
+  }
+  if (error?.status >= 500) {
+    return { variant: 'danger', text: 'The attendance service encountered an error. Please retry shortly.' }
+  }
+  if (error?.code === 'otp-expired') {
+    return { variant: 'danger', text: 'This OTP session has expired. Ask your staff to generate a new OTP.' }
+  }
+  if (error?.code === 'invalid-otp') {
+    return { variant: 'danger', text: 'Invalid OTP. Check the digits and try again.' }
+  }
+  if (error?.code === 'invalid-otp-format') {
+    return { variant: 'danger', text: 'Enter the complete six-digit OTP.' }
   }
   switch (error?.message) {
     case 'Student not found':

@@ -12,9 +12,8 @@ const NETWORK_MESSAGE =
 const INVALID_CREDENTIALS_MESSAGE = 'Invalid student ID or password.'
 
 export const SESSION_NOT_STORED_MESSAGE =
-  'Sign-in succeeded but this browser did not keep the session cookie, so your login is not active. ' +
-  'Your browser is most likely blocking third-party cookies for this site. ' +
-  'Allow cookies for this site in your browser settings (or use a private/incognito window) and sign in again.'
+  'Sign-in succeeded, but the server could not verify the new session cookie. ' +
+  'Check that this site is allowed to store cookies, then sign in again.'
 
 const RESET_FAILED_MESSAGE = 'Password reset could not be completed. Please try again.'
 
@@ -61,10 +60,10 @@ async function apiRequest(url, options) {
     })
     const body = await response.json().catch(() => ({}))
     if (!response.ok) {
-      const error = new Error(body.error || 'Request failed')
-      error.status = response.status
-      error.code = body.code || null
-      throw error
+      throw new ApiError(body.error || 'Request failed', {
+        status: response.status,
+        code: body.code || null,
+      })
     }
     return { data: body, error: body.error || null }
   } catch (error) {
@@ -84,6 +83,12 @@ function mapAuthError(error, kind = 'generic') {
   const code = String(error?.code || '')
 
   if (kind === 'login') {
+    if (error?.status === 503) {
+      return new ApiError('The authentication service is temporarily busy. Please retry shortly.', { status: 503, code: 'database-busy' })
+    }
+    if (error?.status >= 500) {
+      return new ApiError('The authentication service encountered an error. Please retry shortly.', { status: error.status, code: error.code })
+    }
     if (
       code === 'invalid_credentials' ||
       message.includes('invalid login credentials') ||
@@ -147,8 +152,9 @@ export async function getCurrentUser() {
   try {
     const { data } = await apiRequest('/api/auth/user')
     return data?.user || null
-  } catch {
-    return null
+  } catch (error) {
+    if (error?.status === 401) return null
+    throw error
   }
 }
 
@@ -157,8 +163,9 @@ export async function getCurrentStudent(authUserId) {
   try {
     const { data } = await apiRequest('/api/auth/auth/student')
     return data?.student || null
-  } catch {
-    return null
+  } catch (error) {
+    if (error?.status === 401) return null
+    throw error
   }
 }
 
@@ -167,8 +174,9 @@ export async function getCurrentSession() {
   try {
     const { data } = await apiRequest('/api/auth/session')
     return data?.session || null
-  } catch {
-    return null
+  } catch (error) {
+    if (error?.status === 401) return null
+    throw error
   }
 }
 

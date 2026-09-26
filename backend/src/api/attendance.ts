@@ -5,6 +5,8 @@ import {
   requireStaff,
   requireClassAdvisor,
 } from "../middleware/auth";
+import { isTransientD1Error } from "../utils/databaseErrors";
+import { studentMatchesAttendanceClass } from "../utils/attendance";
 
 type Bindings = {
   DB: D1Database;
@@ -313,13 +315,15 @@ attendance.post(
       });
     } catch (error) {
       console.error("Generate OTP error:", error);
+      const transient = isTransientD1Error(error);
 
       return c.json(
         {
           success: false,
-          error: "Failed to generate attendance OTP",
+          error: transient ? "Attendance service is temporarily busy. Please retry." : "Failed to generate attendance OTP",
+          code: transient ? "database-busy" : "attendance-generation-failed",
         },
-        500
+        transient ? 503 : 500
       );
     }
   }
@@ -333,7 +337,7 @@ attendance.post(
 | POST /api/attendance/verify
 |
 | Student sends an OTP. The logged-in student is resolved from auth.
-| The student's year/section are not compared with the session.
+| The student's year and section must match the attendance session.
 |
 |--------------------------------------------------------------------------
 */
@@ -354,11 +358,12 @@ attendance.post(
 
       const otp = body.otp?.trim();
 
-      if (!otp) {
+      if (!otp || !/^\d{6}$/.test(otp)) {
         return c.json(
           {
             success: false,
-            error: "OTP is required",
+            error: "OTP must contain exactly six digits",
+            code: "invalid-otp-format",
           },
           400
         );
@@ -416,22 +421,8 @@ attendance.post(
       const now = new Date().toISOString();
 
       /*
-       * IMPORTANT:
-       *
-       * Search ALL active attendance sessions.
-       *
-       * There is intentionally NO:
-       *
-       *   year = student.year
-       *
-       * or:
-       *
-       *   section = student.section
-       *
-       * check here.
-       *
-       * Therefore an OTP generated for any class can
-       * be used by any student.
+      * The OTP identifies the active session; the authenticated student's
+      * year and section are checked after the session is found.
        */
 
       const session = await c.env.DB
@@ -465,13 +456,49 @@ attendance.post(
        */
 
       if (!session) {
+        const previousSession = await c.env.DB
+          .prepare(
+            `SELECT status, expire_at
+             FROM attendance_session
+             WHERE otp = ?
+             ORDER BY created_at DESC
+             LIMIT 1`
+          )
+          .bind(otp)
+          .first() as { status: string; expire_at: string } | null;
+
+        if (previousSession && (previousSession.status === "FINALIZED" || previousSession.expire_at <= now)) {
+          return c.json(
+            {
+              success: false,
+              present: false,
+              error: "OTP session has expired",
+              code: "otp-expired",
+            },
+            400
+          );
+        }
+
         return c.json(
           {
             success: false,
             present: false,
-            error: "Invalid or expired OTP",
+            error: "Invalid OTP",
+            code: "invalid-otp",
           },
           400
+        );
+      }
+
+      if (!studentMatchesAttendanceClass(student, session)) {
+        return c.json(
+          {
+            success: false,
+            present: false,
+            error: "This OTP belongs to a different class or section",
+            code: "session-class-mismatch",
+          },
+          403
         );
       }
 
@@ -588,7 +615,7 @@ attendance.post(
 
       const attendanceId = crypto.randomUUID();
 
-      await c.env.DB
+      const insertResult = await c.env.DB
         .prepare(
           `INSERT INTO ${attendanceTable} (
              attendance_id,
@@ -602,7 +629,8 @@ attendance.post(
              session_id,
              status
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PRESENT')`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PRESENT')
+           ON CONFLICT(session_id, register_no) DO NOTHING`
         )
         .bind(
           attendanceId,
@@ -616,6 +644,47 @@ attendance.post(
           session.session_id
         )
         .run();
+
+      if (insertResult.meta.changes === 0) {
+        const racedRecord = await c.env.DB
+          .prepare(
+            `SELECT id, status
+             FROM ${attendanceTable}
+             WHERE session_id = ? AND register_no = ?
+             LIMIT 1`
+          )
+          .bind(session.session_id, student.register_no)
+          .first() as { id: number; status: string } | null;
+
+        if (racedRecord?.status === "ABSENT") {
+          await c.env.DB
+            .prepare(`UPDATE ${attendanceTable} SET status = 'PRESENT', marked_at = ? WHERE id = ?`)
+            .bind(new Date().toISOString(), racedRecord.id)
+            .run();
+        } else if (racedRecord?.status !== "PRESENT") {
+          return c.json({ success: false, error: "Attendance record could not be saved", code: "attendance-conflict" }, 409);
+        } else {
+          return c.json({
+            success: true,
+            present: true,
+            already_marked: true,
+            message: "Attendance already marked",
+            student: {
+              student_id: student.student_id,
+              register_no: student.register_no,
+              student_name: student.student_name,
+            },
+            session: {
+              session_id: session.session_id,
+              subject_code: session.subject_code,
+              subject_name: session.subject_name,
+              year: session.year,
+              section: session.section,
+              period: session.period,
+            },
+          });
+        }
+      }
 
       /*
        * Success
@@ -642,13 +711,15 @@ attendance.post(
       });
     } catch (error) {
       console.error("Verify OTP error:", error);
+      const transient = isTransientD1Error(error);
 
       return c.json(
         {
           success: false,
-          error: "Failed to verify attendance OTP",
+          error: transient ? "Attendance service is temporarily busy. Please retry." : "Failed to verify attendance OTP",
+          code: transient ? "database-busy" : "attendance-verification-failed",
         },
-        500
+        transient ? 503 : 500
       );
     }
   }
@@ -676,262 +747,30 @@ attendance.post(
   async (c) => {
     try {
       const sessionId = c.req.param("sessionId");
-
-      /*
-       * Find session
-       */
-
-      const session = await c.env.DB
-        .prepare(
-          `SELECT
-             session_id,
-             created_by,
-             subject_code,
-             subject_name,
-             year,
-             section,
-             period,
-             attendance_date,
-             attendance_table,
-             status,
-             expire_at
-           FROM attendance_session
-           WHERE session_id = ?
-           LIMIT 1`
-        )
-        .bind(sessionId)
-        .first() as {
-          session_id: string;
-          created_by: string;
-          subject_code: string;
-          subject_name: string;
-          year: number;
-          section: string;
-          period: number;
-          attendance_date: string;
-          attendance_table: string;
-          status: string;
-          expire_at: string;
-        } | null;
-
-      if (!session) {
-        return c.json(
-          {
-            success: false,
-            error: "Attendance session not found",
-          },
-          404
-        );
+      if (!sessionId) {
+        return c.json({ success: false, error: "Session ID is required" }, 400);
       }
-
-      const attendanceTable = getSupportedAttendanceTable(
-        session.attendance_table,
-        session.year
-      );
-      const studentTable = getStudentTable(session.year);
-
-      if (!attendanceTable || !studentTable) {
-        return c.json(
-          {
-            success: false,
-            error: "Attendance session table is not supported",
-          },
-          500
-        );
+      const result = await finalizeSession(c.env.DB, sessionId);
+      if (!result.success) {
+        const notFound = result.message === "Attendance session not found";
+        const notExpired = result.message === "Attendance session has not expired";
+        return c.json({ success: false, error: result.message }, notFound ? 404 : notExpired ? 409 : 500);
       }
-
-      /*
-       * Already finalized
-       */
-
-      if (session.status === "FINALIZED") {
-        const totalResult = await c.env.DB
-          .prepare(
-            `SELECT COUNT(*) AS total_students
-             FROM ${studentTable}
-             WHERE year = ? AND section = ?`
-          )
-          .bind(session.year, session.section)
-          .first() as { total_students: number };
-
-        const presentResult = await c.env.DB
-          .prepare(
-            `SELECT COUNT(DISTINCT attendance.register_no) AS present
-             FROM ${attendanceTable} attendance
-             JOIN ${studentTable} students
-               ON students.register_no = attendance.register_no
-             WHERE attendance.session_id = ?
-               AND attendance.status = 'PRESENT'
-               AND students.year = ?
-               AND students.section = ?`
-          )
-          .bind(sessionId, session.year, session.section)
-          .first() as { present: number };
-
-        const totalStudents = Number(totalResult?.total_students || 0);
-        const present = Number(presentResult?.present || 0);
-
-        return c.json({
-          success: true,
-          message: "Attendance session already finalized",
-          session_id: sessionId,
-          total_students: totalStudents,
-          present,
-          absent: totalStudents - present,
-        });
-      }
-
-      /*
-       * Get all students belonging to this session's
-       * year and section.
-       */
-
-      const studentQuery = await c.env.DB
-        .prepare(
-          `SELECT register_no
-           FROM ${studentTable}
-           WHERE year = ?
-             AND section = ?
-           ORDER BY register_no`
-        )
-        .bind(
-          session.year,
-          session.section
-        )
-        .all();
-
-      const students = studentQuery.results as unknown as {
-        register_no: string;
-      }[];
-
-      const existingQuery = await c.env.DB
-        .prepare(
-          `SELECT register_no, status
-           FROM ${attendanceTable}
-           WHERE session_id = ?`
-        )
-        .bind(sessionId)
-        .all();
-
-      const existingRecords = existingQuery.results as unknown as {
-        register_no: string;
-        status: string;
-      }[];
-
-      const presentSet = new Set(
-        existingRecords
-          .filter((record) => record.status === "PRESENT")
-          .map((record) => record.register_no)
-      );
-      const existingSet = new Set(
-        existingRecords.map((record) => record.register_no)
-      );
-
-      /*
-       * Prepare ABSENT statements
-       */
-
-      const statements: D1PreparedStatement[] = [];
-
-      for (const student of students) {
-        /*
-         * Already PRESENT → don't insert ABSENT
-         */
-
-        if (presentSet.has(student.register_no)) {
-          continue;
-        }
-
-        if (existingSet.has(student.register_no)) {
-          continue;
-        }
-
-        const attendanceId = crypto.randomUUID();
-
-        statements.push(
-          c.env.DB
-            .prepare(
-              `INSERT INTO ${attendanceTable} (
-                 attendance_id,
-                 register_no,
-                 section,
-                 attendance_date,
-                 period,
-                 subject_code,
-                 subject_name,
-                 marked_at,
-                 session_id,
-                 status
-               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ABSENT')`
-            )
-            .bind(
-              attendanceId,
-              student.register_no,
-              session.section,
-              session.attendance_date,
-              session.period,
-              session.subject_code,
-              session.subject_name,
-              new Date().toISOString(),
-              sessionId
-            )
-        );
-      }
-
-      /*
-       * Mark session FINALIZED
-       */
-
-      statements.push(
-        c.env.DB
-          .prepare(
-            `UPDATE attendance_session
-             SET status = 'FINALIZED',
-                 finalized_at = ?
-             WHERE session_id = ?
-               AND status = 'ACTIVE'`
-          )
-          .bind(
-            new Date().toISOString(),
-            sessionId
-          )
-      );
-
-      /*
-       * Execute all attendance changes together
-       */
-
-      await c.env.DB.batch(statements);
-
-      /*
-       * Return summary
-       */
-
-      const present = students.filter((student) =>
-        presentSet.has(student.register_no)
-      ).length;
-
-      return c.json({
-        success: true,
-        message: "Attendance finalized successfully",
-        session_id: sessionId,
-        total_students: students.length,
-        present,
-        absent: students.length - present,
-      });
+      return c.json(result);
     } catch (error) {
       console.error(
         "Finalize attendance error:",
         error
       );
+      const transient = isTransientD1Error(error);
 
       return c.json(
         {
           success: false,
-          error: "Failed to finalize attendance",
+          error: transient ? "Attendance service is temporarily busy. Please retry." : "Failed to finalize attendance",
+          code: transient ? "database-busy" : "attendance-finalization-failed",
         },
-        500
+        transient ? 503 : 500
       );
     }
   }
@@ -981,6 +820,10 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
 
     if (!attendanceTable || !studentTable) {
       return { success: false, message: "Attendance session table is not supported", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
+    }
+
+    if (session.status !== "FINALIZED" && session.expire_at > new Date().toISOString()) {
+      return { success: false, message: "Attendance session has not expired", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
     }
 
     if (session.status === "FINALIZED") {
@@ -1073,7 +916,8 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
                session_id,
                status
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ABSENT')`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ABSENT')
+             ON CONFLICT(session_id, register_no) DO NOTHING`
           )
           .bind(
             attendanceId,
@@ -1113,7 +957,7 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
     return { success: true, message: "Attendance finalized successfully", session_id: sessionId, total_students: students.length, present, absent: students.length - present };
   } catch (error) {
     console.error("Finalize session error:", error);
-    return { success: false, message: "Failed to finalize attendance", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
+    throw error;
   }
 }
 

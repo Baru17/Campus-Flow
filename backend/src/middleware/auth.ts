@@ -1,5 +1,6 @@
 import { type Context } from "hono";
 import { getSessionCookie, hashToken } from "../utils/auth";
+import { getErrorMessageForLog, isTransientD1Error } from "../utils/databaseErrors";
 
 interface AuthUser {
   id: number;
@@ -12,7 +13,7 @@ type AuthFailure = "no-cookie" | "no-session" | "session-expired" | "lookup-erro
 
 async function resolveAuthUser(
   c: Context
-): Promise<{ user: AuthUser | null; failure: AuthFailure | null; tokenHash: string | null }> {
+): Promise<{ user: AuthUser | null; failure: AuthFailure | null; tokenHash: string | null; error?: unknown }> {
   let token: string | null = null;
   try {
     token = getSessionCookie(c);
@@ -40,8 +41,8 @@ async function resolveAuthUser(
 
     const { expires_at: _expiresAt, ...user } = row;
     return { user, failure: null, tokenHash };
-  } catch {
-    return { user: null, failure: "lookup-error", tokenHash: token ? hashToken(token) : null };
+  } catch (error) {
+    return { user: null, failure: "lookup-error", tokenHash: token ? hashToken(token) : null, error };
   }
 }
 
@@ -51,23 +52,35 @@ export async function getAuthenticatedUser(c: Context): Promise<AuthUser | null>
 }
 
 export async function requireAuth(c: Context, next: () => Promise<void>): Promise<Response | void> {
-  const { user, failure, tokenHash } = await resolveAuthUser(c);
+  let authResult: Awaited<ReturnType<typeof resolveAuthUser>>;
+  try {
+    authResult = await resolveAuthUser(c);
+  } catch (error) {
+    authResult = { user: null, failure: "lookup-error", tokenHash: null, error };
+  }
+  const { user, failure, tokenHash, error } = authResult;
   if (!user) {
     const path = new URL(c.req.url).pathname;
     const origin = c.req.header("Origin") || null;
 
     if (failure === "lookup-error") {
+      const transient = isTransientD1Error(error);
       console.error(
         JSON.stringify({
           event: "auth_lookup_failed",
           path,
           origin,
+          error: getErrorMessageForLog(error),
           tokenHashPrefix: tokenHash ? tokenHash.slice(0, 8) : null,
         })
       );
       return c.json(
-        { success: false, error: "Authentication service is busy. Please retry.", code: "auth-unavailable" },
-        503
+        {
+          success: false,
+          error: transient ? "Authentication service is temporarily unavailable. Please retry." : "Unexpected authentication service error.",
+          code: transient ? "auth-unavailable" : "auth-internal-error",
+        },
+        transient ? 503 : 500
       );
     }
 

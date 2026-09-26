@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import auth from "./api/auth";
 import attendance, { finalizeSession } from "./api/attendance";
 import { requireAuth, requireClassAdvisor } from "./middleware/auth";
+import { getErrorMessageForLog, isTransientD1Error } from "./utils/databaseErrors";
 
 type Bindings = {
   DB: D1Database;
@@ -158,8 +159,20 @@ app.get("/api/class-advisors/attendance", requireAuth, requireClassAdvisor, asyn
     return c.json({ success: false, message: "Advisor assignment not found" }, 404);
   }
 
-  const attendanceTable = advisor.advisor_year === 3 ? "IT_Attendance_2024_2028" : "IT_Attendance_2025_2029";
-  const studentTable = advisor.advisor_year === 3 ? "IT_Students_2024_2028" : "IT_Students_2025_2029";
+  const attendanceTable = advisor.advisor_year === 3
+    ? "IT_Attendance_2024_2028"
+    : advisor.advisor_year === 2
+      ? "IT_Attendance_2025_2029"
+      : null;
+  const studentTable = advisor.advisor_year === 3
+    ? "IT_Students_2024_2028"
+    : advisor.advisor_year === 2
+      ? "IT_Students_2025_2029"
+      : null;
+
+  if (!attendanceTable || !studentTable) {
+    return c.json({ success: false, message: "Advisor year is not supported" }, 400);
+  }
 
   const session = await c.env.DB
     .prepare(
@@ -279,7 +292,17 @@ app.patch("/api/class-advisors/attendance/:sessionId", requireAuth, requireClass
     return c.json({ success: false, error: "You can only edit attendance for your assigned class" }, 403);
   }
 
-  const attendanceTable = session.attendance_table;
+  const supportedAttendanceTable = session.year === 3
+    ? "IT_Attendance_2024_2028"
+    : session.year === 2
+      ? "IT_Attendance_2025_2029"
+      : null;
+
+  if (!supportedAttendanceTable || supportedAttendanceTable !== session.attendance_table) {
+    return c.json({ success: false, error: "Attendance session table is not supported" }, 500);
+  }
+
+  const attendanceTable = supportedAttendanceTable;
 
   const existing = await c.env.DB
     .prepare(
@@ -325,7 +348,9 @@ app.patch("/api/class-advisors/attendance/:sessionId", requireAuth, requireClass
     await c.env.DB
       .prepare(
         `INSERT INTO ${attendanceTable} (attendance_id, register_no, section, attendance_date, period, subject_code, subject_name, marked_at, session_id, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(session_id, register_no) DO UPDATE
+         SET status = excluded.status, marked_at = excluded.marked_at`
       )
       .bind(attendanceId, register_no, student.section, sessionData.attendance_date, sessionData.period, sessionData.subject_code, sessionData.subject_name, new Date().toISOString(), sessionId, newStatus)
       .run();
@@ -364,8 +389,20 @@ app.get("/api/class-advisors/attendance/report", requireAuth, requireClassAdviso
   const section = advisor.advisor_section;
   const department = advisor.department;
 
-  const attendanceTable = year === 3 ? "IT_Attendance_2024_2028" : "IT_Attendance_2025_2029";
-  const studentTable = year === 3 ? "IT_Students_2024_2028" : "IT_Students_2025_2029";
+  const attendanceTable = year === 3
+    ? "IT_Attendance_2024_2028"
+    : year === 2
+      ? "IT_Attendance_2025_2029"
+      : null;
+  const studentTable = year === 3
+    ? "IT_Students_2024_2028"
+    : year === 2
+      ? "IT_Students_2025_2029"
+      : null;
+
+  if (!attendanceTable || !studentTable) {
+    return c.json({ success: false, message: "Advisor year is not supported" }, 400);
+  }
 
   const session = await c.env.DB
     .prepare(
@@ -421,7 +458,7 @@ app.get("/api/class-advisors/attendance/report", requireAuth, requireClassAdviso
   const odStudents = studentList.filter((s) => attendanceMap[s.register_no]?.od === "YES");
   const percentage = totalStrength ? Math.round((presentCount / totalStrength) * 100) : 0;
 
-  const dateLabel = date;
+  const dateLabel = date.split("-").reverse().join(".");
   const subjectName = session.subject_name;
 
   const absenteesList = absentStudents.length > 0
@@ -518,8 +555,24 @@ app.get("/api/subjects", async (c) => {
   });
 });
 
-export default app;
-export async function scheduled(controller: ScheduledController, env: Bindings, ctx: ExecutionContext): Promise<void> {
+app.onError((error, c) => {
+  const transient = isTransientD1Error(error);
+  console.error(JSON.stringify({
+    event: "request_failed",
+    path: new URL(c.req.url).pathname,
+    error: getErrorMessageForLog(error),
+  }));
+  return c.json(
+    {
+      success: false,
+      error: transient ? "The service is temporarily busy. Please retry." : "An unexpected server error occurred.",
+      code: transient ? "database-busy" : "internal-error",
+    },
+    transient ? 503 : 500
+  );
+});
+
+async function scheduled(controller: ScheduledController, env: Bindings, ctx: ExecutionContext): Promise<void> {
   const db = env.DB;
   const now = new Date().toISOString();
 
@@ -531,7 +584,22 @@ export async function scheduled(controller: ScheduledController, env: Bindings, 
     .all() as { results: { session_id: string; year: number; section: string; attendance_table: string }[] };
 
   for (const session of activeSessions.results) {
-    await finalizeSession(db, session.session_id);
+    try {
+      const result = await finalizeSession(db, session.session_id);
+      if (!result.success) {
+        console.error(JSON.stringify({
+          event: "scheduled_session_finalization_rejected",
+          sessionId: session.session_id,
+          message: result.message,
+        }));
+      }
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "scheduled_session_finalization_failed",
+        sessionId: session.session_id,
+        error: getErrorMessageForLog(error),
+      }));
+    }
   }
 
   await db
@@ -539,3 +607,5 @@ export async function scheduled(controller: ScheduledController, env: Bindings, 
     .bind(now)
     .run();
 }
+
+export default { fetch: app.fetch, scheduled };

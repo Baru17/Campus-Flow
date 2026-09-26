@@ -56,6 +56,7 @@ export default function AdvisorDashboard() {
   const [subjectName, setSubjectName] = useState('')
   const [sessionId, setSessionId] = useState('')
   const [attendanceMap, setAttendanceMap] = useState({})
+  const [odMap, setOdMap] = useState({})
   const [attendanceLoading, setAttendanceLoading] = useState(false)
   const [attendanceError, setAttendanceError] = useState(null)
 
@@ -123,6 +124,7 @@ export default function AdvisorDashboard() {
     setSubjectName('')
     setSessionId('')
     setAttendanceMap({})
+    setOdMap({})
 
     getAttendance(date, period, advisor)
       .then((data) => {
@@ -132,10 +134,13 @@ export default function AdvisorDashboard() {
             setSubjectName(data.subject_name || '')
             setSessionId(data.session_id || '')
             const map = {}
+            const od = {}
             for (const s of data.students) {
               if (s.status) map[s.register_no] = s.status
+              if (s.od === 'YES') od[s.register_no] = true
             }
             setAttendanceMap(map)
+            setOdMap(od)
           }
         } else if (!cancelled) {
           setAttendanceMap({})
@@ -162,7 +167,20 @@ export default function AdvisorDashboard() {
     setSavingId(registerNo)
     try {
       await patchAttendance(sessionId, registerNo, nextStatus)
-      setAttendanceMap((prev) => ({ ...prev, [registerNo]: nextStatus }))
+      const refreshed = await getAttendance(date, period)
+      if (refreshed?.session_id) {
+        setSessionId(refreshed.session_id)
+        setSubjectCode(refreshed.subject_code || '')
+        setSubjectName(refreshed.subject_name || '')
+        const nextAttendance = {}
+        const nextOd = {}
+        for (const student of refreshed.students) {
+          if (student.status) nextAttendance[student.register_no] = student.status
+          if (student.od === 'YES') nextOd[student.register_no] = true
+        }
+        setAttendanceMap(nextAttendance)
+        setOdMap(nextOd)
+      }
     } catch (err) {
       setSaveError(err.message)
     } finally {
@@ -239,7 +257,14 @@ export default function AdvisorDashboard() {
     () => students.filter((s) => attendanceMap[s.register_no] === 'ABSENT').length,
     [students, attendanceMap],
   )
+  const odCount = useMemo(
+    () => students.filter((student) => odMap[student.register_no]).length,
+    [students, odMap],
+  )
   const notMarkedCount = Math.max(students.length - presentCount - absentCount, 0)
+  const attendancePercentage = students.length
+    ? Math.round((presentCount / students.length) * 100)
+    : 0
 
   const canLoadAttendance = Boolean(date && period && sessionId)
 
@@ -319,7 +344,7 @@ export default function AdvisorDashboard() {
             <div className="stat-strip stagger">
               <StatChip
                 icon={<UsersIcon size={18} />}
-                label="Students"
+                label="Total strength"
                 value={students.length}
                 tone="violet"
               />
@@ -336,9 +361,15 @@ export default function AdvisorDashboard() {
                 tone="amber"
               />
               <StatChip
+                icon={<CheckIcon size={18} />}
+                label="OD"
+                value={odCount}
+                tone="primary"
+              />
+              <StatChip
                 icon={<CompassIcon size={18} />}
-                label="Assigned class"
-                value={classLabel}
+                label="Attendance"
+                value={`${attendancePercentage}%`}
                 tone="primary"
               />
             </div>
