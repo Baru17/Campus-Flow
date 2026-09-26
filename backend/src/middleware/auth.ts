@@ -8,33 +8,61 @@ interface AuthUser {
   role: string;
 }
 
-export async function getAuthenticatedUser(c: Context): Promise<AuthUser | null> {
+type AuthFailure = "no-cookie" | "no-session" | "session-expired" | "lookup-error";
+
+async function resolveAuthUser(
+  c: Context
+): Promise<{ user: AuthUser | null; failure: AuthFailure | null; tokenHash: string | null }> {
+  let token: string | null = null;
   try {
-    const token = getSessionCookie(c);
-    if (!token) return null;
+    token = getSessionCookie(c);
+    if (!token) {
+      return { user: null, failure: "no-cookie", tokenHash: null };
+    }
 
     const tokenHash = hashToken(token);
-    const expiresAt = new Date().toISOString();
-
-    const result = await c.env.DB
+    const row = (await c.env.DB
       .prepare(
-        `SELECT au.id, au.auth_user_id, au.user_name, au.role
+        `SELECT au.id, au.auth_user_id, au.user_name, au.role, s.expires_at
          FROM auth_sessions s
          JOIN auth_users au ON s.auth_user_id = au.auth_user_id
-         WHERE s.token_hash = ? AND s.expires_at > ?`
+         WHERE s.token_hash = ? LIMIT 1`
       )
-      .bind(tokenHash, expiresAt)
-      .first() as AuthUser | null;
+      .bind(tokenHash)
+      .first()) as (AuthUser & { expires_at: string }) | null;
 
-    return result || null;
+    if (!row) {
+      return { user: null, failure: "no-session", tokenHash };
+    }
+    if (!(row.expires_at > new Date().toISOString())) {
+      return { user: null, failure: "session-expired", tokenHash };
+    }
+
+    const { expires_at: _expiresAt, ...user } = row;
+    return { user, failure: null, tokenHash };
   } catch {
-    return null;
+    return { user: null, failure: "lookup-error", tokenHash: token ? hashToken(token) : null };
   }
 }
 
+export async function getAuthenticatedUser(c: Context): Promise<AuthUser | null> {
+  const { user } = await resolveAuthUser(c);
+  return user;
+}
+
 export async function requireAuth(c: Context, next: () => Promise<void>): Promise<Response | void> {
-  const user = await getAuthenticatedUser(c);
+  const { user, failure, tokenHash } = await resolveAuthUser(c);
   if (!user) {
+    console.warn(
+      JSON.stringify({
+        event: "auth_failed",
+        path: new URL(c.req.url).pathname,
+        origin: c.req.header("Origin") || null,
+        cookiePresent: failure !== "no-cookie",
+        failure,
+        tokenHashPrefix: tokenHash ? tokenHash.slice(0, 8) : null,
+      })
+    );
     return c.json({ success: false, error: "Authentication required", code: "auth-required" }, 401);
   }
   (c as any).set("authUser", user as unknown);

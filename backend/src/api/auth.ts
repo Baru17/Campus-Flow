@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import bcrypt from "bcryptjs";
-import { hashToken, generateToken, setSessionCookie, clearSessionCookie, getSessionExpiry } from "../utils/auth";
+import { hashToken, generateToken, setSessionCookie, clearSessionCookie, getSessionExpiry, getSessionCookie } from "../utils/auth";
 import { requireAuth, requireRole, requireStaff, requireAdmin, requireStudent, type AuthUser } from "../middleware/auth";
 
 const app = new Hono<{ Bindings: { DB: D1Database } }>();
@@ -183,11 +183,19 @@ app.post("/staff/login", async (c) => {
   }
 });
 
+async function deleteCurrentSession(c: any): Promise<void> {
+  const token = getSessionCookie(c);
+  if (!token) return;
+  await c.env.DB
+    .prepare("DELETE FROM auth_sessions WHERE token_hash = ?")
+    .bind(hashToken(token))
+    .run();
+}
+
 app.post("/staff/logout", requireAuth, requireRole("staff", "class_advisor"), async (c) => {
   try {
     clearSessionCookie(c);
-    const user = (c as any).get("authUser") as AuthUser;
-    await c.env.DB.prepare("DELETE FROM auth_sessions WHERE auth_user_id = ?").bind(user.auth_user_id).run();
+    await deleteCurrentSession(c);
     return c.json({ success: true, message: "Logged out" });
   } catch (error) {
     console.error("Logout error:", error);
@@ -251,8 +259,7 @@ app.post("/admin/login", async (c) => {
 app.post("/admin/logout", requireAuth, requireAdmin, async (c) => {
   try {
     clearSessionCookie(c);
-    const user = (c as any).get("authUser") as AuthUser;
-    await c.env.DB.prepare("DELETE FROM auth_sessions WHERE auth_user_id = ?").bind(user.auth_user_id).run();
+    await deleteCurrentSession(c);
     return c.json({ success: true, message: "Logged out" });
   } catch (error) {
     console.error("Admin logout error:", error);
@@ -263,8 +270,7 @@ app.post("/admin/logout", requireAuth, requireAdmin, async (c) => {
 app.post("/logout", requireAuth, async (c) => {
   try {
     clearSessionCookie(c);
-    const user = (c as any).get("authUser") as AuthUser;
-    await c.env.DB.prepare("DELETE FROM auth_sessions WHERE auth_user_id = ?").bind(user.auth_user_id).run();
+    await deleteCurrentSession(c);
     return c.json({ success: true, message: "Logged out" });
   } catch (error) {
     console.error("Logout error:", error);

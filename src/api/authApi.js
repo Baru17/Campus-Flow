@@ -11,6 +11,11 @@ const NETWORK_MESSAGE =
 
 const INVALID_CREDENTIALS_MESSAGE = 'Invalid student ID or password.'
 
+export const SESSION_NOT_STORED_MESSAGE =
+  'Sign-in succeeded but this browser did not keep the session cookie, so your login is not active. ' +
+  'Your browser is most likely blocking third-party cookies for this site. ' +
+  'Allow cookies for this site in your browser settings (or use a private/incognito window) and sign in again.'
+
 const RESET_FAILED_MESSAGE = 'Password reset could not be completed. Please try again.'
 
 const INVALID_RESET_LINK_MESSAGE =
@@ -120,6 +125,10 @@ export async function studentLogin(studentId, password) {
     throw mapAuthError({ message: 'Invalid credentials' }, 'login')
   }
   if (data.student) {
+    const verifiedUser = await getCurrentUser()
+    if (!verifiedUser || verifiedUser.role !== 'student') {
+      throw new ApiError(SESSION_NOT_STORED_MESSAGE, { code: 'session-not-stored' })
+    }
     return { user: data.user, student: data.student }
   }
   throw new ApiError(

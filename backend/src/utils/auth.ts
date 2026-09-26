@@ -17,20 +17,23 @@ export function getSessionCookie(c: any): string | null {
   return match ? match[1] : null;
 }
 
+function buildCookieSuffix(isSecureRequest: boolean, maxAge: number): string {
+  if (!isSecureRequest) {
+    return `; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax`;
+  }
+  return `; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=None; Secure; Partitioned`;
+}
+
 export function setSessionCookie(c: any, token: string): void {
   const isSecureRequest = new URL(c.req.url).protocol === "https:";
   const maxAge = Math.floor(SESSION_TTL_MS / 1000);
-  const secure = isSecureRequest ? "; Secure" : "";
-  const sameSite = isSecureRequest ? "None" : "Lax";
-  const cookieValue = `${COOKIE_NAME}=${token}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=${sameSite}${secure}`;
+  const cookieValue = `${COOKIE_NAME}=${token}${buildCookieSuffix(isSecureRequest, maxAge)}`;
   c.header("Set-Cookie", cookieValue);
 }
 
 export function clearSessionCookie(c: any): void {
   const isSecureRequest = new URL(c.req.url).protocol === "https:";
-  const secure = isSecureRequest ? "; Secure" : "";
-  const sameSite = isSecureRequest ? "None" : "Lax";
-  const cookieValue = `${COOKIE_NAME}=; HttpOnly; Path=/; Max-Age=0; SameSite=${sameSite}${secure}`;
+  const cookieValue = `${COOKIE_NAME}=${buildCookieSuffix(isSecureRequest, 0)}`;
   c.header("Set-Cookie", cookieValue);
 }
 

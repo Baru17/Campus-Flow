@@ -66,7 +66,10 @@ export default function AuthPage() {
       if (!currentStudent) {
         setError({
           variant: 'warning',
-          text: 'Your student login is no longer active. Sign in again before submitting this OTP.',
+          text:
+            'Your student login is not active, so this OTP cannot be submitted. ' +
+            'This usually means the browser blocked the sign-in cookie. ' +
+            'Allow cookies for this site, then sign in again and re-enter the OTP.',
         })
         return
       }
