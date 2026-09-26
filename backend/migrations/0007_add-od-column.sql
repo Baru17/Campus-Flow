@@ -1,0 +1,7 @@
+-- Migration number: 0007
+
+ALTER TABLE IT_Attendance_2024_2028 ADD COLUMN od TEXT DEFAULT 'NO';
+ALTER TABLE IT_Attendance_2025_2029 ADD COLUMN od TEXT DEFAULT 'NO';
+
+CREATE INDEX IF NOT EXISTS idx_attendance_od ON IT_Attendance_2024_2028(od);
+CREATE INDEX IF NOT EXISTS idx_attendance_od_2025 ON IT_Attendance_2025_2029(od);

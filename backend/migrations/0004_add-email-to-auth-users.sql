@@ -1,0 +1,2 @@
+ALTER TABLE auth_users
+ADD COLUMN email TEXT;

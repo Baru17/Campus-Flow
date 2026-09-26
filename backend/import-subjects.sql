@@ -1,0 +1,17 @@
+INSERT INTO subjects (subject_code, subject_name, year) VALUES
+('BE23MA203', 'Discrete Mathematics', 2),
+('BE23CS403', 'Python for Data Science', 2),
+('BE23CS404', 'Data Structures and Algorithms', 2),
+('BE23CS405', 'Database Management System', 2),
+('BE23CS406', 'Operating Systems', 2),
+('BE23EN103', 'Professional Communication Laboratory - I', 2),
+('BE23PT805', 'Engineering Clinic - II', 2),
+('BE23PT807', 'Aptitude Skills - II', 2),
+('BE23IT404', 'System Software', 3),
+('BE23XXXXX', 'Open Elective - I', 3),
+('BE23AC403', 'Indian Constitution', 3),
+('BE23MM06', 'Entrepreneurship and Start-ups', 3),
+('BE23CS410', 'C# & .NET', 3),
+('BE23CS412', 'ES & IOT', 3),
+('BE23YYYYY', 'DIV', 3),
+('BE23PW701', 'MAP', 3);
