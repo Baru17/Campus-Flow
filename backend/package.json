@@ -17,8 +17,6 @@
     "wrangler": "^4.136.3"
   },
   "dependencies": {
-    "@emnapi/core": "^1.11.3",
-    "@emnapi/runtime": "^1.11.3",
     "bcryptjs": "^3.0.3",
     "hono": "^4.13.8"
   }
