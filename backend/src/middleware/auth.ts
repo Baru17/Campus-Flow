@@ -53,11 +53,29 @@ export async function getAuthenticatedUser(c: Context): Promise<AuthUser | null>
 export async function requireAuth(c: Context, next: () => Promise<void>): Promise<Response | void> {
   const { user, failure, tokenHash } = await resolveAuthUser(c);
   if (!user) {
+    const path = new URL(c.req.url).pathname;
+    const origin = c.req.header("Origin") || null;
+
+    if (failure === "lookup-error") {
+      console.error(
+        JSON.stringify({
+          event: "auth_lookup_failed",
+          path,
+          origin,
+          tokenHashPrefix: tokenHash ? tokenHash.slice(0, 8) : null,
+        })
+      );
+      return c.json(
+        { success: false, error: "Authentication service is busy. Please retry.", code: "auth-unavailable" },
+        503
+      );
+    }
+
     console.warn(
       JSON.stringify({
         event: "auth_failed",
-        path: new URL(c.req.url).pathname,
-        origin: c.req.header("Origin") || null,
+        path,
+        origin,
         cookiePresent: failure !== "no-cookie",
         failure,
         tokenHashPrefix: tokenHash ? tokenHash.slice(0, 8) : null,

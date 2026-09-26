@@ -533,4 +533,9 @@ export async function scheduled(controller: ScheduledController, env: Bindings, 
   for (const session of activeSessions.results) {
     await finalizeSession(db, session.session_id);
   }
+
+  await db
+    .prepare("DELETE FROM auth_sessions WHERE expires_at <= ?")
+    .bind(now)
+    .run();
 }
