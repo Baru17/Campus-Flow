@@ -331,6 +331,122 @@ attendance.post(
 
 /*
 |--------------------------------------------------------------------------
+| ATTENDANCE WRITE GUARD
+|--------------------------------------------------------------------------
+|
+| PRESENT is only ever written while the owning session is still ACTIVE.
+| The EXISTS subquery is evaluated as part of the same atomic statement, so
+| a session that is finalized between the caller's session lookup and this
+| write cannot gain a PRESENT row.
+|
+| UNIQUE(session_id, register_no) remains the duplicate guard and
+| DO NOTHING keeps a repeat submission idempotent, so callers never need a
+| pre-read before writing.
+|
+| Returns the number of rows actually written: 1 on a fresh mark, 0 when the
+| row already exists or the session is no longer ACTIVE.
+|
+|--------------------------------------------------------------------------
+*/
+
+export async function markPresentIfSessionActive(
+  db: D1Database,
+  row: {
+    attendanceTable: string;
+    sessionId: string;
+    registerNo: string;
+    section: string;
+    attendanceDate: string;
+    period: number;
+    subjectCode: string;
+    subjectName: string;
+    markedAt: string;
+  }
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `INSERT INTO ${row.attendanceTable} (
+         attendance_id,
+         register_no,
+         section,
+         attendance_date,
+         period,
+         subject_code,
+         subject_name,
+         marked_at,
+         session_id,
+         status
+       )
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PRESENT'
+       WHERE EXISTS (
+         SELECT 1 FROM attendance_session
+         WHERE session_id = ? AND status = 'ACTIVE'
+       )
+       ON CONFLICT(session_id, register_no) DO NOTHING`
+    )
+    .bind(
+      crypto.randomUUID(),
+      row.registerNo,
+      row.section,
+      row.attendanceDate,
+      row.period,
+      row.subjectCode,
+      row.subjectName,
+      row.markedAt,
+      row.sessionId,
+      row.sessionId
+    )
+    .run();
+
+  return result.meta.changes ?? 0;
+}
+
+/*
+|--------------------------------------------------------------------------
+| ABSENT -> PRESENT PROMOTION
+|--------------------------------------------------------------------------
+|
+| Finalization writes ABSENT rows for every student in the class, so a student
+| who scans an OTP after a session has already closed normally collides with
+| an ABSENT row rather than inserting a fresh one. The flip therefore carries
+| the same ACTIVE guard: without it, closing a session would create the very
+| rows that a late request could then resurrect.
+|
+| Returns the number of rows updated, 0 when the row is no longer ABSENT or
+| the session is no longer ACTIVE.
+|
+|--------------------------------------------------------------------------
+*/
+
+export async function promoteAbsentToPresentIfSessionActive(
+  db: D1Database,
+  row: {
+    attendanceTable: string;
+    sessionId: string;
+    rowId: number;
+    markedAt: string;
+  }
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `UPDATE ${row.attendanceTable}
+       SET status = 'PRESENT',
+           marked_at = ?
+       WHERE id = ?
+         AND status = 'ABSENT'
+         AND EXISTS (
+           SELECT 1 FROM attendance_session
+           WHERE session_id = ? AND status = 'ACTIVE'
+         )`
+    )
+    .bind(row.markedAt, row.rowId, row.sessionId)
+    .run();
+
+  return result.meta.changes ?? 0;
+}
+
+/*
+|--------------------------------------------------------------------------
 | VERIFY OTP
 |--------------------------------------------------------------------------
 |
@@ -368,55 +484,6 @@ attendance.post(
           400
         );
       }
-
-      /*
-       * Find the logged-in student.
-       *
-       * We search both student tables.
-       */
-
-      const studentTables = [
-        "IT_Students_2024_2028",
-        "IT_Students_2025_2029",
-      ];
-
-      let student: StudentRecord | null = null;
-
-      for (const table of studentTables) {
-        const result = await c.env.DB
-          .prepare(
-            `SELECT
-               student_id,
-               register_no,
-               student_name,
-               year,
-               section
-             FROM ${table}
-             WHERE auth_user_id = ?
-             LIMIT 1`
-          )
-          .bind(authUser.auth_user_id)
-          .first() as StudentRecord | null;
-
-        if (result) {
-          student = result;
-          break;
-        }
-      }
-
-      if (!student) {
-        return c.json(
-          {
-            success: false,
-            error: "Student record not found",
-          },
-          404
-        );
-      }
-
-      /*
-       * Current time
-       */
 
       const now = new Date().toISOString();
 
@@ -490,6 +557,45 @@ attendance.post(
         );
       }
 
+      const studentTable = getStudentTable(session.year);
+
+      if (!studentTable) {
+        return c.json(
+          {
+            success: false,
+            present: false,
+            error: "Attendance session year is not supported",
+          },
+          500
+        );
+      }
+
+      const student = await c.env.DB
+        .prepare(
+          `SELECT
+             student_id,
+             register_no,
+             student_name,
+             year,
+             section
+           FROM ${studentTable}
+           WHERE auth_user_id = ?
+           LIMIT 1`
+        )
+        .bind(authUser.auth_user_id)
+        .first() as StudentRecord | null;
+
+      if (!student) {
+        return c.json(
+          {
+            success: false,
+            present: false,
+            error: "Student record not found",
+          },
+          404
+        );
+      }
+
       if (!studentMatchesAttendanceClass(student, session)) {
         return c.json(
           {
@@ -518,9 +624,54 @@ attendance.post(
         );
       }
 
+      const studentPayload = {
+        student_id: student.student_id,
+        register_no: student.register_no,
+        student_name: student.student_name,
+      };
+
+      const sessionPayload = {
+        session_id: session.session_id,
+        subject_code: session.subject_code,
+        subject_name: session.subject_name,
+        year: session.year,
+        section: session.section,
+        period: session.period,
+      };
+
       /*
-       * Check whether this student already has an
-       * attendance record for this session.
+       * Write PRESENT only while the session is still ACTIVE. The guard is
+       * inside the statement, so a session finalized between the lookup above
+       * and this insert can never gain a new PRESENT row.
+       */
+
+      const inserted = await markPresentIfSessionActive(c.env.DB, {
+        attendanceTable,
+        sessionId: session.session_id,
+        registerNo: student.register_no,
+        section: session.section,
+        attendanceDate: session.attendance_date,
+        period: session.period,
+        subjectCode: session.subject_code,
+        subjectName: session.subject_name,
+        markedAt: new Date().toISOString(),
+      });
+
+      if (inserted > 0) {
+        return c.json({
+          success: true,
+          present: true,
+          already_marked: false,
+          message: "Attendance marked PRESENT",
+          student: studentPayload,
+          session: sessionPayload,
+        });
+      }
+
+      /*
+       * Nothing was written, which means either the session was finalized
+       * between the lookup and the insert, or a row already exists for this
+       * student. One read distinguishes the two.
        */
 
       const existing = await c.env.DB
@@ -531,183 +682,78 @@ attendance.post(
              AND register_no = ?
            LIMIT 1`
         )
-        .bind(
-          session.session_id,
-          student.register_no
-        )
-        .first() as {
-          id: number;
-          status: string;
-        } | null;
+        .bind(session.session_id, student.register_no)
+        .first() as { id: number; status: string } | null;
 
-      /*
-       * Already PRESENT
-       */
+      if (!existing) {
+        return c.json(
+          {
+            success: false,
+            present: false,
+            error: "OTP session has expired",
+            code: "otp-expired",
+          },
+          400
+        );
+      }
 
-      if (existing?.status === "PRESENT") {
+      if (existing.status === "PRESENT") {
         return c.json({
           success: true,
           present: true,
           already_marked: true,
           message: "Attendance already marked",
-          student: {
-            student_id: student.student_id,
-            register_no: student.register_no,
-            student_name: student.student_name,
-          },
-          session: {
-            session_id: session.session_id,
-            subject_code: session.subject_code,
-            subject_name: session.subject_name,
-            year: session.year,
-            section: session.section,
-            period: session.period,
-          },
+          student: studentPayload,
+          session: sessionPayload,
         });
       }
 
       /*
-       * If an ABSENT record already exists for this session,
-       * update it to PRESENT.
-       *
-       * This can happen if finalization was performed and
-       * the record already exists.
+       * An ABSENT row already exists, for example because an advisor marked
+       * the student absent during the session. Flip it to PRESENT, but only
+       * while the session is still ACTIVE: finalization writes ABSENT rows,
+       * so an unguarded update here would resurrect a student on a session
+       * that had already closed. The stored value is read back afterwards so
+       * a 200 is only ever returned when the database really holds PRESENT.
        */
 
-      if (existing?.status === "ABSENT") {
-        await c.env.DB
-          .prepare(
-             `UPDATE ${attendanceTable}
-             SET status = 'PRESENT',
-                 marked_at = ?
-             WHERE id = ?`
-          )
-          .bind(
-            new Date().toISOString(),
-            existing.id
-          )
-          .run();
+      await promoteAbsentToPresentIfSessionActive(c.env.DB, {
+        attendanceTable,
+        sessionId: session.session_id,
+        rowId: existing.id,
+        markedAt: new Date().toISOString(),
+      });
 
-        return c.json({
-          success: true,
-          present: true,
-          already_marked: false,
-          message: "Attendance updated to PRESENT",
-          student: {
-            student_id: student.student_id,
-            register_no: student.register_no,
-            student_name: student.student_name,
-          },
-          session: {
-            session_id: session.session_id,
-            subject_code: session.subject_code,
-            subject_name: session.subject_name,
-            year: session.year,
-            section: session.section,
-            period: session.period,
-          },
-        });
-      }
-
-      /*
-       * Create PRESENT record
-       */
-
-      const attendanceId = crypto.randomUUID();
-
-      const insertResult = await c.env.DB
+      const confirmed = await c.env.DB
         .prepare(
-          `INSERT INTO ${attendanceTable} (
-             attendance_id,
-             register_no,
-             section,
-             attendance_date,
-             period,
-             subject_code,
-             subject_name,
-             marked_at,
-             session_id,
-             status
-           )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PRESENT')
-           ON CONFLICT(session_id, register_no) DO NOTHING`
+          `SELECT status
+           FROM ${attendanceTable}
+           WHERE session_id = ?
+             AND register_no = ?
+           LIMIT 1`
         )
-        .bind(
-          attendanceId,
-          student.register_no,
-          session.section,
-          session.attendance_date,
-          session.period,
-          session.subject_code,
-          session.subject_name,
-          new Date().toISOString(),
-          session.session_id
-        )
-        .run();
+        .bind(session.session_id, student.register_no)
+        .first<{ status: string }>();
 
-      if (insertResult.meta.changes === 0) {
-        const racedRecord = await c.env.DB
-          .prepare(
-            `SELECT id, status
-             FROM ${attendanceTable}
-             WHERE session_id = ? AND register_no = ?
-             LIMIT 1`
-          )
-          .bind(session.session_id, student.register_no)
-          .first() as { id: number; status: string } | null;
-
-        if (racedRecord?.status === "ABSENT") {
-          await c.env.DB
-            .prepare(`UPDATE ${attendanceTable} SET status = 'PRESENT', marked_at = ? WHERE id = ?`)
-            .bind(new Date().toISOString(), racedRecord.id)
-            .run();
-        } else if (racedRecord?.status !== "PRESENT") {
-          return c.json({ success: false, error: "Attendance record could not be saved", code: "attendance-conflict" }, 409);
-        } else {
-          return c.json({
-            success: true,
-            present: true,
-            already_marked: true,
-            message: "Attendance already marked",
-            student: {
-              student_id: student.student_id,
-              register_no: student.register_no,
-              student_name: student.student_name,
-            },
-            session: {
-              session_id: session.session_id,
-              subject_code: session.subject_code,
-              subject_name: session.subject_name,
-              year: session.year,
-              section: session.section,
-              period: session.period,
-            },
-          });
-        }
+      if (confirmed?.status !== "PRESENT") {
+        return c.json(
+          {
+            success: false,
+            present: false,
+            error: "Attendance record could not be saved",
+            code: "attendance-conflict",
+          },
+          409
+        );
       }
-
-      /*
-       * Success
-       */
 
       return c.json({
         success: true,
         present: true,
         already_marked: false,
-        message: "Attendance marked PRESENT",
-        student: {
-          student_id: student.student_id,
-          register_no: student.register_no,
-          student_name: student.student_name,
-        },
-        session: {
-          session_id: session.session_id,
-          subject_code: session.subject_code,
-          subject_name: session.subject_name,
-          year: session.year,
-          section: session.section,
-          period: session.period,
-        },
+        message: "Attendance updated to PRESENT",
+        student: studentPayload,
+        session: sessionPayload,
       });
     } catch (error) {
       console.error("Verify OTP error:", error);

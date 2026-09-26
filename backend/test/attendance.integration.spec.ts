@@ -1,7 +1,11 @@
 import { env, SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { hashToken } from "../src/utils/auth";
-import { finalizeSession } from "../src/api/attendance";
+import {
+	finalizeSession,
+	markPresentIfSessionActive,
+	promoteAbsentToPresentIfSessionActive,
+} from "../src/api/attendance";
 import migration0001 from "../migrations/0001_initial-schema.sql?raw";
 import migration0002 from "../migrations/0002_auth_sessions.sql?raw";
 import migration0003 from "../migrations/0003_add-attendance-session-status.sql?raw";
@@ -12,6 +16,7 @@ import migration0007 from "../migrations/0007_add-od-column.sql?raw";
 import migration0008 from "../migrations/0008_add-hot-path-indexes.sql?raw";
 import migration0009 from "../migrations/0009_attendance-integrity-and-class-indexes.sql?raw";
 import migration0010 from "../migrations/0010_auth-staff-subject-indexes.sql?raw";
+import migration0011 from "../migrations/0011_attendance-session-otp-lookup-index.sql?raw";
 
 type TestStudent = {
 	studentId: string;
@@ -74,6 +79,9 @@ async function submitOtp(student: TestStudent, otp: string): Promise<Response> {
 }
 
 async function seedTestAccounts(): Promise<void> {
+	if (students.length > 0) {
+		return;
+	}
 	const statements: D1PreparedStatement[] = [];
 	for (let index = 0; index < 100; index += 1) {
 		const studentId = `LOAD${testSuffix}${String(index).padStart(3, "0")}`;
@@ -179,6 +187,7 @@ describe("isolated D1 attendance integration", () => {
 			migration0008,
 			migration0009,
 			migration0010,
+			migration0011,
 		]) {
 			const statements = migration
 				.split("\n")
@@ -264,4 +273,348 @@ describe("isolated D1 attendance integration", () => {
 		expect(report.data).toMatchObject({ total_strength: 100, absent: 100, od: 0 });
 		expect(report.data?.report).toContain(`Date: ${new Date().toISOString().slice(0, 10).split("-").reverse().join(".")}`);
 	}, 60_000);
+});
+
+describe("POST /api/attendance/verify semantics", () => {
+	beforeAll(async () => {
+		await seedTestAccounts();
+	});
+
+	async function countRows(sessionId: string, registerNo?: string): Promise<number> {
+		const row = registerNo
+			? await env.DB
+				.prepare(
+					"SELECT COUNT(*) AS count FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+				)
+				.bind(sessionId, registerNo)
+				.first<{ count: number }>()
+			: await env.DB
+				.prepare("SELECT COUNT(*) AS count FROM IT_Attendance_2024_2028 WHERE session_id = ?")
+				.bind(sessionId)
+				.first<{ count: number }>();
+		return Number(row?.count ?? 0);
+	}
+
+	it("accepts a correct OTP and stores exactly one PRESENT row", async () => {
+		const sessionId = await createSession("111111");
+		const response = await submitOtp(students[0], "111111");
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			success: true,
+			present: true,
+			already_marked: false,
+		});
+		expect(await countRows(sessionId, students[0].registerNo)).toBe(1);
+
+		const stored = await env.DB
+			.prepare("SELECT status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?")
+			.bind(sessionId, students[0].registerNo)
+			.first<{ status: string }>();
+		expect(stored?.status).toBe("PRESENT");
+	});
+
+	it("rejects a wrong OTP without writing attendance", async () => {
+		const sessionId = await createSession("222222");
+		const response = await submitOtp(students[1], "999999");
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ code: "invalid-otp" });
+		expect(await countRows(sessionId, students[1].registerNo)).toBe(0);
+	});
+
+	it("rejects an expired OTP distinctly from a wrong one", async () => {
+		const sessionId = await createSession("333333", true);
+		const response = await submitOtp(students[2], "333333");
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ code: "otp-expired" });
+		expect(await countRows(sessionId, students[2].registerNo)).toBe(0);
+	});
+
+	it("treats a duplicate submission as idempotent", async () => {
+		const sessionId = await createSession("444444");
+		const first = await submitOtp(students[3], "444444");
+		const second = await submitOtp(students[3], "444444");
+
+		expect(first.status).toBe(200);
+		expect(second.status).toBe(200);
+		expect(await second.json()).toMatchObject({ already_marked: true });
+		expect(await countRows(sessionId, students[3].registerNo)).toBe(1);
+	});
+
+	it("keeps one row when the same student submits concurrently", async () => {
+		const sessionId = await createSession("555555");
+		const responses = await Promise.all(
+			Array.from({ length: 10 }, () => submitOtp(students[4], "555555")),
+		);
+
+		for (const response of responses) {
+			expect(response.status).toBe(200);
+		}
+		const bodies = await Promise.all(
+			responses.map((response) => response.json() as Promise<{ present: boolean }>),
+		);
+		expect(bodies.every((body) => body.present === true)).toBe(true);
+		expect(await countRows(sessionId, students[4].registerNo)).toBe(1);
+
+		const stored = await env.DB
+			.prepare("SELECT status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?")
+			.bind(sessionId, students[4].registerNo)
+			.first<{ status: string }>();
+		expect(stored?.status).toBe("PRESENT");
+	});
+
+	it("records every student when different students submit concurrently", async () => {
+		const sessionId = await createSession("666666");
+		const wave = students.slice(10, 60);
+		const responses = await Promise.all(wave.map((student) => submitOtp(student, "666666")));
+
+		expect(responses.every((response) => response.status === 200)).toBe(true);
+		expect(await countRows(sessionId)).toBe(wave.length);
+
+		const ids = await Promise.all(
+			responses.map((response) => response.json() as Promise<{ student: { student_id: string } }>),
+		);
+		expect(new Set(ids.map((body) => body.student.student_id)).size).toBe(wave.length);
+	});
+
+	it("refuses new attendance once the session is finalized", async () => {
+		const sessionId = await createSession("777777", true);
+		const finalization = await finalizeSession(env.DB, sessionId);
+		expect(finalization.success).toBe(true);
+
+		const before = await countRows(sessionId, students[60].registerNo);
+		const response = await submitOtp(students[60], "777777");
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ code: "otp-expired" });
+		expect(await countRows(sessionId, students[60].registerNo)).toBe(before);
+	});
+
+	it("does not let the guarded insert create PRESENT for a finalized session", async () => {
+		const sessionId = await createSession("888888", true);
+		await finalizeSession(env.DB, sessionId);
+		const student = students[61];
+
+		/*
+		 * Finalization seeds an ABSENT row for every student, which would make
+		 * the insert a no-op through UNIQUE(session_id, register_no) and mask
+		 * the guard entirely. Removing the row leaves the insert with no
+		 * duplicate to fall back on, so only the ACTIVE guard can stop it.
+		 */
+		await env.DB
+			.prepare(
+				"DELETE FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+			)
+			.bind(sessionId, student.registerNo)
+			.run();
+
+		const changes = await markPresentIfSessionActive(env.DB, {
+			attendanceTable: "IT_Attendance_2024_2028",
+			sessionId,
+			registerNo: student.registerNo,
+			section: "A",
+			attendanceDate: new Date().toISOString().slice(0, 10),
+			period: 99,
+			subjectCode: "TEST101",
+			subjectName: "Integration Test",
+			markedAt: new Date().toISOString(),
+		});
+
+		expect(changes).toBe(0);
+		const stored = await env.DB
+			.prepare(
+				"SELECT status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+			)
+			.bind(sessionId, student.registerNo)
+			.first<{ status: string }>();
+		expect(stored).toBeNull();
+	});
+
+	it("still inserts PRESENT for an active session", async () => {
+		const sessionId = await createSession("141414");
+		const student = students[62];
+
+		const changes = await markPresentIfSessionActive(env.DB, {
+			attendanceTable: "IT_Attendance_2024_2028",
+			sessionId,
+			registerNo: student.registerNo,
+			section: "A",
+			attendanceDate: new Date().toISOString().slice(0, 10),
+			period: 99,
+			subjectCode: "TEST101",
+			subjectName: "Integration Test",
+			markedAt: new Date().toISOString(),
+		});
+
+		expect(changes).toBe(1);
+	});
+
+	it("does not flip ABSENT to PRESENT once the session is finalized", async () => {
+		const sessionId = await createSession("131313", true);
+		const student = students[63];
+		await env.DB
+			.prepare(
+				`INSERT INTO IT_Attendance_2024_2028 (
+				   attendance_id, register_no, section, attendance_date, period,
+				   subject_code, subject_name, marked_at, session_id, status
+				 ) VALUES (?, ?, 'A', ?, 99, 'TEST101', 'Integration Test', ?, ?, 'ABSENT')`,
+			)
+			.bind(
+				crypto.randomUUID(),
+				student.registerNo,
+				new Date().toISOString().slice(0, 10),
+				new Date().toISOString(),
+				sessionId,
+			)
+			.run();
+		await finalizeSession(env.DB, sessionId);
+
+		const existing = await env.DB
+			.prepare(
+				"SELECT id, status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+			)
+			.bind(sessionId, student.registerNo)
+			.first<{ id: number; status: string }>();
+		expect(existing?.status).toBe("ABSENT");
+
+		const changes = await promoteAbsentToPresentIfSessionActive(env.DB, {
+			attendanceTable: "IT_Attendance_2024_2028",
+			sessionId,
+			rowId: Number(existing?.id),
+			markedAt: new Date().toISOString(),
+		});
+		expect(changes).toBe(0);
+
+		const stored = await env.DB
+			.prepare(
+				"SELECT status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+			)
+			.bind(sessionId, student.registerNo)
+			.first<{ status: string }>();
+		expect(stored?.status).toBe("ABSENT");
+	});
+
+	it("promotes ABSENT to PRESENT while the session is still active", async () => {
+		const sessionId = await createSession("151515");
+		const student = students[64];
+		await env.DB
+			.prepare(
+				`INSERT INTO IT_Attendance_2024_2028 (
+				   attendance_id, register_no, section, attendance_date, period,
+				   subject_code, subject_name, marked_at, session_id, status
+				 ) VALUES (?, ?, 'A', ?, 99, 'TEST101', 'Integration Test', ?, ?, 'ABSENT')`,
+			)
+			.bind(
+				crypto.randomUUID(),
+				student.registerNo,
+				new Date().toISOString().slice(0, 10),
+				new Date().toISOString(),
+				sessionId,
+			)
+			.run();
+
+		const existing = await env.DB
+			.prepare(
+				"SELECT id FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+			)
+			.bind(sessionId, student.registerNo)
+			.first<{ id: number }>();
+
+		const changes = await promoteAbsentToPresentIfSessionActive(env.DB, {
+			attendanceTable: "IT_Attendance_2024_2028",
+			sessionId,
+			rowId: Number(existing?.id),
+			markedAt: new Date().toISOString(),
+		});
+		expect(changes).toBe(1);
+
+		const stored = await env.DB
+			.prepare(
+				"SELECT status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+			)
+			.bind(sessionId, student.registerNo)
+			.first<{ status: string }>();
+		expect(stored?.status).toBe("PRESENT");
+	});
+
+	it("never records PRESENT after finalization when submit races finalize", async () => {
+		const sessionId = await createSession("121212");
+		const wave = students.slice(62, 92);
+		const finalizedAt = new Date().toISOString();
+
+		/*
+		 * finalizeSession refuses to close a session that has not expired, so
+		 * the status flip is issued directly to create the genuine race: a
+		 * request that already read the session as ACTIVE reaches the insert
+		 * after the session has been closed.
+		 */
+		const [, results] = await Promise.all([
+			env.DB
+				.prepare(
+					"UPDATE attendance_session SET status = 'FINALIZED', finalized_at = ? WHERE session_id = ?",
+				)
+				.bind(finalizedAt, sessionId)
+				.run(),
+			Promise.all(
+				wave.map(async (student) => {
+					const response = await submitOtp(student, "121212");
+					return {
+						registerNo: student.registerNo,
+						status: response.status,
+						body: (await response.json()) as {
+							success: boolean;
+							present?: boolean;
+							already_marked?: boolean;
+						},
+					};
+				}),
+			),
+		]);
+
+		const session = await env.DB
+			.prepare("SELECT status FROM attendance_session WHERE session_id = ?")
+			.bind(sessionId)
+			.first<{ status: string }>();
+		expect(session?.status).toBe("FINALIZED");
+
+		/*
+		 * Clock-free invariant: a request that was not told it succeeded must
+		 * not have left a PRESENT row behind. This is exactly what the guarded
+		 * insert guarantees, and it fails loudly if the guard is removed.
+		 */
+		for (const result of results.filter((entry) => !entry.body.success)) {
+			const stored = await env.DB
+				.prepare(
+					"SELECT status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+				)
+				.bind(sessionId, result.registerNo)
+				.first<{ status: string }>();
+			expect(stored?.status).not.toBe("PRESENT");
+		}
+
+		// Every request that did succeed must correspond to a PRESENT row.
+		const succeeded = results.filter((entry) => entry.body.success);
+		for (const result of succeeded) {
+			const stored = await env.DB
+				.prepare(
+					"SELECT status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ?",
+				)
+				.bind(sessionId, result.registerNo)
+				.first<{ status: string }>();
+			expect(stored?.status).toBe("PRESENT");
+		}
+
+		const duplicates = await env.DB
+			.prepare(
+				`SELECT COUNT(*) AS count FROM (
+				   SELECT register_no FROM IT_Attendance_2024_2028
+				   WHERE session_id = ? GROUP BY register_no HAVING COUNT(*) > 1
+				 )`,
+			)
+			.bind(sessionId)
+			.first<{ count: number }>();
+		expect(Number(duplicates?.count ?? 0)).toBe(0);
+	}, 30_000);
 });

@@ -22,24 +22,37 @@ async function resolveAuthUser(
     }
 
     const tokenHash = hashToken(token);
+    /*
+     * The expiry comparison is evaluated by SQLite against the same `now`
+     * value used elsewhere in the request, so a session cannot slip through
+     * on a clock reading taken after the row was fetched. The row is still
+     * returned when it has expired so the log can distinguish an expired
+     * session from an unknown token.
+     */
+    const now = new Date().toISOString();
     const row = (await c.env.DB
       .prepare(
-        `SELECT au.id, au.auth_user_id, au.user_name, au.role, s.expires_at
+        `SELECT au.id, au.auth_user_id, au.user_name, au.role, s.expires_at,
+                (s.expires_at > ?) AS session_is_valid
          FROM auth_sessions s
          JOIN auth_users au ON s.auth_user_id = au.auth_user_id
          WHERE s.token_hash = ? LIMIT 1`
       )
-      .bind(tokenHash)
-      .first()) as (AuthUser & { expires_at: string }) | null;
+      .bind(now, tokenHash)
+      .first()) as (AuthUser & { expires_at: string; session_is_valid: number }) | null;
 
     if (!row) {
       return { user: null, failure: "no-session", tokenHash };
     }
-    if (!(row.expires_at > new Date().toISOString())) {
+    if (!row.session_is_valid) {
       return { user: null, failure: "session-expired", tokenHash };
     }
 
-    const { expires_at: _expiresAt, ...user } = row;
+    const {
+      expires_at: _expiresAt,
+      session_is_valid: _sessionIsValid,
+      ...user
+    } = row;
     return { user, failure: null, tokenHash };
   } catch (error) {
     return { user: null, failure: "lookup-error", tokenHash: token ? hashToken(token) : null, error };
