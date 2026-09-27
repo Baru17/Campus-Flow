@@ -6,7 +6,7 @@ import {
   requireClassAdvisor,
 } from "../middleware/auth";
 import { isTransientD1Error } from "../utils/databaseErrors";
-import { studentMatchesAttendanceClass } from "../utils/attendance";
+import { extractDepartment, studentMatchesAttendanceClass } from "../utils/attendance";
 
 type Bindings = {
   DB: D1Database;
@@ -628,6 +628,7 @@ attendance.post(
         student_id: student.student_id,
         register_no: student.register_no,
         student_name: student.student_name,
+        department: extractDepartment(student.student_id),
       };
 
       const sessionPayload = {

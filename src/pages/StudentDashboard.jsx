@@ -10,6 +10,7 @@ import StatusMessage from '../components/StatusMessage'
 import { verifyAttendanceOTP } from '../api/attendanceApi'
 import { DEPARTMENTS, YEARS, SECTIONS } from '../constants'
 import { formatClassName, formatDate } from '../utils/format'
+import { resolveDepartment } from '../utils/department'
 import { isValidOTP, isValidStudentId, normalizeStudentId } from '../utils/validation'
 import { verifyOtpErrorMessage, notConfiguredMessage } from '../utils/messages'
 import { useClock } from '../hooks/useClock'
@@ -81,15 +82,6 @@ export default function StudentDashboard() {
     } finally {
       setVerifying(false)
     }
-  }
-
-  const resetForAnother = () => {
-    setResult(null)
-    setLocked(false)
-    setOtp('')
-    setStudentId('')
-    setFormError(null)
-    setVerifyError(null)
   }
 
   const inputDisabled = verifying || locked || Boolean(result)
@@ -212,7 +204,7 @@ export default function StudentDashboard() {
                     </div>
                     <div className="result-cell">
                       <div className="label">Department</div>
-                      <div className="value">{result.student?.department}</div>
+                      <div className="value">{resolveDepartment(result.student)}</div>
                     </div>
                     <div className="result-cell">
                       <div className="label">
@@ -231,9 +223,6 @@ export default function StudentDashboard() {
                 <div className="flex flex-col sm:flex-row gap-2 justify-center">
                   <LoadingButton variant="primary" onClick={() => navigate('/role-selection')}>
                     Done
-                  </LoadingButton>
-                  <LoadingButton variant="outline" onClick={resetForAnother}>
-                    Mark Another Student
                   </LoadingButton>
                 </div>
               </div>
@@ -368,7 +357,7 @@ export default function StudentDashboard() {
                       <div className="cf-list-meta">
                         <div className="title">{item.student?.student_name}</div>
                         <div className="sub">
-                          {item.student?.register_no} · {item.student?.department} ·{' '}
+                          {item.student?.register_no} · {resolveDepartment(item.student)} ·{' '}
                           {formatDate(item.attendance?.attendance_date)}
                         </div>
                       </div>
