@@ -1,7 +1,7 @@
 import { CalendarIcon, CheckIcon, ClockIcon } from './Icons'
 import { formatDate } from '../utils/format'
 
-export default function AttendanceSuccess({ result, onDone, onAnother }) {
+export default function AttendanceSuccess({ result, onDone }) {
   const student = result?.student || {}
   const attendance = result?.attendance || {}
   const hasSubject = Boolean(attendance?.subject_id)
@@ -79,12 +79,9 @@ export default function AttendanceSuccess({ result, onDone, onAnother }) {
         )}
       </div>
 
-      <div className="mt-7 flex w-full max-w-sm flex-col gap-3 sm:flex-row">
-        <button type="button" onClick={onDone} className="auth-btn-primary flex-1">
+      <div className="mt-7 w-full max-w-sm">
+        <button type="button" onClick={onDone} className="auth-btn-primary w-full">
           Done
-        </button>
-        <button type="button" onClick={onAnother} className="auth-btn-secondary flex-1">
-          Mark Another Student
         </button>
       </div>
     </div>

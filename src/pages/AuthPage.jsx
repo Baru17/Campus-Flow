@@ -18,7 +18,7 @@ import { verifyOtpErrorMessage } from '../utils/messages'
 
 export default function AuthPage() {
   const navigate = useNavigate()
-  const { student: authenticatedStudent, logout } = useAuth()
+  const { student: authenticatedStudent } = useAuth()
   const [step, setStep] = useState('roles')
   const [studentId, setStudentId] = useState('')
   const [otp, setOtp] = useState('')
@@ -98,15 +98,6 @@ export default function AuthPage() {
     } finally {
       setVerifying(false)
     }
-  }
-
-  const handleAnother = async () => {
-    await logout()
-    setResult(null)
-    setOtp('')
-    setStudentId('')
-    setError(null)
-    setStep('student-login')
   }
 
   const canSubmitOtp = otp.length === OTP_LENGTH && !verifying
@@ -212,7 +203,6 @@ export default function AuthPage() {
             key="success"
             result={result}
             onDone={goRoles}
-            onAnother={handleAnother}
           />
         )
     }
