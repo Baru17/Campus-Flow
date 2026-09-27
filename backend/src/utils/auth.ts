@@ -17,6 +17,25 @@ export function getSessionCookie(c: any): string | null {
   return match ? match[1] : null;
 }
 
+/*
+ * A reverse proxy (Vite's dev/preview server, or the Cloudflare Pages Function
+ * in front of this Worker) re-originates the request over HTTPS, so
+ * `c.req.url` describes the hop to the Worker and not the hop to the browser.
+ * Cookie attributes have to match what the *browser* sees: marking a cookie
+ * `Secure; Partitioned; SameSite=None` for a page served over plain HTTP makes
+ * it a third-party cookie, and browsers drop those silently. The proxy
+ * therefore forwards `X-Forwarded-Proto` and we trust only an explicit `http`
+ * downgrade from it; anything else stays HTTPS, which is what Cloudflare's own
+ * edge reports.
+ */
+function isClientSecure(c: any): boolean {
+  const forwardedProto = c.req.header("X-Forwarded-Proto");
+  if (typeof forwardedProto === "string" && forwardedProto.split(",")[0].trim().toLowerCase() === "http") {
+    return false;
+  }
+  return new URL(c.req.url).protocol === "https:";
+}
+
 function buildCookieSuffix(isSecureRequest: boolean, maxAge: number): string {
   if (!isSecureRequest) {
     return `; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax`;
@@ -25,15 +44,13 @@ function buildCookieSuffix(isSecureRequest: boolean, maxAge: number): string {
 }
 
 export function setSessionCookie(c: any, token: string): void {
-  const isSecureRequest = new URL(c.req.url).protocol === "https:";
   const maxAge = Math.floor(SESSION_TTL_MS / 1000);
-  const cookieValue = `${COOKIE_NAME}=${token}${buildCookieSuffix(isSecureRequest, maxAge)}`;
+  const cookieValue = `${COOKIE_NAME}=${token}${buildCookieSuffix(isClientSecure(c), maxAge)}`;
   c.header("Set-Cookie", cookieValue);
 }
 
 export function clearSessionCookie(c: any): void {
-  const isSecureRequest = new URL(c.req.url).protocol === "https:";
-  const cookieValue = `${COOKIE_NAME}=${buildCookieSuffix(isSecureRequest, 0)}`;
+  const cookieValue = `${COOKIE_NAME}=${buildCookieSuffix(isClientSecure(c), 0)}`;
   c.header("Set-Cookie", cookieValue);
 }
 

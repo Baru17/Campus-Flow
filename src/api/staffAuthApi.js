@@ -1,4 +1,5 @@
 import { ApiError } from './attendanceApi'
+import { SESSION_NOT_STORED_MESSAGE } from './authApi'
 import { BACKEND_URL } from './backendUrl'
 
 const NOT_CONFIGURED_MESSAGE =
@@ -152,8 +153,23 @@ export async function staffLogin(identifier, password) {
       { code: 'unlinked-staff' }
     )
   }
+  /*
+   * The login response only proves the password was right. If the browser
+   * dropped the session cookie, every later call 401s while the dashboard looks
+   * signed in, so confirm the cookie round-tripped before handing back a user.
+   */
+  const verifiedUser = await getCurrentUser()
+  if (!verifiedUser) {
+    await apiRequest('/api/auth/staff/logout', { method: 'POST' }).catch(() => {})
+    throw new ApiError(SESSION_NOT_STORED_MESSAGE, { code: 'session-not-stored' })
+  }
+  const verifiedStaff = await getCurrentStaff(verifiedUser.id)
+  if (!verifiedStaff) {
+    await apiRequest('/api/auth/staff/logout', { method: 'POST' }).catch(() => {})
+    throw new ApiError(SESSION_NOT_STORED_MESSAGE, { code: 'session-not-stored' })
+  }
   const session = await getCurrentSession()
-  return { user: data.user, staff, session }
+  return { user: verifiedUser, staff: verifiedStaff, session }
 }
 
 export async function staffLogout() {

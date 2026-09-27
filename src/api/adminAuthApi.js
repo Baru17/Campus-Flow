@@ -1,4 +1,5 @@
 import { ApiError } from './attendanceApi'
+import { SESSION_NOT_STORED_MESSAGE } from './authApi'
 import { BACKEND_URL } from './backendUrl'
 
 const ADMIN_EMAIL = 'admin@kiot.ac.in'
@@ -101,7 +102,12 @@ export async function adminLogin(email, password) {
     await apiRequest('/api/auth/admin/logout', { method: 'POST' }).catch(() => {})
     throw new ApiError(UNAUTHORIZED_MESSAGE, { code: 'unauthorized' })
   }
-  return { user: data.user }
+  const verifiedUser = await getCurrentAdmin()
+  if (!verifiedUser) {
+    await apiRequest('/api/auth/admin/logout', { method: 'POST' }).catch(() => {})
+    throw new ApiError(SESSION_NOT_STORED_MESSAGE, { code: 'session-not-stored' })
+  }
+  return { user: verifiedUser }
 }
 
 export async function adminLogout() {

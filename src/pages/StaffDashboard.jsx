@@ -124,6 +124,14 @@ export default function StaffDashboard() {
         ...prev.map((item) => ({ ...item, expired: true })),
       ])
     } catch (err) {
+      if (err?.status === 401) {
+        // The session died server-side. Signing out is the only way out;
+        // leaving the dashboard rendered would just re-401 on every retry.
+        setGenerateError({ variant: 'warning', text: 'Your staff session has expired. Please sign in again.' })
+        await logout().catch(() => {})
+        navigate('/role-selection', { replace: true })
+        return
+      }
       setGenerateError(generateOtpErrorMessage(err))
     } finally {
       setGenerating(false)
