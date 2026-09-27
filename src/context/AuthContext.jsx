@@ -7,6 +7,7 @@ import {
   studentLogin,
   studentLogout,
   updatePassword,
+  validateResetToken,
 } from '../api/authApi'
 
 export default function AuthProvider({ children }) {
@@ -55,12 +56,21 @@ export default function AuthProvider({ children }) {
     return requestPasswordReset(studentId)
   }, [])
 
-  const changePassword = useCallback(async (newPassword) => {
-    return updatePassword(newPassword)
+  const changePassword = useCallback(async (token, newPassword) => {
+    return updatePassword(token, newPassword)
   }, [])
 
   const value = useMemo(
-    () => ({ user, student, loading, login, logout, resetPassword, changePassword }),
+    () => ({
+      user,
+      student,
+      loading,
+      login,
+      logout,
+      resetPassword,
+      changePassword,
+      validateResetToken,
+    }),
     [user, student, loading, login, logout, resetPassword, changePassword]
   )
 

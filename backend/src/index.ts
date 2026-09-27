@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import auth from "./api/auth";
+import passwordReset from "./api/passwordReset";
 import attendance, { finalizeSession } from "./api/attendance";
 import { requireAuth, requireClassAdvisor } from "./middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "./utils/databaseErrors";
@@ -8,6 +9,7 @@ import { getErrorMessageForLog, isTransientD1Error } from "./utils/databaseError
 type Bindings = {
   DB: D1Database;
   ALLOWED_ORIGINS?: string;
+  BREVO_API_KEY?: string;
   NODE_ENV?: string;
 };
 
@@ -58,6 +60,7 @@ app.use("/*", cors({
 }));
 
 app.route("/api/auth", auth);
+app.route("/api/auth", passwordReset);
 app.route("/api/attendance", attendance);
 
 app.get("/api/class-advisors", requireAuth, requireClassAdvisor, async (c) => {

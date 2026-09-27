@@ -60,8 +60,8 @@ export default function StaffAuthProvider({ children }) {
     return requestStaffPasswordReset(email)
   }, [])
 
-  const changePassword = useCallback(async (newPassword) => {
-    return updateStaffPassword(newPassword)
+  const changePassword = useCallback(async (token, newPassword) => {
+    return updateStaffPassword(token, newPassword)
   }, [])
 
   const value = useMemo(

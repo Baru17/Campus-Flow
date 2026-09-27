@@ -17,7 +17,8 @@ const INVALID_RESET_LINK_MESSAGE =
 
 const PASSWORD_UPDATED_MESSAGE = 'Your password has been updated successfully.'
 
-const RESET_SENT_MESSAGE = 'Password reset link has been sent to your staff email.'
+const RESET_SENT_MESSAGE =
+  'If an account matches, a password reset link has been sent to its registered email.'
 
 function assertBackend() {
   if (!BACKEND_URL) {
@@ -235,17 +236,17 @@ export async function requestStaffPasswordReset(email) {
   }
   const { data } = await apiRequest('/api/auth/staff/reset-password', {
     method: 'POST',
-    body: JSON.stringify({ email: value, redirectTo: `${window.location.origin}/reset-password` }),
+    body: JSON.stringify({ email: value }),
   })
   if (data?.error) throw mapAuthError(data, 'reset')
-  return RESET_SENT_MESSAGE
+  return data?.message || RESET_SENT_MESSAGE
 }
 
-export async function updateStaffPassword(newPassword) {
+export async function updateStaffPassword(token, newPassword) {
   assertBackend()
   const { data } = await apiRequest('/api/auth/staff/update-password', {
     method: 'POST',
-    body: JSON.stringify({ password: newPassword }),
+    body: JSON.stringify({ token: String(token || ''), password: newPassword }),
   })
   if (data?.error) throw mapAuthError(data, 'update-password')
   return PASSWORD_UPDATED_MESSAGE

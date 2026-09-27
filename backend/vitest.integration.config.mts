@@ -8,6 +8,10 @@ export default defineConfig({
 		}),
 	],
 	test: {
-		include: ["test/attendance.integration.spec.ts", "test/session-cookie.integration.spec.ts"],
+		include: [
+			"test/attendance.integration.spec.ts",
+			"test/session-cookie.integration.spec.ts",
+			"test/password-reset.integration.spec.ts",
+		],
 	},
 });

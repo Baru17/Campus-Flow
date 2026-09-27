@@ -1,6 +1,5 @@
 import { ApiError } from './attendanceApi'
 import { BACKEND_URL } from './backendUrl'
-import { STUDENT_EMAIL_DOMAIN } from '../constants'
 import { isValidStudentId, normalizeStudentId } from '../utils/validation'
 
 const NOT_CONFIGURED_MESSAGE =
@@ -22,20 +21,17 @@ const INVALID_RESET_LINK_MESSAGE =
 
 const PASSWORD_UPDATED_MESSAGE = 'Your password has been updated successfully.'
 
-const RESET_SENT_MESSAGE = 'Password reset link has been sent to your college email.'
+const RESET_SENT_MESSAGE =
+  'If an account matches, a password reset link has been sent to its registered email.'
+
+function looksLikeEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim())
+}
 
 function assertBackend() {
   if (!BACKEND_URL) {
     throw new ApiError(NOT_CONFIGURED_MESSAGE, { code: 'not-configured' })
   }
-}
-
-export function studentIdToEmail(studentId) {
-  const id = normalizeStudentId(studentId)
-  if (!isValidStudentId(id)) {
-    throw new ApiError('Please enter a valid student ID.', { code: 'invalid-student-id' })
-  }
-  return `${id.toLowerCase()}@${STUDENT_EMAIL_DOMAIN}`
 }
 
 function isNetworkError(error) {
@@ -102,8 +98,11 @@ function mapAuthError(error, kind = 'generic') {
   }
 
   if (kind === 'update-password') {
-    if (message.includes('auth session missing')) {
-      return new ApiError(INVALID_RESET_LINK_MESSAGE, { code: 'reset-link-invalid' })
+    if (code === 'invalid-reset-token' || code === 'weak-password' || message.includes('auth session missing')) {
+      return new ApiError(
+        code === 'weak-password' ? error.message : INVALID_RESET_LINK_MESSAGE,
+        { code: code || 'reset-link-invalid' }
+      )
     }
     return new ApiError(RESET_FAILED_MESSAGE, { code: 'reset-failed' })
   }
@@ -196,20 +195,41 @@ export function onAuthStateChange(callback) {
 
 export async function requestPasswordReset(studentId) {
   assertBackend()
-  const email = studentIdToEmail(studentId)
+  const identifier = String(studentId || '').trim()
+  if (!isValidStudentId(normalizeStudentId(identifier)) && !looksLikeEmail(identifier)) {
+    throw new ApiError('Please enter a valid student ID or college email.', {
+      code: 'invalid-student-id',
+    })
+  }
   const { data } = await apiRequest('/api/auth/reset-password', {
     method: 'POST',
-    body: JSON.stringify({ email, redirectTo: `${window.location.origin}/reset-password` }),
+    body: JSON.stringify({ studentId: identifier }),
   })
   if (data?.error) throw mapAuthError(data, 'reset')
-  return RESET_SENT_MESSAGE
+  return data?.message || RESET_SENT_MESSAGE
 }
 
-export async function updatePassword(newPassword) {
+/*
+ * Asks the server whether a reset link is still usable. The token is sent in the
+ * body rather than a query string so it stays out of proxy and access logs.
+ */
+export async function validateResetToken(token) {
+  assertBackend()
+  const { data } = await apiRequest('/api/auth/validate-reset-token', {
+    method: 'POST',
+    body: JSON.stringify({ token: String(token || '') }),
+  })
+  if (!data?.success || !data?.role) {
+    throw new ApiError(INVALID_RESET_LINK_MESSAGE, { code: 'invalid-reset-token' })
+  }
+  return data.role
+}
+
+export async function updatePassword(token, newPassword) {
   assertBackend()
   const { data } = await apiRequest('/api/auth/update-password', {
     method: 'POST',
-    body: JSON.stringify({ password: newPassword }),
+    body: JSON.stringify({ token: String(token || ''), password: newPassword }),
   })
   if (data?.error) throw mapAuthError(data, 'update-password')
   return PASSWORD_UPDATED_MESSAGE

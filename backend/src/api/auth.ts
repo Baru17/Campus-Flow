@@ -332,21 +332,11 @@ app.get("/staff/:authUserId", requireAuth, requireStaff, async (c) => {
   }
 });
 
-app.post("/reset-password", requireAuth, async (c) => {
-  return c.json({ success: false, error: "Password reset requires an email provider. Configure EMAIL_SENDER and EMAIL_PASSWORD secrets.", code: "email-provider-required" }, 501);
-});
-
-app.post("/update-password", requireAuth, async (c) => {
-  return c.json({ success: false, error: "Password update requires an email provider. Configure EMAIL_SENDER and EMAIL_PASSWORD secrets.", code: "email-provider-required" }, 501);
-});
-
-app.post("/staff/reset-password", requireAuth, requireStaff, async (c) => {
-  return c.json({ success: false, error: "Password reset requires an email provider. Configure EMAIL_SENDER and EMAIL_PASSWORD secrets.", code: "email-provider-required" }, 501);
-});
-
-app.post("/staff/update-password", requireAuth, requireStaff, async (c) => {
-  return c.json({ success: false, error: "Password update requires an email provider. Configure EMAIL_SENDER and EMAIL_PASSWORD secrets.", code: "email-provider-required" }, 501);
-});
+/*
+ * Password reset lives in ./passwordReset and is mounted on the same /api/auth
+ * prefix. Those routes authorize with a one-time emailed token instead of the
+ * session cookie, so they are not guarded by requireAuth.
+ */
 
 app.get("/auth/student", requireAuth, requireStudent, async (c) => {
   try {

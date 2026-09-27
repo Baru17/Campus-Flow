@@ -1,20 +1,32 @@
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import BrandPanel from '../components/BrandPanel'
 import { CheckIcon, ChevronRightIcon, EyeIcon, EyeOffIcon, KeyIcon, LockIcon, LogoIcon } from '../components/Icons'
 import StatusMessage from '../components/StatusMessage'
 import { ApiError } from '../api/attendanceApi'
-import { getCurrentSession } from '../api/authApi'
 import { MIN_PASSWORD_LENGTH } from '../constants'
 import { useAuth } from '../hooks/useAuth'
+import { useStaffAuth } from '../hooks/useStaffAuth'
 
-const CHECKING_DELAY_MS = 2500
-
+/*
+ * Reached from the emailed link only. The one-time token arrives in the query
+ * string, is held in component state for the lifetime of the page, and is never
+ * written to localStorage or sessionStorage. No login session is required,
+ * which is the whole point of the flow.
+ */
 export default function ResetPassword() {
   const navigate = useNavigate()
-  const { changePassword } = useAuth()
+  const [searchParams] = useSearchParams()
+  const {
+    changePassword: changeStudentPassword,
+    validateResetToken,
+  } = useAuth()
+  const { changePassword: changeStaffPassword } = useStaffAuth()
 
-  const [sessionReady, setSessionReady] = useState(null)
+  const tokenRef = useRef(searchParams.get('token') || '')
+
+  const [tokenStatus, setTokenStatus] = useState('checking')
+  const [resetRole, setResetRole] = useState(null)
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -24,23 +36,40 @@ export default function ResetPassword() {
 
   useEffect(() => {
     let active = true
+    const token = tokenRef.current
 
-    const checkSession = () => {
-      getCurrentSession().then((session) => {
-        if (active) setSessionReady(Boolean(session))
-      })
+    if (!token) {
+      setTokenStatus('invalid')
+      return () => {
+        active = false
+      }
     }
 
-    checkSession()
-    const fallback = setTimeout(() => {
-      if (active) setSessionReady((ready) => ready ?? false)
-    }, CHECKING_DELAY_MS)
+    validateResetToken(token)
+      .then((role) => {
+        if (!active) return
+        setResetRole(role)
+        setTokenStatus('ready')
+      })
+      .catch(() => {
+        if (!active) return
+        setTokenStatus('invalid')
+      })
 
     return () => {
       active = false
-      clearTimeout(fallback)
     }
-  }, [])
+  }, [validateResetToken])
+
+  const submitPasswordChange = useCallback(
+    async (token, password) => {
+      if (resetRole === 'staff' || resetRole === 'class_advisor') {
+        return changeStaffPassword(token, password)
+      }
+      return changeStudentPassword(token, password)
+    },
+    [resetRole, changeStaffPassword, changeStudentPassword]
+  )
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -59,9 +88,15 @@ export default function ResetPassword() {
     }
     setLoading(true)
     try {
-      await changePassword(newPassword)
+      await submitPasswordChange(tokenRef.current, newPassword)
+      setNewPassword('')
+      setConfirmPassword('')
       setSuccess(true)
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'invalid-reset-token') {
+        setTokenStatus('invalid')
+        return
+      }
       setError(
         err instanceof ApiError
           ? err.message
@@ -110,7 +145,7 @@ export default function ResetPassword() {
                   <p className="mt-0.5 text-sm text-slate-500">
                     {success
                       ? 'Your password has been changed.'
-                      : 'Create a new password for your student account.'}
+                      : 'Create a new password for your account.'}
                   </p>
                 </div>
               </div>
@@ -133,17 +168,23 @@ export default function ResetPassword() {
                     </button>
                   </div>
                 </div>
-              ) : sessionReady === false ? (
+              ) : tokenStatus === 'invalid' ? (
                 <div className="mt-8">
                   <StatusMessage variant="danger">
-                    Your password reset link is invalid or has expired. Please request a new one
-                    from the student login screen.
+                    This password reset link is invalid or has expired. Reset links can only be
+                    used once and expire after 30 minutes. Please request a new one from the login
+                    screen.
                   </StatusMessage>
                   <div className="mt-7 w-full max-w-sm">
                     <button type="button" onClick={goHome} className="auth-btn-primary w-full">
                       Go to Login
                     </button>
                   </div>
+                </div>
+              ) : tokenStatus === 'checking' ? (
+                <div className="mt-8 flex items-center gap-3 text-sm font-medium text-slate-500">
+                  <span className="cf-spinner" role="status" aria-hidden="true" />
+                  Checking your reset link…
                 </div>
               ) : (
                 <form onSubmit={handleSubmit} className="mt-8 space-y-5" noValidate>
@@ -197,7 +238,7 @@ export default function ResetPassword() {
                           setError(null)
                         }}
                         placeholder="Re-enter your new password"
-                        className="auth-input pr-12"
+                        className="auth-input"
                         autoComplete="new-password"
                       />
                     </div>
