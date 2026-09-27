@@ -14,7 +14,7 @@ export default defineConfig({
 			"**/cypress/**",
 			"**/.{idea,git,cache,output,temp}/**",
 			"**/coverage/**",
-			"test/attendance.integration.spec.ts",
+			"test/*.integration.spec.ts",
 		],
 	},
 });

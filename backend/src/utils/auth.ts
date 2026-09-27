@@ -26,11 +26,12 @@ export function getSessionCookie(c: any): string | null {
  * it a third-party cookie, and browsers drop those silently. The proxy
  * therefore forwards `X-Forwarded-Proto` and we trust only an explicit `http`
  * downgrade from it; anything else stays HTTPS, which is what Cloudflare's own
- * edge reports.
+ * edge reports. An ambiguous value (a comma-joined proxy chain) is treated as
+ * HTTPS, so the cookie never silently loses `Secure` on a guess.
  */
 function isClientSecure(c: any): boolean {
   const forwardedProto = c.req.header("X-Forwarded-Proto");
-  if (typeof forwardedProto === "string" && forwardedProto.split(",")[0].trim().toLowerCase() === "http") {
+  if (typeof forwardedProto === "string" && forwardedProto.trim().toLowerCase() === "http") {
     return false;
   }
   return new URL(c.req.url).protocol === "https:";
