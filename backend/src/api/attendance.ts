@@ -190,17 +190,18 @@ attendance.post(
       /*
        * Verify staff
        *
-       * The staff record has to exist and carry a usable department of its own,
-       * but its department is deliberately NOT compared with the department being
-       * attended. Any signed-in staff member may take attendance for any
-       * configured department; the department in the form is the class being
-       * marked, not an assertion about who is allowed to mark it.
+       * The staff record has to exist. Its department is deliberately NOT read
+       * here: any signed-in staff member may take attendance for any configured
+       * department, so the department on the staff row is never a prerequisite
+       * for the request and is not validated against the supported list. The
+       * department in the form is the class being marked, not an assertion about
+       * who is allowed to mark it.
        *
-       * What actually authorises the request is the allow-list below: only
-       * department+batch pairs that resolve to real tables are accepted, so
-       * lifting the department equality check does not open up an unconfigured
-       * department. `staff.department` remains meaningful for the staff profile
-       * and for class-advisor assignments.
+       * What authorises the request is the role check in the middleware plus the
+       * allow-list below: only department+batch pairs that resolve to real tables
+       * are accepted, so an unconfigured department is still refused. The staff
+       * row's own department stays meaningful for the staff profile and for
+       * class-advisor assignments, which read it elsewhere.
        */
 
       const staff = await c.env.DB
@@ -221,19 +222,6 @@ attendance.post(
             code: "staff-not-found",
           },
           404
-        );
-      }
-
-      const staffDepartment = normalizeDepartment(staff.department);
-
-      if (!staffDepartment) {
-        return c.json(
-          {
-            success: false,
-            error: "Your staff record has no usable department assigned",
-            code: "staff-department-invalid",
-          },
-          403
         );
       }
 

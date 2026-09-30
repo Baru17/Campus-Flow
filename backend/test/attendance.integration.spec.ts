@@ -1030,3 +1030,132 @@ it("does not let a subject from another department be used", async () => {
 		expect(((await response.json()) as { code: string }).code).toBe("forbidden");
 	});
 });
+
+/*
+ * Regression cover for the removal of the `staff-department-invalid` guard.
+ *
+ * That guard ran `normalizeDepartment(staff.department)` and refused the request
+ * when the staff member's own department was not one of the canonical tokens.
+ * The fixtures used by the other blocks in this file all set a canonical
+ * department ('IT' / 'CSE'), so they would still pass with the guard in place
+ * and cannot detect its removal. The account seeded here therefore carries a
+ * department string that normalizeDepartment rejects, which is also what the
+ * admin CSV import can actually produce: validateStaffRows requires only
+ * staff_name and email and never constrains department.
+ */
+describe("staff profile department is not a prerequisite for generating", () => {
+	const profileSuffix = crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase();
+	const profileStaffId = `DSPF${profileSuffix}`;
+	const profileSubject = `DSPF${profileSuffix}`;
+	const profileDepartment = "Information Technology";
+	let profileAuthUserId = "";
+	const profileSessionIds: string[] = [];
+
+	function postGenerate(cookie: string, body: Record<string, unknown>): Promise<Response> {
+		return SELF.fetch("https://example.com/api/attendance/generate", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Cookie: `campus-flow-session=${cookie}` },
+			body: JSON.stringify(body),
+		});
+	}
+
+	beforeAll(async () => {
+		await seedTestAccounts();
+		profileAuthUserId = crypto.randomUUID();
+		const profileEmail = `ds-profile-${profileSuffix.toLowerCase()}@dept.invalid`;
+
+		await runBatch([
+			env.DB.prepare(
+				"INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email) VALUES (?, ?, 'test-hash', 'staff', ?)",
+			).bind(profileAuthUserId, profileStaffId, profileEmail),
+			env.DB.prepare(
+				"INSERT INTO staff (staff_id, staff_name, email, department, auth_user_id) VALUES (?, 'Profile Dept Staff', ?, ?, ?)",
+			).bind(profileStaffId, profileEmail, profileDepartment, profileAuthUserId),
+			env.DB.prepare(
+				"INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)",
+			).bind(hashToken("dept-profile-cookie"), profileAuthUserId, new Date(Date.now() + 60 * 60_000).toISOString()),
+			env.DB.prepare(
+				"INSERT INTO subjects (subject_code, subject_name) VALUES (?, 'Profile Dept Independent Subject')",
+			).bind(profileSubject),
+		]);
+	});
+
+	afterAll(async () => {
+		const cleanup: D1PreparedStatement[] = [];
+		for (const sessionId of profileSessionIds) {
+			cleanup.push(
+				env.DB.prepare("DELETE FROM attendance_session WHERE session_id = ?").bind(sessionId),
+				env.DB.prepare("DELETE FROM CSE_Attendance_2026_2030 WHERE session_id = ?").bind(sessionId),
+			);
+		}
+		cleanup.push(
+			env.DB.prepare("DELETE FROM subjects WHERE subject_code = ?").bind(profileSubject),
+			env.DB.prepare("DELETE FROM auth_sessions WHERE auth_user_id = ?").bind(profileAuthUserId),
+			env.DB.prepare("DELETE FROM staff WHERE staff_id = ?").bind(profileStaffId),
+			env.DB.prepare("DELETE FROM auth_users WHERE auth_user_id = ?").bind(profileAuthUserId),
+		);
+		await runBatch(cleanup);
+	});
+
+	it("generates for a configured CSE batch even though the staff department is not a canonical token", async () => {
+		// IT staff account (its profile department is a free-text import value),
+		// requested department CSE, configured batch 2026_2030 -> must succeed.
+		const response = await postGenerate("dept-profile-cookie", {
+			subject_code: profileSubject,
+			period: 1,
+			year: 1,
+			section: "A",
+			department: "CSE",
+			batch: "2026_2030",
+		});
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { success: boolean; session: Record<string, unknown> };
+		expect(body.success).toBe(true);
+		expect(body.session.department).toBe("CSE");
+		expect(body.session.batch).toBe("2026_2030");
+
+		// The router follows the requested department, not the staff profile.
+		const stored = await env.DB
+			.prepare("SELECT attendance_table, department, batch FROM attendance_session WHERE session_id = ?")
+			.bind(body.session.session_id as string)
+			.first<{ attendance_table: string; department: string; batch: string }>();
+		expect(stored?.attendance_table).toBe("CSE_Attendance_2026_2030");
+		expect(stored?.department).toBe("CSE");
+		expect(stored?.batch).toBe("2026_2030");
+		profileSessionIds.push(body.session.session_id as string);
+	});
+
+	it("still rejects an unconfigured department/batch combination for the same account", async () => {
+		// CSE has no 2024_2028 batch. Dropping the staff-department prerequisite
+		// must not turn that into a success or a different error: the controlled
+		// allow-list is what refuses it.
+		const response = await postGenerate("dept-profile-cookie", {
+			subject_code: profileSubject,
+			period: 1,
+			year: 3,
+			section: "A",
+			department: "CSE",
+			batch: "2024_2028",
+		});
+
+		expect(response.status).toBe(400);
+		expect(((await response.json()) as { code: string }).code).toBe("batch-not-configured");
+	});
+
+	it("still refuses a student, so removing the department prerequisite did not weaken the role check", async () => {
+		// The guard that was removed validated a profile field, never a permission.
+		// A student must still be stopped by requireStaff before anything else runs.
+		const response = await postGenerate(students[0].token, {
+			subject_code: profileSubject,
+			period: 1,
+			year: 1,
+			section: "A",
+			department: "CSE",
+			batch: "2026_2030",
+		});
+
+		expect(response.status).toBe(403);
+		expect(((await response.json()) as { code: string }).code).toBe("forbidden");
+	});
+});
