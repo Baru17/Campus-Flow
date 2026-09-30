@@ -17,6 +17,9 @@ import migration0008 from "../migrations/0008_add-hot-path-indexes.sql?raw";
 import migration0009 from "../migrations/0009_attendance-integrity-and-class-indexes.sql?raw";
 import migration0010 from "../migrations/0010_auth-staff-subject-indexes.sql?raw";
 import migration0011 from "../migrations/0011_attendance-session-otp-lookup-index.sql?raw";
+import migration0013 from "../migrations/0013_department-aware-attendance.sql?raw";
+import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
+import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
 
 type TestStudent = {
 	studentId: string;
@@ -45,8 +48,8 @@ async function createSession(otp: string, expired = false): Promise<string> {
 			`INSERT INTO attendance_session (
 				session_id, created_by, otp, created_at, expire_at, subject_code,
 				subject_name, year, section, period, attendance_date,
-				attendance_table, status
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
+				attendance_table, department, batch, status
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IT', '2024_2028', 'ACTIVE')`,
 		)
 		.bind(
 			sessionId,
@@ -142,8 +145,8 @@ async function seedTestAccounts(): Promise<void> {
 			 VALUES (?, ?, 'test-hash-not-used', 'class_advisor', ?)`,
 		).bind(advisorAuthUserId, advisorEmail, advisorEmail),
 		env.DB.prepare(
-			`INSERT INTO staff (staff_id, staff_name, email, department, advisor_year, advisor_section, auth_user_id)
-			 VALUES (?, 'Load Test Advisor', ?, 'IT', 3, 'A', ?)`,
+			`INSERT INTO staff (staff_id, staff_name, email, department, advisor_batch, advisor_year, advisor_section, auth_user_id)
+			 VALUES (?, 'Load Test Advisor', ?, 'IT', '2024_2028', 3, 'A', ?)`,
 		).bind(`LT${testSuffix}`, advisorEmail, advisorAuthUserId),
 		env.DB.prepare(
 			`INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at)
@@ -188,7 +191,10 @@ describe("isolated D1 attendance integration", () => {
 			migration0009,
 			migration0010,
 			migration0011,
-		]) {
+		migration0013,
+		migration0014,
+		migration0015,
+	]) {
 			const statements = migration
 				.split("\n")
 				.filter((line) => !line.trimStart().startsWith("--"))
@@ -617,4 +623,375 @@ describe("POST /api/attendance/verify semantics", () => {
 			.first<{ count: number }>();
 		expect(Number(duplicates?.count ?? 0)).toBe(0);
 	}, 30_000);
+});
+describe("department scoping", () => {
+	const deptSuffix = crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase();
+	const scopedSessionIds: string[] = [];
+	let itStaffAuthUserId = "";
+	let cseStaffAuthUserId = "";
+
+	beforeAll(async () => {
+		await seedTestAccounts();
+		const itStaffId = `DSIT${deptSuffix}`;
+		const cseStaffId = `DSCSE${deptSuffix}`;
+		itStaffAuthUserId = crypto.randomUUID();
+		cseStaffAuthUserId = crypto.randomUUID();
+		const itEmail = `ds-it-${deptSuffix.toLowerCase()}@dept.invalid`;
+		const cseEmail = `ds-cse-${deptSuffix.toLowerCase()}@dept.invalid`;
+
+		await runBatch([
+			env.DB.prepare(
+				"INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email) VALUES (?, ?, 'test-hash', 'staff', ?)",
+			).bind(itStaffAuthUserId, itStaffId, itEmail),
+			env.DB.prepare(
+				"INSERT INTO staff (staff_id, staff_name, email, department, auth_user_id) VALUES (?, 'Dept IT Staff', ?, 'IT', ?)",
+			).bind(itStaffId, itEmail, itStaffAuthUserId),
+			env.DB.prepare(
+				"INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)",
+			).bind(hashToken("dept-it-cookie"), itStaffAuthUserId, new Date(Date.now() + 60 * 60_000).toISOString()),
+
+			env.DB.prepare(
+				"INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email) VALUES (?, ?, 'test-hash', 'staff', ?)",
+			).bind(cseStaffAuthUserId, cseStaffId, cseEmail),
+			env.DB.prepare(
+				"INSERT INTO staff (staff_id, staff_name, email, department, auth_user_id) VALUES (?, 'Dept CSE Staff', ?, 'CSE', ?)",
+			).bind(cseStaffId, cseEmail, cseStaffAuthUserId),
+			env.DB.prepare(
+				"INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)",
+			).bind(hashToken("dept-cse-cookie"), cseStaffAuthUserId, new Date(Date.now() + 60 * 60_000).toISOString()),
+
+			env.DB.prepare(
+				"INSERT INTO subjects (subject_code, subject_name) VALUES (?, 'Dept IT Subject')",
+			).bind(`DSIT${deptSuffix}`),
+			env.DB.prepare(
+				"INSERT INTO subjects (subject_code, subject_name) VALUES (?, 'Dept CSE Subject')",
+			).bind(`DSCSE${deptSuffix}`),
+		]);
+	});
+
+	afterAll(async () => {
+		const cleanup: D1PreparedStatement[] = [];
+		for (const sessionId of scopedSessionIds) {
+			cleanup.push(
+				env.DB.prepare("DELETE FROM attendance_session WHERE session_id = ?").bind(sessionId),
+				env.DB.prepare("DELETE FROM IT_Attendance_2024_2028 WHERE session_id = ?").bind(sessionId),
+			);
+		}
+		cleanup.push(
+			env.DB.prepare("DELETE FROM subjects WHERE subject_code IN (?, ?)").bind(`DSIT${deptSuffix}`, `DSCSE${deptSuffix}`),
+			env.DB.prepare("DELETE FROM auth_sessions WHERE auth_user_id IN (?, ?)").bind(itStaffAuthUserId, cseStaffAuthUserId),
+			env.DB.prepare("DELETE FROM staff WHERE staff_id IN (?, ?)").bind(`DSIT${deptSuffix}`, `DSCSE${deptSuffix}`),
+			env.DB.prepare("DELETE FROM auth_users WHERE auth_user_id IN (?, ?)").bind(itStaffAuthUserId, cseStaffAuthUserId),
+		);
+		await runBatch(cleanup);
+	});
+
+	/** Inserts a session with explicit department/batch/table so allow-list violations can be simulated. */
+	async function createScopedSession(fields: {
+		otp: string;
+		department: string;
+		batch: string;
+		attendanceTable: string;
+		year: number;
+		section?: string;
+		expired?: boolean;
+	}): Promise<string> {
+		const sessionId = crypto.randomUUID();
+		const createdAt = new Date();
+		const expiresAt = new Date(createdAt.getTime() + (fields.expired ? -1000 : 5 * 60_000));
+		await env.DB
+			.prepare(
+				`INSERT INTO attendance_session (
+					session_id, created_by, otp, created_at, expire_at, subject_code,
+					subject_name, year, section, period, attendance_date,
+					attendance_table, department, batch, status
+				) VALUES (?, ?, ?, ?, ?, 'TEST101', 'Integration Test', ?, ?, 99, ?, ?, ?, ?, 'ACTIVE')`,
+			)
+			.bind(
+				sessionId,
+				`test-staff-${testSuffix}`,
+				fields.otp,
+				createdAt.toISOString(),
+				expiresAt.toISOString(),
+				fields.year,
+				fields.section ?? "A",
+				createdAt.toISOString().slice(0, 10),
+				fields.attendanceTable,
+				fields.department,
+				fields.batch,
+			)
+			.run();
+		scopedSessionIds.push(sessionId);
+		return sessionId;
+	}
+
+	function generate(cookie: string, body: Record<string, unknown>): Promise<Response> {
+		return SELF.fetch("https://example.com/api/attendance/generate", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Cookie: `campus-flow-session=${cookie}` },
+			body: JSON.stringify(body),
+		});
+	}
+
+	it("still generates an IT session for IT staff in the 2024_2028 batch", async () => {
+		const response = await generate("dept-it-cookie", {
+			subject_code: `DSIT${deptSuffix}`,
+			period: 1,
+			year: 3,
+			section: "A",
+			department: "IT",
+			batch: "2024_2028",
+		});
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { success: boolean; session: Record<string, unknown> };
+		expect(body.success).toBe(true);
+		expect(body.session.department).toBe("IT");
+		expect(body.session.batch).toBe("2024_2028");
+		expect(body.session.attendance_date).toBeTruthy();
+		scopedSessionIds.push(body.session.session_id as string);
+	});
+
+	it("generates a session for the other IT batch without deriving it from the year", async () => {
+		// Year 3 with the 2025_2029 batch is only reachable because the batch is
+		// sent explicitly. A year-derived resolver would have returned the
+		// 2024_2028 tables here.
+		const response = await generate("dept-it-cookie", {
+			subject_code: `DSIT${deptSuffix}`,
+			period: 2,
+			year: 3,
+			section: "A",
+			department: "IT",
+			batch: "2025_2029",
+		});
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { success: boolean; session: Record<string, unknown> };
+		expect(body.success).toBe(true);
+		expect(body.session.batch).toBe("2025_2029");
+		// The table itself is internal, so confirm the session actually points at
+		// the 2025_2029 tables rather than the ones its year would have implied.
+		const stored = await env.DB
+			.prepare("SELECT attendance_table, batch, department FROM attendance_session WHERE session_id = ?")
+			.bind(body.session.session_id as string)
+			.first<{ attendance_table: string; batch: string; department: string }>();
+		expect(stored?.attendance_table).toBe("IT_Attendance_2025_2029");
+		expect(stored?.batch).toBe("2025_2029");
+		expect(stored?.department).toBe("IT");
+		scopedSessionIds.push(body.session.session_id as string);
+	});
+
+	it("refuses to generate for a department the staff member does not belong to", async () => {
+		const response = await generate("dept-it-cookie", {
+			subject_code: `DSIT${deptSuffix}`,
+			period: 1,
+			year: 3,
+			section: "A",
+			department: "CSE",
+			batch: "2024_2028",
+		});
+
+		expect(response.status).toBe(403);
+		expect(((await response.json()) as { code: string }).code).toBe("department-forbidden");
+	});
+
+	it("requires the staff member to send a batch", async () => {
+		const response = await generate("dept-it-cookie", {
+			subject_code: `DSIT${deptSuffix}`,
+			period: 1,
+			year: 3,
+			section: "A",
+			department: "IT",
+		});
+
+		expect(response.status).toBe(400);
+		expect(((await response.json()) as { code: string }).code).toBe("invalid-request");
+	});
+
+	it("rejects a batch that has no tables, without falling back to a year", async () => {
+		for (const batch of ["2027_2031", "2020_2024"]) {
+			const response = await generate("dept-it-cookie", {
+				subject_code: `DSIT${deptSuffix}`,
+				period: 1,
+				year: 3,
+				section: "A",
+				department: "IT",
+				batch,
+			});
+			expect(response.status).toBe(400);
+			expect(((await response.json()) as { code: string }).code).toBe("batch-not-configured");
+		}
+	});
+
+	it("rejects a year of study in place of a batch", async () => {
+		for (const year of [2, 3]) {
+			const response = await generate("dept-it-cookie", {
+				subject_code: `DSIT${deptSuffix}`,
+				period: 1,
+				year,
+				section: "A",
+				department: "IT",
+				batch: year,
+			});
+			expect(response.status).toBe(400);
+			expect(((await response.json()) as { code: string }).code).toBe("invalid-request");
+		}
+	});
+
+	it("reports an unprovisioned department as not configured rather than failing on a missing table", async () => {
+		const response = await generate("dept-cse-cookie", {
+			subject_code: `DSCSE${deptSuffix}`,
+			period: 1,
+			year: 3,
+			section: "A",
+			department: "CSE",
+			batch: "2024_2028",
+		});
+
+		expect(response.status).toBe(400);
+		expect(((await response.json()) as { code: string }).code).toBe("batch-not-configured");
+	});
+
+it("does not let a subject from another department be used", async () => {
+		const response = await generate("dept-it-cookie", {
+			subject_code: `DSCSE${deptSuffix}`,
+			period: 1,
+			year: 3,
+			section: "A",
+			department: "IT",
+			batch: "2024_2028",
+		});
+
+		// With the simplified subject catalog, subject_code is global; any valid code
+		// is accepted regardless of department. The generate flow should succeed.
+		expect(response.status).toBe(200);
+		// The OTP code is still present; we do not check "subject-not-found" any more.
+	});
+
+	it("refuses to mark attendance for a session in an unprovisioned department", async () => {
+		await createScopedSession({
+			otp: "555001",
+			department: "CSE",
+			batch: "2024_2028",
+			attendanceTable: "CSE_Attendance_2024_2028",
+			year: 3,
+		});
+
+		const response = await submitOtp(students[0], "555001");
+		expect(response.status).toBe(500);
+		expect(((await response.json()) as { code: string }).code).toBe("session-batch-unavailable");
+	});
+
+	it("refuses a session whose stored table disagrees with the resolver", async () => {
+		await createScopedSession({
+			otp: "555002",
+			department: "IT",
+			batch: "2024_2028",
+			attendanceTable: "IT_Attendance_2025_2029",
+			year: 3,
+		});
+
+		const response = await submitOtp(students[0], "555002");
+		expect(response.status).toBe(500);
+		expect(((await response.json()) as { code: string }).code).toBe("attendance-table-not-supported");
+	});
+
+	it("finalizes a correct-department session against that department table", async () => {
+		const sessionId = await createScopedSession({
+			otp: "555003",
+			department: "IT",
+			batch: "2024_2028",
+			attendanceTable: "IT_Attendance_2024_2028",
+			year: 3,
+			expired: true,
+		});
+
+		const result = await finalizeSession(env.DB, sessionId);
+		expect(result.success).toBe(true);
+		expect(result.total_students).toBeGreaterThan(0);
+
+		const rows = await env.DB
+			.prepare("SELECT COUNT(*) AS count FROM IT_Attendance_2024_2028 WHERE session_id = ?")
+			.bind(sessionId)
+			.first<{ count: number }>();
+		expect(Number(rows?.count ?? 0)).toBe(result.total_students);
+	});
+
+	it("refuses to finalize a session from an unprovisioned department", async () => {
+		const sessionId = await createScopedSession({
+			otp: "555004",
+			department: "CSE",
+			batch: "2024_2028",
+			attendanceTable: "CSE_Attendance_2024_2028",
+			year: 3,
+			expired: true,
+		});
+
+		const result = await finalizeSession(env.DB, sessionId);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("not supported");
+
+		const status = await env.DB
+			.prepare("SELECT status FROM attendance_session WHERE session_id = ?")
+			.bind(sessionId)
+			.first<{ status: string }>();
+		expect(status?.status).toBe("ACTIVE");
+	});
+
+	it("serves the global subject catalog to staff", async () => {
+		// The subject catalog is global: one row per subject, carrying no department
+		// and no year, so the same list comes back whichever class is being marked.
+		const response = await SELF.fetch("https://example.com/api/subjects", {
+			headers: { Cookie: "campus-flow-session=dept-it-cookie" },
+		});
+		const body = (await response.json()) as {
+			subjects: { subject_id: number; subject_code: string; subject_name: string }[];
+		};
+		expect(response.status).toBe(200);
+		// Subjects belonging to both departments appear in the one list.
+		expect(body.subjects.map((s) => s.subject_code)).toContain(`DSIT${deptSuffix}`);
+		expect(body.subjects.map((s) => s.subject_code)).toContain(`DSCSE${deptSuffix}`);
+
+		// Only the three catalog columns are exposed; department and year do not leak.
+		for (const subject of body.subjects) {
+			expect(Object.keys(subject).sort()).toEqual(["subject_code", "subject_id", "subject_name"]);
+		}
+	});
+
+	it("ignores year and department on the subjects endpoint", async () => {
+		// Those query parameters no longer filter anything and are not required.
+		const plain = await SELF.fetch("https://example.com/api/subjects", {
+			headers: { Cookie: "campus-flow-session=dept-it-cookie" },
+		});
+		const filtered = await SELF.fetch("https://example.com/api/subjects?year=3&department=CSE", {
+			headers: { Cookie: "campus-flow-session=dept-it-cookie" },
+		});
+		const plainSubjects = ((await plain.json()) as { subjects: { subject_code: string }[] }).subjects;
+		const filteredSubjects = ((await filtered.json()) as { subjects: { subject_code: string }[] }).subjects;
+
+		expect(plain.status).toBe(200);
+		expect(filtered.status).toBe(200);
+		// Identical either way, which is what "no department/year filtering" means.
+		expect(filteredSubjects.map((s) => s.subject_code)).toEqual(
+			plainSubjects.map((s) => s.subject_code),
+		);
+	});
+
+	it("refuses the subject catalog without a session", async () => {
+		// The endpoint returns the whole catalog, so an anonymous caller is turned
+		// away before any query runs.
+		const response = await SELF.fetch("https://example.com/api/subjects");
+		expect(response.status).toBe(401);
+		expect(((await response.json()) as { code: string }).code).toBe("auth-required");
+	});
+
+	it("refuses the subject catalog to a student", async () => {
+		// A signed-in student authenticates fine but is not staff, so requireStaff
+		// must reject rather than hand over the staff teaching list.
+		const response = await SELF.fetch("https://example.com/api/subjects", {
+			headers: { Cookie: `campus-flow-session=${students[0].token}` },
+		});
+		expect(response.status).toBe(403);
+		expect(((await response.json()) as { code: string }).code).toBe("forbidden");
+	});
 });

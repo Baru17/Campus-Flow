@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { hashToken, generateToken, setSessionCookie, clearSessionCookie, getSessionExpiry, getSessionCookie } from "../utils/auth";
 import { requireAuth, requireRole, requireStaff, requireAdmin, requireStudent, type AuthUser } from "../middleware/auth";
 import { isTransientD1Error } from "../utils/databaseErrors";
+import { assertAllowedStudentTable, listAllowedStudentTables } from "../utils/tableResolver";
 
 const app = new Hono<{ Bindings: { DB: D1Database } }>();
 
@@ -72,15 +73,14 @@ app.post("/login", async (c) => {
       return c.json({ success: false, error: "Invalid username or password", code: "invalid_credentials" }, 401);
     }
 
-    const studentTables = ["IT_Students_2024_2028", "IT_Students_2025_2029"];
     let student = null;
-    for (const table of studentTables) {
+    for (const tables of listAllowedStudentTables()) {
       const s = await c.env.DB
-        .prepare(`SELECT id, student_id, register_no, student_name, year, section, email, created_at, auth_user_id FROM ${table} WHERE auth_user_id = ? LIMIT 1`)
+        .prepare(`SELECT id, student_id, register_no, student_name, year, section, email, created_at, auth_user_id FROM ${assertAllowedStudentTable(tables.studentTable)} WHERE auth_user_id = ? LIMIT 1`)
         .bind(user.auth_user_id)
         .first();
       if (s) {
-        student = { ...s, department: "IT", batch: table.replace("IT_Students_", "") };
+        student = { ...s, department: tables.department, batch: tables.batch };
         break;
       }
     }
@@ -341,14 +341,13 @@ app.get("/staff/:authUserId", requireAuth, requireStaff, async (c) => {
 app.get("/auth/student", requireAuth, requireStudent, async (c) => {
   try {
     const user = (c as any).get("authUser") as AuthUser;
-    const tables = ["IT_Students_2024_2028", "IT_Students_2025_2029"];
-    for (const table of tables) {
+    for (const tables of listAllowedStudentTables()) {
       const student = await c.env.DB
-        .prepare(`SELECT id, student_id, register_no, student_name, year, section, email, created_at, auth_user_id FROM ${table} WHERE auth_user_id = ? LIMIT 1`)
+        .prepare(`SELECT id, student_id, register_no, student_name, year, section, email, created_at, auth_user_id FROM ${assertAllowedStudentTable(tables.studentTable)} WHERE auth_user_id = ? LIMIT 1`)
         .bind(user.auth_user_id)
         .first();
       if (student) {
-        return c.json({ success: true, student: { ...student, department: "IT", batch: table.replace("IT_Students_", "") } });
+        return c.json({ success: true, student: { ...student, department: tables.department, batch: tables.batch } });
       }
     }
     return c.json({ success: true, student: null });

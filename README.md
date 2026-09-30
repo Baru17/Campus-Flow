@@ -181,32 +181,38 @@ The system uses a Cloudflare D1 database.
 
 Main database entities include:
 
-* `it_students`
-* `cse_students`
-* `ece_students`
-* `eee_students`
-* `it_staff`
-* `cse_staff`
-* `ece_staff`
-* `eee_staff`
-* `staff`
-* `subjects`
-* `it_subjects`
-* `cse_subjects`
-* `ece_subjects`
-* `eee_subjects`
-* `attendance_sessions`
-* `it_attendance`
-* `cse_attendance`
-* `ece_attendance`
-* `eee_attendance`
+* `IT_Students_2024_2028`, `IT_Students_2025_2029`
+* `IT_Attendance_2024_2028`, `IT_Attendance_2025_2029`
+* `staff` (one row per staff member, each with a single `department`)
+* `auth_users`, `auth_sessions`, `password_reset_tokens`
+* `subjects` (now carries a `department` column)
+* `attendance_session` (one row per OTP session)
+
+Students and attendance are stored in physically separate tables per
+department and batch, named `<DEPARTMENT>_Students_<start>_<end>` and
+`<DEPARTMENT>_Attendance_<start>_<end>`. Only the IT tables above exist so
+far; CSE/ECE/EEE are recognised departments without tables yet.
+
+Because those names cannot be bound as SQL parameters, every query resolves
+them through `backend/src/utils/tableResolver.ts`, which maps
+`department + batch -> tables` against a static allow-list. The batch the staff
+member selects is the only input that identifies the tables: a year of study is
+never used to derive a batch or a table. Requests for a department or batch with
+no tables return a "not configured" error instead of failing on a missing table.
+Add a pair to `ALLOWED_BATCHES` after creating the corresponding tables.
+
+An `attendance_session` records the `department` and `batch` it was generated
+for, so finalization and reporting read the exact table the session was created
+against rather than re-deriving it. A class advisor's assignment carries
+`advisor_batch` for the same reason. Rows that predate these columns are
+backfilled once by migration `0013`; that backfill is a historical data
+migration and is not part of how batches are resolved at runtime.
 
 The central `subjects` table is used for subject selection and is filtered by:
 
 ```text
 department
 year
-section
 ```
 
 ## 🧑‍🎓 Student Identification

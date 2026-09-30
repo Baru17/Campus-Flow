@@ -12,7 +12,6 @@ import {
   getAttendance,
   patchAttendance,
   getReport,
-  getAttendanceTable,
 } from '../api/classAdvisorApi'
 import { downloadAttendanceExcel } from '../utils/attendanceExcel'
 import { formatClassName } from '../utils/format'
@@ -113,8 +112,6 @@ export default function AdvisorDashboard() {
     }
   }, [advisor])
 
-  const attendanceTable = advisor ? getAttendanceTable(advisor.department, advisor.year) : null
-
   useEffect(() => {
     if (!advisor || !date || !period) return
     let cancelled = false
@@ -155,7 +152,7 @@ export default function AdvisorDashboard() {
     return () => {
       cancelled = true
     }
-  }, [advisor, attendanceTable, date, period])
+  }, [advisor, date, period])
 
   const handleLogout = async () => {
     await logout()
@@ -320,7 +317,7 @@ export default function AdvisorDashboard() {
     )
   }
 
-  const classLabel = advisor ? formatClassName(advisor.department, advisor.year, advisor.section) : '—'
+  const classLabel = advisor ? formatClassName(advisor.department, advisor.year, advisor.section, advisor.batch) : '—'
   const advisorLabel = staff ? `${staff.staff_name} · ${classLabel}` : classLabel
 
   return (

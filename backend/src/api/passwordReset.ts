@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import bcrypt from "bcryptjs";
 import { generateToken, hashToken, clearSessionCookie } from "../utils/auth";
 import { isTransientD1Error } from "../utils/databaseErrors";
+import { assertAllowedStudentTable, listAllowedStudentTables } from "../utils/tableResolver";
 import {
   sendPasswordResetEmail,
   EmailNotConfiguredError,
@@ -21,8 +22,6 @@ import {
 const app = new Hono<{
   Bindings: { DB: D1Database } & EmailBindings & { ALLOWED_ORIGINS?: string };
 }>();
-
-const STUDENT_TABLES = ["IT_Students_2024_2028", "IT_Students_2025_2029"];
 
 const STUDENT_ROLES = ["student"];
 const STAFF_ROLES = ["staff", "class_advisor"];
@@ -173,11 +172,11 @@ function resetRequestedResponse(c: any) {
 }
 
 async function resolveStudent(db: D1Database, identifier: string, lowered: string) {
-  for (const table of STUDENT_TABLES) {
+  for (const tables of listAllowedStudentTables()) {
     const row = (await db
       .prepare(
         `SELECT student_name, email, auth_user_id
-         FROM ${table}
+         FROM ${assertAllowedStudentTable(tables.studentTable)}
          WHERE student_id = ? OR LOWER(email) = ?
          LIMIT 1`
       )

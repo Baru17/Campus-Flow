@@ -1,11 +1,12 @@
 import { YEAR_LABELS } from '../constants'
+import { formatBatchLabel } from '../constants'
 
 export function formatYearLabel(year) {
   return YEAR_LABELS[year] || `${year} Year`
 }
 
-export function formatClassName(department, year, section) {
-  const parts = [department, formatYearLabel(year), section ? `Section ${section}` : '']
+export function formatClassName(department, year, section, batch) {
+  const parts = [department, formatBatchLabel(batch), formatYearLabel(year), section ? `Section ${section}` : '']
   return parts.filter(Boolean).join(' ')
 }
 

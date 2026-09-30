@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
@@ -8,8 +8,8 @@ import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
 import OTPDisplay from '../components/OTPDisplay'
 import { finalizeAttendanceSession, generateOtp } from '../api/attendanceApi'
-import { getSubjectsByYear } from '../api/subjectsApi'
-import { DEPARTMENTS, YEARS, SECTIONS, PERIODS } from '../constants'
+import { getSubjects } from '../api/subjectsApi'
+import { DEPARTMENTS, YEARS, SECTIONS, PERIODS, batchOptionsForDepartment } from '../constants'
 import { formatClassName } from '../utils/format'
 import { generateOtpErrorMessage, notConfiguredMessage } from '../utils/messages'
 import { useClock } from '../hooks/useClock'
@@ -35,12 +35,14 @@ export default function StaffDashboard() {
 
   const [year, setYear] = useState('')
   const [department, setDepartment] = useState('IT')
-  const [section, setSection] = useState('')
+  const [batch, setBatch] = useState('')
+const [section, setSection] = useState('')
   const [period, setPeriod] = useState('')
-  const [subjects, setSubjects] = useState([])
   const [subjectsLoading, setSubjectsLoading] = useState(false)
   const [subjectsError, setSubjectsError] = useState(null)
   const [selectedSubject, setSelectedSubject] = useState(null)
+  const [allSubjects, setAllSubjects] = useState([])
+  const [subjectSearchTerm, setSubjectSearchTerm] = useState('')
 
   const [session, setSession] = useState(null)
   const [sessionExpired, setSessionExpired] = useState(false)
@@ -62,25 +64,87 @@ export default function StaffDashboard() {
 
   const sessionInProgress = session && !sessionExpired
 
-  const canGenerate =
-    year && department && section && period && selectedSubject && !generating && !sessionInProgress
-
-  const classSelected = Boolean(year && department && section)
+  /*
+   * Attendance can only be taken for the department the signed-in staff member
+   * belongs to - the backend rejects anything else. Treat the staff record as
+   * the source of truth for the department field rather than letting it be
+   * chosen, so a mismatch is impossible to request in the first place.
+   */
+  const staffDepartment = staff?.department ? String(staff.department).trim().toUpperCase() : ''
 
   useEffect(() => {
-    if (!classSelected || !year) {
-      setSubjects([])
-      setSubjectsError(null)
+    if (staffDepartment) setDepartment(staffDepartment)
+  }, [staffDepartment])
+
+  const departmentOptions = staffDepartment
+    ? [{ value: staffDepartment, label: staffDepartment }]
+    : DEPARTMENTS.map((d) => ({ value: d, label: d }))
+
+  /*
+   * Batch is the source of truth: it is what selects the student and attendance
+   * tables, on the backend as well as here. The options come straight from the
+   * configured allow-list, so a department with no configured batches offers
+   * none rather than inventing one. The option value is the backend key
+   * ("2024_2028") and the label is presentation only.
+   */
+  const batchOptions = useMemo(() => batchOptionsForDepartment(department), [department])
+
+  const batchConfigured = batchOptions.length > 0
+
+  /*
+   * A department change invalidates the batch, so fall back to its only option.
+   * The year and section are part of the class inside the batch, so they are
+   * cleared too rather than left pointing at a batch that no longer exists.
+   */
+  useEffect(() => {
+    setBatch((current) =>
+      batchOptions.some((option) => option.value === current) ? current : batchOptions[0]?.value || ''
+    )
+    setYear('')
+    setSection('')
+    setSelectedSubject(null)
+  }, [batchOptions])
+
+  /*
+   * Switching batch invalidates the class too. The set of years a batch runs is
+   * a backend fact, so rather than hardcoding which years belong to which batch
+   * the year and section are cleared and re-picked. This is deliberately not a
+   * batch -> year mapping.
+   */
+  const handleBatchChange = (nextBatch) => {
+    setBatch(nextBatch)
+    setYear('')
+    setSection('')
+    setSelectedSubject(null)
+  }
+
+  const canGenerate =
+    year && department && batch && section && period && selectedSubject && !generating && !sessionInProgress
+
+  const classSelected = Boolean(year && department && batch && section)
+  // The subject step is only reachable once the whole slot is known, period
+  // included, so the catalog is not fetched for a class that cannot be marked yet.
+  const subjectSearchReady = Boolean(classSelected && period)
+
+  useEffect(() => {
+    const allFields = department && batch && year && section && period
+    if (!allFields) {
+      setAllSubjects([])
+      setSubjectSearchTerm('')
       setSelectedSubject(null)
+      setSubjectsLoading(false)
+      setSubjectsError(null)
       return undefined
     }
     let cancelled = false
+    setAllSubjects([])
+    setSubjectSearchTerm('')
+    setSelectedSubject(null)
     setSubjectsLoading(true)
     setSubjectsError(null)
-    setSelectedSubject(null)
-    getSubjectsByYear(Number(year))
+    getSubjects()
       .then((rows) => {
-        if (!cancelled) setSubjects(rows)
+        if (!cancelled) setAllSubjects(rows)
       })
       .catch((err) => {
         if (!cancelled) setSubjectsError(err)
@@ -91,7 +155,12 @@ export default function StaffDashboard() {
     return () => {
       cancelled = true
     }
-  }, [classSelected, department, year, section])
+  }, [department, batch, year, section, period])
+
+  const filteredSubjects = allSubjects.filter((s) =>
+    s.subject_code.toLowerCase().includes(subjectSearchTerm.toLowerCase()) ||
+    s.subject_name.toLowerCase().includes(subjectSearchTerm.toLowerCase())
+  )
 
   const handleGenerate = async () => {
     if (!canGenerate) return
@@ -101,22 +170,29 @@ export default function StaffDashboard() {
     setSessionExpired(false)
     setGenerating(true)
     try {
+      /*
+       * `batch` is the source of truth and selects the tables. `year` is sent
+       * only because the backend narrows the subject and the student roster to
+       * (year, section) inside that already-resolved batch. Nothing here maps
+       * one to the other.
+       */
       const data = await generateOtp({
-        year: Number(year),
         department,
+        batch,
+        year: Number(year),
         section,
         period: Number(period),
         subject_code: selectedSubject.subject_code,
         subject_name: selectedSubject.subject_name,
       })
-      const sessionData = { ...data.session, department }
+      const sessionData = { ...data.session, department, batch }
       const sessionLabel = `${sessionData.subject_code} - ${sessionData.subject_name}`
       setSession(sessionData)
       setRecentSessions((prev) => [
         {
           key: sessionData.session_id,
           label: sessionLabel,
-          className: formatClassName(department, year, section),
+          className: formatClassName(department, year, section, batch),
           period: Number(period),
           generatedAt: new Date(),
           expired: false,
@@ -149,7 +225,7 @@ export default function StaffDashboard() {
     }
   }
 
-  const selectedClass = classSelected ? `${formatClassName(department, year, section)}` : '—'
+  const selectedClass = classSelected ? `${formatClassName(department, year, section, batch)}` : '—'
   const sessionStatus = session && !sessionExpired ? 'Active' : session ? 'Expired' : 'Idle'
   const sessionTone = session && !sessionExpired ? 'green' : session ? 'amber' : 'primary'
 
@@ -224,7 +300,9 @@ export default function StaffDashboard() {
               <div className="cf-card-header">
                 <div>
                   <h2 className="section-title">New Attendance Session</h2>
-                  <p className="text-muted-2 text-sm mb-0">Select the class and subject to generate an OTP.</p>
+                  <p className="text-muted-2 text-sm mb-0">
+                    Pick a batch, then the class and subject to generate an OTP.
+                  </p>
                 </div>
                 <span className="cf-icon-badge">
                   <StaffIcon size={22} />
@@ -234,24 +312,40 @@ export default function StaffDashboard() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <DropdownField
+                    label="Department"
+                    name="department"
+                    value={department}
+                    onChange={setDepartment}
+                    options={departmentOptions}
+                    placeholder="Select department"
+                    disabled={sessionInProgress || Boolean(staffDepartment)}
+                  />
+                </div>
+                <div>
+                  <DropdownField
+                    label="Batch"
+                    name="batch"
+                    value={batch}
+                    onChange={handleBatchChange}
+                    options={batchOptions}
+                    placeholder="Select batch"
+                    disabled={sessionInProgress || !department || !batchConfigured}
+                  />
+                  {!batchConfigured && (
+                    <StatusMessage variant="info">
+                      Attendance is not configured for {department} yet.
+                    </StatusMessage>
+                  )}
+                </div>
+                <div>
+                  <DropdownField
                     label="Year"
                     name="year"
                     value={year}
                     onChange={setYear}
                     options={YEARS.map((y) => ({ value: y, label: `Year ${y}` }))}
                     placeholder="Select year"
-                    disabled={sessionInProgress}
-                  />
-                </div>
-                <div>
-                  <DropdownField
-                    label="Department"
-                    name="department"
-                    value={department}
-                    onChange={setDepartment}
-                    options={DEPARTMENTS.map((d) => ({ value: d, label: d }))}
-                    placeholder="Select department"
-                    disabled={sessionInProgress}
+                    disabled={sessionInProgress || !batch}
                   />
                 </div>
                 <div>
@@ -262,7 +356,7 @@ export default function StaffDashboard() {
                     onChange={setSection}
                     options={SECTIONS.map((s) => ({ value: s, label: s }))}
                     placeholder="Select section"
-                    disabled={sessionInProgress || !year || !department}
+                    disabled={sessionInProgress || !year || !department || !batch}
                   />
                 </div>
                 <div>
@@ -273,7 +367,7 @@ export default function StaffDashboard() {
                     onChange={setPeriod}
                     options={PERIODS.map((p) => ({ value: p, label: `Period ${p}` }))}
                     placeholder="Select period"
-                    disabled={sessionInProgress || !year || !department || !section}
+                    disabled={sessionInProgress || !year || !department || !batch || !section}
                     icon={<ClockIcon size={15} />}
                   />
                 </div>
@@ -284,35 +378,52 @@ export default function StaffDashboard() {
                     </span>
                     Subject
                   </label>
-                  {subjectsLoading && (
-                    <div className="cf-loading-inline mt-1">
-                      <span className="cf-spinner" role="status" aria-hidden="true" />
-                      Loading subjects…
+                  {subjectSearchReady && (
+                    <div className="mt-1">
+                      {subjectsLoading && (
+                        <div className="cf-loading-inline">
+                          <span className="cf-spinner" role="status" aria-hidden="true" />
+                          Loading subjects…
+                        </div>
+                      )}
+                      <input
+                        type="text"
+                        className={`cf-input w-full${subjectsLoading ? ' hidden' : ''}`}
+                        placeholder="Search subject by code or name"
+                        aria-label="Search subject by code or name"
+                        value={subjectSearchTerm}
+                        onChange={(e) => setSubjectSearchTerm(e.target.value)}
+                        disabled={sessionInProgress || subjectsLoading}
+                      />
+                      {subjectsError && (
+                        <div className="mt-2">
+                          <StatusMessage variant="danger">{subjectsError.message}</StatusMessage>
+                        </div>
+                      )}
+                      {!subjectsLoading && !subjectsError && filteredSubjects.length === 0 && (
+                        <div className="mt-2">
+                          <StatusMessage variant="info">No subjects match &quot;{subjectSearchTerm}&quot;.</StatusMessage>
+                        </div>
+                      )}
+                      {!subjectsLoading && !subjectsError && filteredSubjects.length > 0 && (
+                        <select
+                          className="cf-select mt-2 w-full"
+                          value={selectedSubject?.subject_code ?? ''}
+                          onChange={(e) => {
+                            const subj = filteredSubjects.find((s) => s.subject_code === e.target.value)
+                            if (subj) setSelectedSubject(subj)
+                          }}
+                          disabled={sessionInProgress}
+                        >
+                          <option value="" disabled>Select subject</option>
+                          {filteredSubjects.map((subject) => (
+                            <option key={subject.subject_code} value={subject.subject_code}>
+                              {subject.subject_code} - {subject.subject_name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </div>
-                  )}
-                  {subjectsError && (
-                    <StatusMessage variant="danger">{subjectsError.message}</StatusMessage>
-                  )}
-                  {!subjectsLoading && !subjectsError && subjects.length === 0 && classSelected && (
-                    <StatusMessage variant="info">No subjects found for {formatClassName(department, year, section)}.</StatusMessage>
-                  )}
-                  {!subjectsLoading && !subjectsError && subjects.length > 0 && (
-                    <select
-                      className="cf-select mt-1 w-full"
-                      value={selectedSubject?.subject_code ?? ''}
-                      onChange={(e) => {
-                        const subj = subjects.find((s) => s.subject_code === e.target.value)
-                        if (subj) setSelectedSubject(subj)
-                      }}
-                      disabled={sessionInProgress || !classSelected || subjectsLoading}
-                    >
-                      <option value="" disabled>Select subject</option>
-                      {subjects.map((subject) => (
-                        <option key={subject.subject_code} value={subject.subject_code}>
-                          {subject.subject_code} - {subject.subject_name}
-                        </option>
-                      ))}
-                    </select>
                   )}
                 </div>
               </div>
@@ -355,7 +466,7 @@ export default function StaffDashboard() {
                     <div>
                       <h3 className="section-title">Session Summary</h3>
                       <p className="text-muted-2 text-sm mb-0">
-                        {formatClassName(session.department, session.year, session.section)}
+                        {formatClassName(session.department, session.year, session.section, session.batch)}
                         {' · '}
                         Period {session.period}
                       </p>
@@ -376,7 +487,7 @@ export default function StaffDashboard() {
                       <CalendarIcon size={15} /> Class
                     </span>
                     <span className="cf-detail-value">
-                      {formatClassName(session.department, session.year, session.section)}
+                      {formatClassName(session.department, session.year, session.section, session.batch)}
                     </span>
                   </div>
                   <div className="cf-detail-row">
@@ -432,8 +543,8 @@ export default function StaffDashboard() {
                   <div className="step">
                     <span className="step-num">1</span>
                     <div className="step-text">
-                      <b>Pick class &amp; subject</b>
-                      <span>Year, department, section, period and subject.</span>
+                      <b>Pick batch, class &amp; subject</b>
+                      <span>Department, batch, year, section, period and subject.</span>
                     </div>
                   </div>
                   <div className="step">

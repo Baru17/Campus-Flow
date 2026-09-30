@@ -12,6 +12,9 @@ export default defineConfig({
 			"test/attendance.integration.spec.ts",
 			"test/session-cookie.integration.spec.ts",
 			"test/password-reset.integration.spec.ts",
+			"test/migration0013.integration.spec.ts",
+			"test/migration0015.integration.spec.ts",
+			"test/cseBatch.integration.spec.ts",
 		],
 	},
 });

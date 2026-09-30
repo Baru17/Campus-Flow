@@ -63,11 +63,17 @@ export async function getLegacySubjects() {
   return subjects.map((row) => ({ ...row, subject_id: row.subject_id ?? row.id }))
 }
 
-export async function generateOtp({ year, department, section, period, subject_code, subject_name }) {
+/*
+ * `batch` is the source of truth and selects the student and attendance tables.
+ * `year` is sent because the backend narrows the subject and the student roster
+ * to (year, section) inside the already-resolved batch; it is not a stand-in for
+ * batch. There is deliberately no defaulting of batch from year here.
+ */
+export async function generateOtp({ year, department, batch, section, period, subject_code, subject_name }) {
   assertBackend()
   const response = await apiRequest('/api/attendance/generate', {
     method: 'POST',
-    body: JSON.stringify({ year, department, section, period, subject_code, subject_name }),
+    body: JSON.stringify({ year, department, batch, section, period, subject_code, subject_name }),
   })
   if (!response?.success) {
     throw new ApiError(response?.error || 'Unable to start the attendance session.')

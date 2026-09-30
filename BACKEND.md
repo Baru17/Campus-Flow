@@ -34,23 +34,30 @@ Current departments:
 - ECE
 - EEE
 
-Future roles are planned:
+A staff record has exactly one `department`, so a staff member may only take
+attendance for that department. The backend rejects a request for any other
+department with `department-forbidden`. There is no multi-department
+permission; do not add one.
 
-- Class Advisor
-- HOD
+Not all departments have tables yet. See "Table Resolution" below.
 
-Do not implement Class Advisor or HOD yet.
+The `class_advisor` role already exists and is implemented (advisor assignment,
+class roster, attendance edit, and report routes all resolve through the same
+resolver). HOD is still only planned; do not implement it.
 
 ---
 
 ## 3. Important Database Tables
 
-### Student Tables
+Students and attendance are stored in physically separate tables per
+department and batch, not one table per department:
 
-- `it_students`
-- `cse_students`
-- `ece_students`
-- `eee_students`
+```text
+<DEPARTMENT>_Students_<start>_<end>
+<DEPARTMENT>_Attendance_<start>_<end>
+```
+
+For example `IT_Students_2024_2028` and `IT_Attendance_2024_2028`.
 
 Students contain values including:
 
@@ -70,6 +77,37 @@ register_no: 24IT001
 ```
 
 Do not interchange them.
+
+### Table Resolution
+
+Table names cannot be bound as SQL parameters, so they must never be built
+from request values. `backend/src/utils/tableResolver.ts` is the single source
+of truth:
+
+```text
+department + batch -> { studentTable, attendanceTable }
+```
+
+It resolves against a static allow-list (`ALLOWED_BATCHES`) containing only
+pairs whose tables actually exist. `assertAllowedStudentTable` and
+`assertAllowedAttendanceTable` are the final guard before a name reaches SQL.
+
+The batch label (for example `2024_2028`) is the only input that selects tables.
+A year of study is never used to derive a batch, and `resolveSessionTables`
+returns `null` for a session with a missing batch rather than falling back to
+the year. The year is retained on `attendance_session` and on a class advisor's
+assignment because it still identifies the class within a batch
+(`year` + `section`), not because it identifies the tables.
+
+Consequences to keep in mind:
+
+- A department or year with no tables resolves to `null`. Callers must return
+  a clear "not configured" error, not fall back to another department.
+- Only the IT batches exist today (2024-2028 and 2025-2029). Add a pair to
+  `ALLOWED_BATCHES` after creating its tables.
+- `attendance_session.department` and `attendance_session.batch` record which
+  tables a session belongs to. Finalization, cron, and advisor reports read
+  those instead of re-deriving the table from the year.
 
 ### Staff Tables
 

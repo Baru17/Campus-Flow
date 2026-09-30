@@ -3,8 +3,14 @@ import { cors } from "hono/cors";
 import auth from "./api/auth";
 import passwordReset from "./api/passwordReset";
 import attendance, { finalizeSession } from "./api/attendance";
-import { requireAuth, requireClassAdvisor } from "./middleware/auth";
+import { requireAuth, requireClassAdvisor, requireStaff } from "./middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "./utils/databaseErrors";
+import {
+  assertAllowedAttendanceTable,
+  assertAllowedStudentTable,
+  normalizeDepartment,
+  resolveTables,
+} from "./utils/tableResolver";
 
 type Bindings = {
   DB: D1Database;
@@ -73,7 +79,7 @@ app.get("/api/class-advisors", requireAuth, requireClassAdvisor, async (c) => {
 
   const assignment = await c.env.DB
     .prepare(
-      `SELECT staff_id, staff_name, email, department, advisor_year AS year,
+      `SELECT staff_id, staff_name, email, department, advisor_batch AS batch, advisor_year AS year,
               advisor_section AS section, class_advisor
        FROM staff
        WHERE staff_id = ? AND auth_user_id = ? AND advisor_year IS NOT NULL
@@ -89,27 +95,23 @@ app.get("/api/class-advisors", requireAuth, requireClassAdvisor, async (c) => {
 app.get("/api/class-advisors/students", requireAuth, requireClassAdvisor, async (c) => {
   const authUser = (c as any).get("authUser") as { auth_user_id: string };
   const advisor = await c.env.DB
-    .prepare("SELECT department, advisor_year, advisor_section FROM staff WHERE auth_user_id = ? LIMIT 1")
+    .prepare("SELECT department, advisor_batch, advisor_year, advisor_section FROM staff WHERE auth_user_id = ? LIMIT 1")
     .bind(authUser.auth_user_id)
-    .first() as { department: string; advisor_year: number; advisor_section: string } | null;
+    .first() as { department: string; advisor_batch: string; advisor_year: number; advisor_section: string } | null;
 
-  if (!advisor?.department || !advisor.advisor_year || !advisor.advisor_section) {
+  if (!advisor?.department || !advisor.advisor_batch || !advisor.advisor_year || !advisor.advisor_section) {
     return c.json({ data: null, error: { code: "advisor_assignment_not_found" } }, 404);
   }
 
-  const studentTables: Record<string, string> = {
-    "IT:2": "IT_Students_2025_2029",
-    "IT:3": "IT_Students_2024_2028",
-  };
-  const table = studentTables[`${advisor.department.toUpperCase()}:${advisor.advisor_year}`];
-  if (!table) {
+  const tables = resolveTables(advisor.department, advisor.advisor_batch);
+  if (!tables) {
     return c.json({ data: null, error: { code: "student_table_not_found" } }, 404);
   }
 
   const { results } = await c.env.DB
     .prepare(
       `SELECT student_id, register_no, student_name, year, section, email
-       FROM ${table}
+       FROM ${assertAllowedStudentTable(tables.studentTable)}
        WHERE year = ? AND section = ?
        ORDER BY register_no`
     )
@@ -119,6 +121,15 @@ app.get("/api/class-advisors/students", requireAuth, requireClassAdvisor, async 
   return c.json({ data: results, error: null });
 });
 
+/*
+ * The class advisor's own subject list.
+ *
+ * An advisor marks attendance for the class they advise, but a subject is not
+ * scoped to a department or a year, so this cannot be narrowed to either the way
+ * it used to be. The advisor gate and the advisor's class lookup below are what
+ * decide which students are in play; the subjects themselves are the shared
+ * catalog, exactly as served to the staff dashboard.
+ */
 app.get("/api/class-advisors/subjects", requireAuth, requireClassAdvisor, async (c) => {
   const authUser = (c as any).get("authUser") as { auth_user_id: string };
   const advisor = await c.env.DB
@@ -131,13 +142,7 @@ app.get("/api/class-advisors/subjects", requireAuth, requireClassAdvisor, async 
   }
 
   const { results } = await c.env.DB
-    .prepare(
-      `SELECT id, id AS subject_id, subject_code, subject_name, year
-       FROM subjects
-       WHERE year = ?
-       ORDER BY subject_name`
-    )
-    .bind(advisor.advisor_year)
+    .prepare("SELECT subject_id, subject_code, subject_name FROM subjects ORDER BY subject_name")
     .all();
 
   return c.json({ data: results, error: null });
@@ -154,36 +159,35 @@ app.get("/api/class-advisors/attendance", requireAuth, requireClassAdvisor, asyn
   }
 
   const advisor = await c.env.DB
-    .prepare("SELECT advisor_year, advisor_section, department FROM staff WHERE auth_user_id = ? LIMIT 1")
+    .prepare("SELECT advisor_batch, advisor_year, advisor_section, department FROM staff WHERE auth_user_id = ? LIMIT 1")
     .bind(authUser.auth_user_id)
-    .first() as { advisor_year: number; advisor_section: string; department: string } | null;
+    .first() as { advisor_batch: string; advisor_year: number; advisor_section: string; department: string } | null;
 
-  if (!advisor?.advisor_year || !advisor.advisor_section) {
+  if (!advisor?.advisor_batch || !advisor.advisor_year || !advisor.advisor_section) {
     return c.json({ success: false, message: "Advisor assignment not found" }, 404);
   }
 
-  const attendanceTable = advisor.advisor_year === 3
-    ? "IT_Attendance_2024_2028"
-    : advisor.advisor_year === 2
-      ? "IT_Attendance_2025_2029"
-      : null;
-  const studentTable = advisor.advisor_year === 3
-    ? "IT_Students_2024_2028"
-    : advisor.advisor_year === 2
-      ? "IT_Students_2025_2029"
-      : null;
+  const tables = resolveTables(advisor.department, advisor.advisor_batch);
 
-  if (!attendanceTable || !studentTable) {
-    return c.json({ success: false, message: "Advisor year is not supported" }, 400);
+  if (!tables) {
+    return c.json({ success: false, message: "Advisor class is not configured for attendance yet" }, 400);
   }
+
+  const attendanceTable = assertAllowedAttendanceTable(tables.attendanceTable);
+  const studentTable = assertAllowedStudentTable(tables.studentTable);
 
   const session = await c.env.DB
     .prepare(
       `SELECT * FROM attendance_session
-       WHERE year = ? AND section = ? AND period = ? AND attendance_date = ?
+       WHERE department = ?
+         AND batch = ?
+         AND year = ?
+         AND section = ?
+         AND period = ?
+         AND attendance_date = ?
        ORDER BY created_at DESC LIMIT 1`
     )
-    .bind(advisor.advisor_year, advisor.advisor_section, period, date)
+    .bind(tables.department, tables.batch, advisor.advisor_year, advisor.advisor_section, period, date)
     .first() as {
       session_id: string;
       subject_code: string;
@@ -278,6 +282,8 @@ app.patch("/api/class-advisors/attendance/:sessionId", requireAuth, requireClass
       year: number;
       section: string;
       attendance_table: string;
+      department: string;
+      batch: string;
       status: string;
       created_by: string;
     } | null;
@@ -287,25 +293,31 @@ app.patch("/api/class-advisors/attendance/:sessionId", requireAuth, requireClass
   }
 
   const advisor = await c.env.DB
-    .prepare("SELECT advisor_year, advisor_section FROM staff WHERE auth_user_id = ? LIMIT 1")
+    .prepare("SELECT department, advisor_batch, advisor_year, advisor_section FROM staff WHERE auth_user_id = ? LIMIT 1")
     .bind(authUser.auth_user_id)
-    .first() as { advisor_year: number; advisor_section: string } | null;
+    .first() as { department: string; advisor_batch: string; advisor_year: number; advisor_section: string } | null;
 
-  if (!advisor || advisor.advisor_year !== session.year || advisor.advisor_section !== session.section) {
+  const advisorTables = resolveTables(advisor?.department, advisor?.advisor_batch);
+
+  if (
+    !advisor ||
+    !advisorTables ||
+    advisor.advisor_year !== session.year ||
+    advisor.advisor_section !== session.section ||
+    advisorTables.department !== session.department ||
+    advisorTables.batch !== session.batch
+  ) {
     return c.json({ success: false, error: "You can only edit attendance for your assigned class" }, 403);
   }
 
-  const supportedAttendanceTable = session.year === 3
-    ? "IT_Attendance_2024_2028"
-    : session.year === 2
-      ? "IT_Attendance_2025_2029"
-      : null;
+  const supportedAttendanceTable = assertAllowedAttendanceTable(session.attendance_table);
 
-  if (!supportedAttendanceTable || supportedAttendanceTable !== session.attendance_table) {
+  if (supportedAttendanceTable !== advisorTables.attendanceTable) {
     return c.json({ success: false, error: "Attendance session table is not supported" }, 500);
   }
 
   const attendanceTable = supportedAttendanceTable;
+  const studentTable = assertAllowedStudentTable(advisorTables.studentTable);
 
   const existing = await c.env.DB
     .prepare(
@@ -326,7 +338,7 @@ app.patch("/api/class-advisors/attendance/:sessionId", requireAuth, requireClass
   } else {
     const student = await c.env.DB
       .prepare(
-        `SELECT register_no, section FROM ${attendanceTable.replace("_Attendance_", "_Students_")}
+        `SELECT register_no, section FROM ${studentTable}
          WHERE register_no = ? AND year = ? AND section = ? LIMIT 1`
       )
       .bind(register_no, session.year, session.section)
@@ -380,40 +392,39 @@ app.get("/api/class-advisors/attendance/report", requireAuth, requireClassAdviso
   }
 
   const advisor = await c.env.DB
-    .prepare("SELECT advisor_year, advisor_section, department FROM staff WHERE auth_user_id = ? LIMIT 1")
+    .prepare("SELECT advisor_batch, advisor_year, advisor_section, department FROM staff WHERE auth_user_id = ? LIMIT 1")
     .bind(authUser.auth_user_id)
-    .first() as { advisor_year: number; advisor_section: string; department: string } | null;
+    .first() as { advisor_batch: string; advisor_year: number; advisor_section: string; department: string } | null;
 
-  if (!advisor?.advisor_year || !advisor.advisor_section) {
+  if (!advisor?.advisor_batch || !advisor.advisor_year || !advisor.advisor_section) {
     return c.json({ success: false, message: "Advisor assignment not found" }, 404);
   }
 
   const year = advisor.advisor_year;
   const section = advisor.advisor_section;
-  const department = advisor.department;
 
-  const attendanceTable = year === 3
-    ? "IT_Attendance_2024_2028"
-    : year === 2
-      ? "IT_Attendance_2025_2029"
-      : null;
-  const studentTable = year === 3
-    ? "IT_Students_2024_2028"
-    : year === 2
-      ? "IT_Students_2025_2029"
-      : null;
+  const tables = resolveTables(advisor.department, advisor.advisor_batch);
 
-  if (!attendanceTable || !studentTable) {
-    return c.json({ success: false, message: "Advisor year is not supported" }, 400);
+  if (!tables) {
+    return c.json({ success: false, message: "Advisor class is not configured for attendance yet" }, 400);
   }
+
+  const department = tables.department;
+  const attendanceTable = assertAllowedAttendanceTable(tables.attendanceTable);
+  const studentTable = assertAllowedStudentTable(tables.studentTable);
 
   const session = await c.env.DB
     .prepare(
       `SELECT * FROM attendance_session
-       WHERE year = ? AND section = ? AND period = ? AND attendance_date = ?
+       WHERE department = ?
+         AND batch = ?
+         AND year = ?
+         AND section = ?
+         AND period = ?
+         AND attendance_date = ?
        ORDER BY created_at DESC LIMIT 1`
     )
-    .bind(year, section, period, date)
+    .bind(tables.department, tables.batch, year, section, period, date)
     .first() as {
       session_id: string;
       subject_code: string;
@@ -532,24 +543,27 @@ app.get("/api/db-test", async (c) => {
   });
 });
 
-app.get("/api/subjects", async (c) => {
-  const year = c.req.query("year");
-
-  if (!year) {
-    return c.json(
-      {
-        success: false,
-        message: "Year is required",
-      },
-      400
-    );
-  }
-
+/*
+ * The subject catalog.
+ *
+ * Subjects are global: one row per subject, carrying no department and no year,
+ * so there is nothing left to filter on and every caller gets the same list. The
+ * search box in the staff dashboard filters this list in the browser rather than
+ * asking the server for a narrower one per keystroke.
+ *
+ * This hands back the entire catalog, so it is restricted to signed-in staff.
+ * That used to be safe only because an unauthenticated answer was limited to a
+ * single department-year; now that the response is the whole catalog, leaving it
+ * open would publish every subject to anonymous callers, and a student session
+ * would have no business reading the staff teaching list.
+ *
+ * `requireAuth` runs first because `requireStaff` reads the user that
+ * `requireAuth` put on the context, and would otherwise answer "Authentication
+ * required" for a signed-in staff member.
+ */
+app.get("/api/subjects", requireAuth, requireStaff, async (c) => {
   const { results } = await c.env.DB
-    .prepare(
-      "SELECT id, subject_code, subject_name, year FROM subjects WHERE year = ? ORDER BY subject_name"
-    )
-    .bind(Number(year))
+    .prepare("SELECT subject_id, subject_code, subject_name FROM subjects ORDER BY subject_name")
     .all();
 
   return c.json({
@@ -581,7 +595,7 @@ async function scheduled(controller: ScheduledController, env: Bindings, ctx: Ex
 
   const activeSessions = await db
     .prepare(
-      `SELECT session_id, year, section, attendance_table FROM attendance_session WHERE status = 'ACTIVE' AND expire_at <= ?`
+      `SELECT session_id FROM attendance_session WHERE status = 'ACTIVE' AND expire_at <= ?`
     )
     .bind(now)
     .all() as { results: { session_id: string; year: number; section: string; attendance_table: string }[] };

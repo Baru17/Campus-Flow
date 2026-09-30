@@ -31,9 +31,17 @@ async function apiRequest(url, options) {
   }
 }
 
-export async function getSubjectsByYear(year) {
+/*
+ * The subject catalog.
+ *
+ * Subjects carry no department and no year, so there is nothing to narrow this by
+ * and the whole list comes back in one request. Searching is done in the browser
+ * against this array, which is why the staff dashboard fetches it once instead of
+ * re-requesting a filtered list on every keystroke.
+ */
+export async function getSubjects() {
   if (!BACKEND_URL) throw new ApiError(NOT_CONFIGURED_MESSAGE, { code: 'not-configured' })
-  const response = await apiRequest(`/api/subjects?year=${year}`)
+  const response = await apiRequest(`/api/subjects`)
   if (!response?.success) {
     throw new ApiError(response?.error || 'Failed to load subjects. Please try again.')
   }

@@ -6,7 +6,16 @@ import {
   requireClassAdvisor,
 } from "../middleware/auth";
 import { isTransientD1Error } from "../utils/databaseErrors";
-import { extractDepartment, studentMatchesAttendanceClass } from "../utils/attendance";
+import { studentMatchesAttendanceClass } from "../utils/attendance";
+import {
+  assertAllowedAttendanceTable,
+  assertAllowedStudentTable,
+  listAllowedStudentTables,
+  normalizeBatch,
+  normalizeDepartment,
+  resolveSessionTables,
+  resolveTables,
+} from "../utils/tableResolver";
 
 type Bindings = {
   DB: D1Database;
@@ -43,6 +52,10 @@ type AttendanceSession = {
   period: number;
   attendance_date: string;
   attendance_table: string;
+  /** Department the session was generated for. Resolves the tables it may touch. */
+  department: string;
+  /** Admission batch the session was generated for, e.g. "2024_2028". */
+  batch: string;
   created_at: string;
   expire_at: string;
   status: string;
@@ -80,32 +93,28 @@ function generateSessionId(): string {
 |--------------------------------------------------------------------------
 */
 
-function getAttendanceTable(year: number): string | null {
-  const tables: Record<number, string> = {
-    2: "IT_Attendance_2025_2029",
-    3: "IT_Attendance_2024_2028",
-  };
-
-  return tables[year] || null;
-}
-
 /*
 |--------------------------------------------------------------------------
-| Helper: Student table by year
+| Helper: confirm a stored session may use its attendance table
 |--------------------------------------------------------------------------
+|
+| Table names cannot be bound as SQL parameters, so every attendance and
+| student query resolves its identifiers through utils/tableResolver against a
+| static allow-list. See that module for the supported (department, batch)
+| pairs.
+|
 */
 
-function getStudentTable(year: number): string | null {
-  const tables: Record<number, string> = {
-    2: "IT_Students_2025_2029",
-    3: "IT_Students_2024_2028",
-  };
-
-  return tables[year] || null;
-}
-
-function getSupportedAttendanceTable(tableName: string, year: number): string | null {
-  return getAttendanceTable(year) === tableName ? tableName : null;
+/**
+ * Confirms a stored session's `attendance_table` still matches what the resolver
+ * allows for that session, so a row cannot be used to query an arbitrary table.
+ */
+function getSupportedAttendanceTable(
+  tableName: string,
+  session: { department?: unknown; batch?: unknown },
+): string | null {
+  const tables = resolveSessionTables(session);
+  return tables && tables.attendanceTable === tableName ? tableName : null;
 }
 
 /*
@@ -143,12 +152,16 @@ attendance.post(
         period?: number;
         year?: number;
         section?: string;
+        department?: string;
+        batch?: string;
       }>();
 
       const subjectCode = body.subject_code?.trim();
       const period = Number(body.period);
-      const year = Number(body.year);
       const section = body.section?.trim().toUpperCase();
+      const requestedDepartment = normalizeDepartment(body.department);
+      const requestedBatch = normalizeBatch(body.batch);
+      const year = Number(body.year);
 
       /*
        * Validate request
@@ -159,61 +172,26 @@ attendance.post(
         !Number.isInteger(period) ||
         period <= 0 ||
         !Number.isInteger(year) ||
-        !section
+        !section ||
+        !requestedDepartment ||
+        !requestedBatch
       ) {
         return c.json(
           {
             success: false,
             error:
-              "subject_code, valid period, year and section are required",
+              "subject_code, valid period, year, section, department and batch are required",
+            code: "invalid-request",
           },
           400
-        );
-      }
-
-      /*
-       * Find attendance table
-       */
-
-      const attendanceTable = getAttendanceTable(year);
-
-      if (!attendanceTable) {
-        return c.json(
-          {
-            success: false,
-            error: "Unsupported year",
-          },
-          400
-        );
-      }
-
-      /*
-       * Verify subject
-       */
-
-      const subject = await c.env.DB
-        .prepare(
-          `SELECT subject_code, subject_name, year
-           FROM subjects
-           WHERE subject_code = ?
-             AND year = ?
-           LIMIT 1`
-        )
-        .bind(subjectCode, year)
-        .first() as SubjectRecord | null;
-
-      if (!subject) {
-        return c.json(
-          {
-            success: false,
-            error: "Subject not found",
-          },
-          404
         );
       }
 
       /*
        * Verify staff
+       *
+       * Resolved before any table lookup so the department being attended is
+       * checked against the one the staff member actually belongs to.
        */
 
       const staff = await c.env.DB
@@ -231,6 +209,89 @@ attendance.post(
           {
             success: false,
             error: "Staff record not found",
+            code: "staff-not-found",
+          },
+          404
+        );
+      }
+
+      const staffDepartment = normalizeDepartment(staff.department);
+
+      if (!staffDepartment) {
+        return c.json(
+          {
+            success: false,
+            error: "Your staff record has no usable department assigned",
+            code: "staff-department-invalid",
+          },
+          403
+        );
+      }
+
+      if (staffDepartment !== requestedDepartment) {
+        return c.json(
+          {
+            success: false,
+            error: `You can only take attendance for your own department (${staffDepartment})`,
+            code: "department-forbidden",
+          },
+          403
+        );
+      }
+
+      /*
+       * Find attendance tables for the selected department and batch.
+       *
+       * The batch the staff member chose identifies the tables. The year is not
+       * consulted here - it only narrows the class within the batch.
+       */
+
+      const batchTables = resolveTables(requestedDepartment, requestedBatch);
+
+      if (!batchTables) {
+        return c.json(
+          {
+            success: false,
+            error: `Attendance is not configured for ${requestedDepartment} batch ${requestedBatch} yet`,
+            code: "batch-not-configured",
+          },
+          400
+        );
+      }
+
+      const attendanceTable = assertAllowedAttendanceTable(batchTables.attendanceTable);
+
+      /*
+       * Verify subject
+       *
+       * A subject is a global catalog row, so the only question is whether the
+       * code exists. It used to be matched against the session's department and
+       * year as well, which is what made the subject list feel scoped to a class.
+       * Dropping those columns is the point of the change: a staff member marks
+       * a class for whichever subject is running in that period, and the batch
+       * they picked still decides the table the mark lands in.
+       *
+       * The name is taken from the database rather than the request body, so what
+       * gets stored on the attendance row and the session is the catalog's name
+       * for that code and cannot be spoofed by the client.
+       */
+
+      const subject = await c.env.DB
+        .prepare(
+          `SELECT subject_code, subject_name
+           FROM subjects
+           WHERE subject_code = ?
+           LIMIT 1`
+        )
+        .bind(subjectCode)
+        .first() as SubjectRecord | null;
+
+      if (!subject) {
+        return c.json(
+          {
+            success: false,
+            error: "Subject not found",
+            code: "subject-not-found",
           },
           404
         );
@@ -271,9 +332,11 @@ attendance.post(
              period,
              attendance_date,
              attendance_table,
+             department,
+             batch,
              status
            )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`
         )
         .bind(
           sessionId,
@@ -287,7 +350,9 @@ attendance.post(
           section,
           period,
           attendanceDate,
-          attendanceTable
+          attendanceTable,
+          requestedDepartment,
+          requestedBatch
         )
         .run();
 
@@ -311,6 +376,8 @@ attendance.post(
           status: "ACTIVE",
           created_by: staff.staff_id,
           created_by_name: staff.staff_name,
+          department: requestedDepartment,
+          batch: requestedBatch,
         },
       });
     } catch (error) {
@@ -505,6 +572,8 @@ attendance.post(
              period,
              attendance_date,
              attendance_table,
+             department,
+             batch,
              created_at,
              expire_at,
              status
@@ -557,18 +626,28 @@ attendance.post(
         );
       }
 
-      const studentTable = getStudentTable(session.year);
+      /*
+       * Resolve the tables from the session's own department and batch, so an
+       * OTP can only ever mark the students of the class it was generated for.
+       * Scoping the student lookup to that table is also what keeps a student
+       * from one department out of another department's session.
+       */
 
-      if (!studentTable) {
+      const sessionTables = resolveSessionTables(session);
+
+      if (!sessionTables) {
         return c.json(
           {
             success: false,
             present: false,
-            error: "Attendance session year is not supported",
+            error: "This attendance session is not configured for any known department batch",
+            code: "session-batch-unavailable",
           },
           500
         );
       }
+
+      const studentTable = assertAllowedStudentTable(sessionTables.studentTable);
 
       const student = await c.env.DB
         .prepare(
@@ -591,6 +670,7 @@ attendance.post(
             success: false,
             present: false,
             error: "Student record not found",
+            code: "student-not-found",
           },
           404
         );
@@ -610,7 +690,7 @@ attendance.post(
 
       const attendanceTable = getSupportedAttendanceTable(
         session.attendance_table,
-        session.year
+        session
       );
 
       if (!attendanceTable) {
@@ -619,6 +699,7 @@ attendance.post(
             success: false,
             present: false,
             error: "Attendance session table is not supported",
+            code: "attendance-table-not-supported",
           },
           500
         );
@@ -628,7 +709,7 @@ attendance.post(
         student_id: student.student_id,
         register_no: student.register_no,
         student_name: student.student_name,
-        department: extractDepartment(student.student_id),
+        department: sessionTables.department,
       };
 
       const sessionPayload = {
@@ -638,6 +719,8 @@ attendance.post(
         year: session.year,
         section: session.section,
         period: session.period,
+        department: sessionTables.department,
+        batch: sessionTables.batch,
       };
 
       /*
@@ -837,6 +920,8 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
            period,
            attendance_date,
            attendance_table,
+           department,
+           batch,
            status,
            expire_at
          FROM attendance_session
@@ -854,6 +939,8 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
         period: number;
         attendance_date: string;
         attendance_table: string;
+        department: string;
+        batch: string;
         status: string;
         expire_at: string;
       } | null;
@@ -862,12 +949,19 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
       return { success: false, message: "Attendance session not found", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
     }
 
-    const attendanceTable = getSupportedAttendanceTable(session.attendance_table, session.year);
-    const studentTable = getStudentTable(session.year);
+    const sessionTables = resolveSessionTables(session);
 
-    if (!attendanceTable || !studentTable) {
+    if (!sessionTables) {
       return { success: false, message: "Attendance session table is not supported", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
     }
+
+    const attendanceTable = getSupportedAttendanceTable(session.attendance_table, session);
+
+    if (!attendanceTable) {
+      return { success: false, message: "Attendance session table is not supported", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
+    }
+
+    const studentTable = assertAllowedStudentTable(sessionTables.studentTable);
 
     if (session.status !== "FINALIZED" && session.expire_at > new Date().toISOString()) {
       return { success: false, message: "Attendance session has not expired", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
@@ -1008,48 +1102,37 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
   }
 }
 
-const VALID_ATTENDANCE_TABLES = new Set([
-  "IT_Attendance_2025_2029", "IT_Attendance_2024_2028",
-  "CSE_Attendance_2025_2029", "CSE_Attendance_2024_2028",
-  "ECE_Attendance_2025_2029", "ECE_Attendance_2024_2028",
-  "EEE_Attendance_2025_2029", "EEE_Attendance_2024_2028",
-]);
-const VALID_STUDENT_TABLES = new Set([
-  "IT_Students_2025_2029", "IT_Students_2024_2028",
-  "CSE_Students_2025_2029", "CSE_Students_2024_2028",
-  "ECE_Students_2025_2029", "ECE_Students_2024_2028",
-  "EEE_Students_2025_2029", "EEE_Students_2024_2028",
-]);
+/*
+|--------------------------------------------------------------------------
+| Helpers: path-supplied table names
+|--------------------------------------------------------------------------
+|
+| These routes take a table name in the path, so the name is matched back
+| against the resolver's allow-list rather than checked against a hand-written
+| list. Only attendance tables are accepted: a student table has no
+| session/period columns, so accepting one here would just produce a confusing
+| SQL error. Matching the name also yields the department and batch, which the
+| subject join and the section lookup both need.
+|
+*/
 
-function validateTableName(table: string | undefined): boolean {
-  if (!table) return false;
-  return VALID_ATTENDANCE_TABLES.has(table) || VALID_STUDENT_TABLES.has(table);
-}
-
-function getStudentTableForYear(year: number): string | null {
-  const tables: Record<number, string> = {
-    2: "IT_Students_2025_2029",
-    3: "IT_Students_2024_2028",
-  };
-  return tables[year] || null;
-}
-
-function getSectionFromStudents(c: any, registerNo: string, year: number): string | null {
-  const table = getStudentTableForYear(year);
+function resolveRequestedTables(table: string | undefined) {
   if (!table) return null;
+  return (
+    listAllowedStudentTables().find((tables) => tables.attendanceTable === table) ?? null
+  );
+}
+
+function getSectionFromStudents(
+  c: any,
+  registerNo: string,
+  tables: { department: string; batch: string; studentTable: string; attendanceTable: string }
+): string | null {
   const result = c.env.DB
-    .prepare(`SELECT section FROM ${table} WHERE register_no = ?`)
+    .prepare(`SELECT section FROM ${assertAllowedStudentTable(tables.studentTable)} WHERE register_no = ?`)
     .bind(registerNo)
     .first() as { section: string } | null;
   return result?.section ?? null;
-}
-
-function getAttendanceTableForYear(year: number): string | null {
-  const tables: Record<number, string> = {
-    2: "IT_Attendance_2025_2029",
-    3: "IT_Attendance_2024_2028",
-  };
-  return tables[year] || null;
 }
 
 attendance.get(
@@ -1058,7 +1141,8 @@ attendance.get(
   requireClassAdvisor,
   async (c) => {
     const table = c.req.param("table");
-    if (!validateTableName(table)) {
+    const tables = resolveRequestedTables(table);
+    if (!tables) {
       return c.json({ data: null, error: { code: "invalid_table", message: "Invalid attendance table" } }, 400);
     }
     const date = c.req.query("date");
@@ -1070,8 +1154,8 @@ attendance.get(
     try {
       const results = await c.env.DB
         .prepare(
-          `SELECT DISTINCT s.id AS subject_id, s.subject_code, s.subject_name
-           FROM ${table} a
+          `SELECT DISTINCT s.subject_id, s.subject_code, s.subject_name
+           FROM ${tables.attendanceTable} a
            JOIN subjects s ON a.subject_code = s.subject_code
            WHERE a.attendance_date = ? AND a.period = ?`
         )
@@ -1091,7 +1175,8 @@ attendance.get(
   requireClassAdvisor,
   async (c) => {
     const table = c.req.param("table");
-    if (!validateTableName(table)) {
+    const tables = resolveRequestedTables(table);
+    if (!tables) {
       return c.json({ data: null, error: { code: "invalid_table", message: "Invalid attendance table" } }, 400);
     }
     const date = c.req.query("date");
@@ -1106,9 +1191,9 @@ attendance.get(
       const results = await c.env.DB
         .prepare(
           `SELECT a.register_no, a.status
-           FROM ${table} a
+           FROM ${tables.attendanceTable} a
            JOIN subjects s ON a.subject_code = s.subject_code
-           WHERE a.attendance_date = ? AND a.period = ? AND s.id = ?`
+           WHERE a.attendance_date = ? AND a.period = ? AND s.subject_id = ?`
         )
         .bind(date, period, subjectId)
         .all();
@@ -1126,7 +1211,8 @@ attendance.get(
   requireClassAdvisor,
   async (c) => {
     const table = c.req.param("table");
-    if (!validateTableName(table)) {
+    const tables = resolveRequestedTables(table);
+    if (!tables) {
       return c.json({ data: null, error: { code: "invalid_table", message: "Invalid attendance table" } }, 400);
     }
     const registerNo = c.req.query("register_no");
@@ -1142,9 +1228,9 @@ attendance.get(
       const result = await c.env.DB
         .prepare(
           `SELECT a.attendance_id, a.register_no, a.section, a.status, a.marked_at
-           FROM ${table} a
+           FROM ${tables.attendanceTable} a
            JOIN subjects s ON a.subject_code = s.subject_code
-           WHERE a.register_no = ? AND a.attendance_date = ? AND a.period = ? AND s.id = ?
+           WHERE a.register_no = ? AND a.attendance_date = ? AND a.period = ? AND s.subject_id = ?
            LIMIT 1`
         )
         .bind(registerNo, date, period, subjectId)
@@ -1163,7 +1249,8 @@ attendance.post(
   requireClassAdvisor,
   async (c) => {
     const table = c.req.param("table");
-    if (!validateTableName(table)) {
+    const tables = resolveRequestedTables(table);
+    if (!tables) {
       return c.json({ data: null, error: { code: "invalid_table", message: "Invalid attendance table" } }, 400);
     }
     const body = await c.req.json<{
@@ -1181,17 +1268,17 @@ attendance.post(
     }
     try {
       const subject = await c.env.DB
-        .prepare("SELECT subject_code, subject_name, year FROM subjects WHERE id = ? LIMIT 1")
+        .prepare("SELECT subject_code, subject_name FROM subjects WHERE subject_id = ? LIMIT 1")
         .bind(subject_id)
-        .first() as { subject_code: string; subject_name: string; year: number } | null;
+        .first() as { subject_code: string; subject_name: string } | null;
       if (!subject) {
         return c.json({ data: null, error: { code: "subject_not_found", message: "Subject not found" } }, 404);
       }
-      const sectionFromDb = section || (await getSectionFromStudents(c, register_no || "", subject.year)) || null;
+      const sectionFromDb = section || (await getSectionFromStudents(c, register_no || "", tables)) || null;
       const newAttendanceId = crypto.randomUUID();
       await c.env.DB
         .prepare(
-          `INSERT INTO ${table} (attendance_id, register_no, section, attendance_date, period, subject_code, subject_name, marked_at, status)
+          `INSERT INTO ${tables.attendanceTable} (attendance_id, register_no, section, attendance_date, period, subject_code, subject_name, marked_at, status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(newAttendanceId, register_no, sectionFromDb, attendance_date, period, subject.subject_code, subject.subject_name, marked_at || new Date().toISOString(), status.toUpperCase())
@@ -1210,7 +1297,8 @@ attendance.put(
   requireClassAdvisor,
   async (c) => {
     const table = c.req.param("table");
-    if (!validateTableName(table)) {
+    const tables = resolveRequestedTables(table);
+    if (!tables) {
       return c.json({ data: null, error: { code: "invalid_table", message: "Invalid attendance table" } }, 400);
     }
     const body = await c.req.json<{
@@ -1229,16 +1317,16 @@ attendance.put(
     }
     try {
       const subject = await c.env.DB
-        .prepare("SELECT subject_code, subject_name, year FROM subjects WHERE id = ? LIMIT 1")
+        .prepare("SELECT subject_code, subject_name FROM subjects WHERE subject_id = ? LIMIT 1")
         .bind(subject_id)
-        .first() as { subject_code: string; subject_name: string; year: number } | null;
+        .first() as { subject_code: string; subject_name: string } | null;
       if (!subject) {
         return c.json({ data: null, error: { code: "subject_not_found", message: "Subject not found" } }, 404);
       }
-      const sectionFromDb = section || (await getSectionFromStudents(c, register_no || "", subject.year)) || null;
+      const sectionFromDb = section || (await getSectionFromStudents(c, register_no || "", tables)) || null;
       await c.env.DB
         .prepare(
-          `UPDATE ${table}
+          `UPDATE ${tables.attendanceTable}
            SET register_no = ?, section = ?, attendance_date = ?, period = ?, subject_code = ?, subject_name = ?, marked_at = ?, status = ?
            WHERE attendance_id = ?`
         )

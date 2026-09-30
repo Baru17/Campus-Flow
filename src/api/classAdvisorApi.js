@@ -80,17 +80,3 @@ export async function getReport(date, period) {
   if (!data || data.success === false) return null
   return data
 }
-
-export function getAttendanceTable(department, year) {
-  const yr = Number(year)
-  if (yr === 3) return 'IT_Attendance_2024_2028'
-  if (yr === 2) return 'IT_Attendance_2025_2029'
-  return null
-}
-
-export function getStudentTable(department, year) {
-  const yr = Number(year)
-  if (yr === 3) return 'IT_Students_2024_2028'
-  if (yr === 2) return 'IT_Students_2025_2029'
-  return null
-}
