@@ -35,6 +35,7 @@ import {
 } from "../utils/tableResolver";
 import { provisionBatchTables } from "../utils/provisioning";
 import { formatBatchLabel, validateBatchInput } from "../utils/batchValidation";
+import { selectInChunks } from "../utils/sqlChunking";
 import {
   hashDefaultPassword,
   planAccounts,
@@ -424,26 +425,41 @@ app.post("/students", requireAuth, requireAdmin, async (c) => {
      * and abort the whole batch, taking the valid rows down with it. Asking about
      * all three columns at once is what makes that visible to the admin instead of
      * surfacing as an opaque "UNIQUE constraint failed" 500.
+     *
+     * The lookup is chunked because it binds three parameters per row. At 66
+     * students that is 198 bound parameters against D1's limit of 100, which the
+     * database rejects outright with "too many SQL variables" before a single row
+     * is written.
      */
     const conflicts: { row: number; reason: string }[] = [];
-    const existingRows = await c.env.DB
-      .prepare(
-        `SELECT student_id, register_no, email FROM ${target.studentTable}
-         WHERE student_id IN (${deduped.map(() => "?").join(",")})
-            OR LOWER(register_no) IN (${deduped.map(() => "?").join(",")})
-            OR LOWER(email) IN (${deduped.map(() => "?").join(",")})`
-      )
-      .bind(
-        ...deduped.map((entry) => entry.value.student_id),
-        ...deduped.map((entry) => entry.value.register_no.toLowerCase()),
-        ...deduped.map((entry) => entry.value.email)
-      )
-      .all<{ student_id: string; register_no: string; email: string }>();
+    const existingRows = await selectInChunks<{ student_id: string; register_no: string; email: string }>(
+      c.env.DB,
+      {
+        parametersPerRow: 3,
+        buildSql: (part) => {
+          const placeholders = part.map(() => "?").join(",");
+          return `SELECT student_id, register_no, email FROM ${target.studentTable}
+            WHERE student_id IN (${placeholders})
+               OR LOWER(register_no) IN (${placeholders})
+               OR LOWER(email) IN (${placeholders})`;
+        },
+        bindValues: (part) => [
+          ...part.map((row) => row.student_id),
+          ...part.map((row) => row.register_no.toLowerCase()),
+          ...part.map((row) => row.email),
+        ],
+      },
+      deduped.map((entry) => ({
+        student_id: entry.value.student_id,
+        register_no: entry.value.register_no,
+        email: entry.value.email,
+      }))
+    );
 
     const existingById = new Map<string, string>();
     const existingRegisters = new Set<string>();
     const existingEmails = new Set<string>();
-    for (const row of existingRows?.results ?? []) {
+    for (const row of existingRows) {
       existingById.set(row.student_id.toUpperCase(), row.student_id);
       if (row.register_no) existingRegisters.add(row.register_no.toLowerCase());
       if (row.email) existingEmails.add(row.email.toLowerCase());
@@ -495,34 +511,44 @@ app.post("/students", requireAuth, requireAdmin, async (c) => {
     }
 
     // Accounts: look up every identifier and email first so a reused account can
-    // be linked rather than recreated.
-    const wantedKeys = toInsert.map((entry) => studentUserName(entry.value.student_id));
-    const wantedEmails = toInsert.map((entry) => entry.value.email);
-    const accounts = await c.env.DB
-      .prepare(
-        `SELECT auth_user_id, user_name, role, email FROM auth_users
-         WHERE user_name IN (${wantedKeys.map(() => "?").join(",")})
-            OR email IN (${wantedEmails.map(() => "?").join(",")})`
-      )
-      .bind(...wantedKeys, ...wantedEmails)
-      .all<ExistingAccount>();
+    // be linked rather than recreated. Two parameters per row, so this also needs
+    // chunking to stay under D1's bound-parameter cap on a real cohort.
+    const accountLookups = toInsert.map((entry) => ({
+      key: studentUserName(entry.value.student_id),
+      email: entry.value.email,
+    }));
+    const accounts = await selectInChunks<
+      { key: string; email: string },
+      ExistingAccount
+    >(
+      c.env.DB,
+      {
+        parametersPerRow: 2,
+        buildSql: (part) => {
+          const placeholders = part.map(() => "?").join(",");
+          return `SELECT auth_user_id, user_name, role, email FROM auth_users
+            WHERE user_name IN (${placeholders}) OR email IN (${placeholders})`;
+        },
+        bindValues: (part) => [
+          ...part.map((row) => row.key),
+          ...part.map((row) => row.email),
+        ],
+      },
+      accountLookups
+    );
 
     const byKey = new Map<string, ExistingAccount>();
     const byEmail = new Map<string, ExistingAccount>();
-    for (const account of accounts?.results ?? []) {
+    for (const account of accounts) {
       byKey.set(account.user_name.toLowerCase(), account);
       if (account.email) byEmail.set(account.email.toLowerCase(), account);
     }
 
     /*
-     * An account is only reused when its role already matches.
-     *
-     * `planAccounts` links a found account by id regardless of role, which is right
-     * for a genuine re-import but wrong when the match is coincidental: attaching
-     * a roster row to a colleague's account would hand that colleague's
-     * credentials to a different person, and in the other direction an existing
-     * `admin` account matched on email would be silently demoted in the dashboard's
-     * eyes. A mismatched row is reported instead of being linked.
+     * One hash is shared by every new account: bcrypt is deliberately slow, so
+     * hashing per row would make a 128-row import take minutes. It is only computed
+     * when there is a new account to create, so an import that reuses every
+     * account does not pay for a hash it discards.
      */
     const roleMismatches: { row: number; reason: string }[] = [];
     const linkable: (typeof deduped)[number][] = [];
@@ -728,29 +754,49 @@ app.post("/staff", requireAuth, requireAdmin, async (c) => {
       deduped.push(entry);
     }
 
-    const existingRows = await c.env.DB
-      .prepare(`SELECT email FROM staff WHERE email IN (${deduped.map(() => "?").join(",")})`)
-      .bind(...deduped.map((entry) => entry.value.email))
-      .all<{ email: string }>();
-    const existingEmails = new Set((existingRows?.results ?? []).map((row) => row.email.toLowerCase()));
+    // One parameter per row, chunked so a large staff file stays under D1's cap.
+    const existingRows = await selectInChunks<{ email: string }>(
+      c.env.DB,
+      {
+        parametersPerRow: 1,
+        buildSql: (part) =>
+          `SELECT email FROM staff WHERE email IN (${part.map(() => "?").join(",")})`,
+        bindValues: (part) => part.map((row) => row.email),
+      },
+      deduped.map((entry) => ({ email: entry.value.email }))
+    );
+    const existingEmails = new Set(existingRows.map((row) => row.email.toLowerCase()));
 
     const toInsert = deduped.filter((entry) => !existingEmails.has(entry.value.email));
     const skipped = deduped.length - toInsert.length;
 
-    const wantedKeys = toInsert.map((entry) => staffUserName(entry.value.email));
-    const wantedEmails = toInsert.map((entry) => entry.value.email);
-    const accounts = await c.env.DB
-      .prepare(
-        `SELECT auth_user_id, user_name, role, email FROM auth_users
-         WHERE user_name IN (${wantedKeys.map(() => "?").join(",")})
-            OR email IN (${wantedEmails.map(() => "?").join(",")})`
-      )
-      .bind(...wantedKeys, ...wantedEmails)
-      .all<ExistingAccount>();
+    const accountLookups = toInsert.map((entry) => ({
+      key: staffUserName(entry.value.email),
+      email: entry.value.email,
+    }));
+    const accounts = await selectInChunks<
+      { key: string; email: string },
+      ExistingAccount
+    >(
+      c.env.DB,
+      {
+        parametersPerRow: 2,
+        buildSql: (part) => {
+          const placeholders = part.map(() => "?").join(",");
+          return `SELECT auth_user_id, user_name, role, email FROM auth_users
+            WHERE user_name IN (${placeholders}) OR email IN (${placeholders})`;
+        },
+        bindValues: (part) => [
+          ...part.map((row) => row.key),
+          ...part.map((row) => row.email),
+        ],
+      },
+      accountLookups
+    );
 
     const byKey = new Map<string, ExistingAccount>();
     const byEmail = new Map<string, ExistingAccount>();
-    for (const account of accounts?.results ?? []) {
+    for (const account of accounts) {
       byKey.set(account.user_name.toLowerCase(), account);
       if (account.email) byEmail.set(account.email.toLowerCase(), account);
     }
@@ -903,13 +949,19 @@ app.post("/subjects", requireAuth, requireAdmin, async (c) => {
       deduped.push(entry);
     }
 
-    const existingRows = await c.env.DB
-      .prepare(`SELECT subject_code FROM subjects WHERE subject_code IN (${deduped.map(() => "?").join(",")})`)
-      .bind(...deduped.map((entry) => entry.value.subject_code))
-      .all<{ subject_code: string }>();
-    const existingCodes = new Set(
-      (existingRows?.results ?? []).map((row) => row.subject_code.toUpperCase())
+    // Chunked: this binds one parameter per row and the request cap allows up to
+    // 2000 rows, so a large subject file would otherwise exceed D1's limit.
+    const existingRows = await selectInChunks<{ subject_code: string }>(
+      c.env.DB,
+      {
+        parametersPerRow: 1,
+        buildSql: (part) =>
+          `SELECT subject_code FROM subjects WHERE subject_code IN (${part.map(() => "?").join(",")})`,
+        bindValues: (part) => part.map((row) => row.subject_code),
+      },
+      deduped.map((entry) => ({ subject_code: entry.value.subject_code }))
     );
+    const existingCodes = new Set(existingRows.map((row) => row.subject_code.toUpperCase()));
 
     const toInsert = deduped.filter((entry) => !existingCodes.has(entry.value.subject_code));
     const skipped = deduped.length - toInsert.length;
