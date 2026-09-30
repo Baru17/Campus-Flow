@@ -622,10 +622,14 @@ app.get("/api/subjects", requireAuth, requireStaff, async (c) => {
  * name a table and the client has no identifier to interpolate into SQL.
  */
 app.get("/api/batches", requireAuth, requireStaff, async (c) => {
-  // The `/api/*` middleware above has already hydrated the registry; calling it
-  // again is a cache hit, and it keeps this handler correct if it is ever mounted
-  // without that middleware.
-  await ensureBatchRegistry(c.env.DB);
+  /*
+   * Forced, unlike the per-request TTL the `/api/*` middleware uses. This route
+   * exists to show a picker, and a picker that is briefly wrong is worse than the
+   * two extra small queries: without the force, a cohort that was unregistered or
+   * whose tables were dropped would keep being offered for up to a minute, which
+   * is exactly the stale-list behaviour this endpoint was added to remove.
+   */
+  await ensureBatchRegistry(c.env.DB, { force: true });
 
   const batches: Record<string, { key: string; label: string }[]> = {};
   for (const department of SUPPORTED_DEPARTMENTS) {

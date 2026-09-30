@@ -1,3 +1,35 @@
+/**
+ * The admin API on a database where migration 0016 has never been applied.
+ *
+ * This file used to assert the opposite: that the cohorts baked into
+ * `tableResolver.ts` were still listed, that a built-in roster was still served,
+ * and that a built-in cohort was still accepted as an advisor batch. Those
+ * assertions are gone because the built-in list is gone.
+ *
+ * That list was a hardcoded floor merged into the in-process registry, and it was
+ * the cause of a real production bug. A cohort was deleted from the database and
+ * its tables were dropped, but because the floor was merged in and only ever
+ * added to, the pair stayed resolvable and kept being offered in the staff batch
+ * selector. A batch in this application now exists if and only if it is registered
+ * in `academic_batches`, so there is nothing in the source to fall back to.
+ *
+ * What still has to hold on a database without the registry table is the
+ * *behaviour*, not the contents:
+ *
+ *   1. The batch list is empty rather than a 500, and every department is still
+ *      keyed, because the picker indexes into that object by department and a
+ *      missing key would read as an error instead of as "nothing here yet".
+ *   2. A request for a batch that is not registered is refused cleanly, and a
+ *      roster is not served from a table the registry does not vouch for.
+ *   3. Staff can still be created, because a batch is an advisor attribute and
+ *      not a requirement for adding a lecturer. Creating an advisor *is* subject
+ *      to provisioning, since an advisor names a cohort that has to exist.
+ *
+ * `hydrateBatchRegistry` swallows the missing-table error by design, so these
+ * assertions are the only thing standing between that swallow and a broken admin
+ * dashboard on a not-yet-migrated database.
+ */
+
 import { env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { hashToken } from "../src/utils/auth";
@@ -15,27 +47,6 @@ import migration0011 from "../migrations/0011_attendance-session-otp-lookup-inde
 import migration0013 from "../migrations/0013_department-aware-attendance.sql?raw";
 import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
-
-/*
- * The batch list and staff creation must both work on a database where migration
- * 0016 has never been applied.
- *
- * Every other admin suite applies 0016, which means a handler that silently
- * depended on the `academic_batches` table would still pass all of them. This file
- * deliberately stops at 0015 so the built-in batch mappings are the only thing
- * available, and then checks the two behaviours that matter when the registry
- * table is missing:
- *
- *   1. The cohorts that already exist in production are still listed, so the admin
- *      can browse them and the staff picker can name them. This is the requirement
- *      that "displaying existing batches must not require migration 0016".
- *   2. Staff can be created without a batch, because a batch is an advisor
- *      attribute and not a requirement for adding a lecturer.
- *
- * `hydrateBatchRegistry` swallows the missing-table error by design, so these
- * assertions are the only thing standing between that fallback and a broken admin
- * dashboard on a not-yet-migrated database.
- */
 
 const APPLY_ORDER = [
 	migration0001,
@@ -100,6 +111,17 @@ describe("admin API on a database without migration 0016", () => {
 		expect(table).toBeNull();
 	});
 
+	it("still has the physical tables migration 0014 created", async () => {
+		// The distinction the whole change rests on: the tables are here, the
+		// registry row is not, so the cohort is not offered. Presence of a table
+		// alone is not what makes a batch real.
+		const table = await env.DB
+			.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+			.bind("CSE_Students_2026_2030")
+			.first();
+		expect(table).not.toBeNull();
+	});
+
 	describe("batch listing", () => {
 		it("returns the response under a 'batches' key, which the dashboard reads", async () => {
 			// A regression guard for the page bug where this map was read under a
@@ -111,19 +133,14 @@ describe("admin API on a database without migration 0016", () => {
 			expect(body.batchesByDepartment).toBeUndefined();
 		});
 
-		it("still lists the built-in IT cohorts", async () => {
-			const { status, body } = await api("/api/admin/batches?department=IT");
+		it("lists no cohorts rather than inventing any", async () => {
+			// Not a 500 and not a phantom cohort. With no registry there is no
+			// source of truth, so the honest answer is an empty list.
+			const { status, body } = await api("/api/admin/batches");
 			expect(status).toBe(200);
-			expect(body.batches.IT.map((b: { key: string }) => b.key)).toEqual([
-				"2024_2028",
-				"2025_2029",
-			]);
-		});
-
-		it("still lists the built-in CSE cohort", async () => {
-			const { status, body } = await api("/api/admin/batches?department=CSE");
-			expect(status).toBe(200);
-			expect(body.batches.CSE.map((b: { key: string }) => b.key)).toEqual(["2026_2030"]);
+			for (const department of ["IT", "CSE", "ECE", "EEE"]) {
+				expect(body.batches[department]).toEqual([]);
+			}
 		});
 
 		it("returns a department entry for every advertised department", async () => {
@@ -135,10 +152,12 @@ describe("admin API on a database without migration 0016", () => {
 			}
 		});
 
-		it("serves a built-in roster without the registry", async () => {
-			const { status, body } = await api("/api/admin/students?department=IT&batch=2024_2028");
-			expect(status).toBe(200);
-			expect(Array.isArray(body.students)).toBe(true);
+		it("does not serve a roster for an unregistered batch", async () => {
+			// The table exists, but nothing vouches for it, so it is refused rather
+			// than served. Serving it would let anyone read a cohort the application
+			// does not consider real.
+			const { status } = await api("/api/admin/students?department=IT&batch=2024_2028");
+			expect(status).toBe(400);
 		});
 	});
 
@@ -189,7 +208,10 @@ describe("admin API on a database without migration 0016", () => {
 			expect(body.code).toBeUndefined();
 		});
 
-		it("still resolves a built-in cohort as an advisor batch", async () => {
+		it("refuses an advisor naming a cohort that is not registered", async () => {
+			// An advisor must be attached to a cohort the application can serve, so
+			// with no registry there is nothing valid to name. This used to pass
+			// because the cohort was hardcoded.
 			const { status, body } = await api("/api/admin/staff?department=IT", {
 				method: "POST",
 				body: JSON.stringify({
@@ -205,15 +227,8 @@ describe("admin API on a database without migration 0016", () => {
 					],
 				}),
 			});
-			expect(status).toBe(200);
-			expect(body.created).toBe(1);
-
-			const row = await env.DB
-				.prepare("SELECT class_advisor, advisor_batch FROM staff WHERE email = ?")
-				.bind("builtin.advisor@kiot.ac.in")
-				.first<any>();
-			expect(row.class_advisor).toBe("Y");
-			expect(row.advisor_batch).toBe("2024_2028");
+			expect(status).toBe(400);
+			expect(body.code).toBe("batch-not-provisioned");
 		});
 
 		it("still rejects an advisor naming a cohort from another department", async () => {
