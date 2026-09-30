@@ -7,6 +7,25 @@ export function notConfiguredMessage() {
   }
 }
 
+/*
+ * The batch registry could not be loaded, so the selector is showing the built-in
+ * cohorts only. This is deliberately not fatal: the built-in list is a real floor
+ * and the dashboard stays usable, but a batch provisioned since this build shipped
+ * will be missing until the page is reloaded, so it is worth saying so.
+ */
+export function batchListErrorMessage(error) {
+  if (error?.status === 401) {
+    return { variant: 'warning', text: 'Your staff session has expired. Please sign in again.' }
+  }
+  if (error?.status === 403) {
+    return { variant: 'danger', text: 'This account is not authorized to list batches. Please sign in with your staff account.' }
+  }
+  return {
+    variant: 'warning',
+    text: 'Could not load the full batch list, so only the default batches are shown. Reload the page to retry.',
+  }
+}
+
 export function generateOtpErrorMessage(error) {
   if (error instanceof ApiError && error.code === 'not-configured') return notConfiguredMessage()
   if (error?.status === 503) {

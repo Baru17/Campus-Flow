@@ -12,9 +12,10 @@ import { finalizeAttendanceSession, generateOtp } from '../api/attendanceApi'
 import { getSubjects } from '../api/subjectsApi'
 import { DEPARTMENTS, YEARS, SECTIONS, PERIODS, batchOptionsForDepartment } from '../constants'
 import { formatClassName } from '../utils/format'
-import { generateOtpErrorMessage, notConfiguredMessage } from '../utils/messages'
+import { generateOtpErrorMessage, notConfiguredMessage, batchListErrorMessage } from '../utils/messages'
 import { useClock } from '../hooks/useClock'
 import { useStaffAuth } from '../hooks/useStaffAuth'
+import { fetchBatches } from '../api/batchesApi'
 import {
   SparklesIcon,
   ShieldIcon,
@@ -44,6 +45,22 @@ const [section, setSection] = useState('')
   const [selectedSubject, setSelectedSubject] = useState(null)
   const [allSubjects, setAllSubjects] = useState([])
 
+  /*
+   * Departments and their cohorts, from `GET /api/batches`.
+   *
+   * This is the complete registry the backend serves: the built-in cohorts plus
+   * every batch an administrator has provisioned, which is why a batch created in
+   * the admin dashboard becomes selectable here without a rebuild. `batches` is
+   * keyed by department and each entry is `{ key, label }`.
+   *
+   * `null` means "not loaded yet", and is what keeps the selector populated from
+   * `constants.js` until the response lands. Once it holds a value it is the sole
+   * source, so a cohort that exists in the database but not in `constants.js` is
+   * still shown, and the hardcoded list can never hide a real batch.
+   */
+  const [batchesByDepartment, setBatchesByDepartment] = useState(null)
+  const [batchesError, setBatchesError] = useState(null)
+
   const [session, setSession] = useState(null)
   const [sessionExpired, setSessionExpired] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -56,6 +73,24 @@ const [section, setSection] = useState('')
       navigate('/role-selection', { replace: true })
     }
   }, [loading, staff, navigate])
+
+  /*
+   * Fetched once per mount rather than per department change: the response is
+   * keyed by department, so one request fills every department the selector can
+   * offer and switching department is then a local lookup.
+   */
+  useEffect(() => {
+    if (!BACKEND_CONFIGURED) return
+    let cancelled = false
+    fetchBatches()
+      .then((batches) => {
+        if (!cancelled) setBatchesByDepartment(batches)
+      })
+      .catch((error) => {
+        if (!cancelled) setBatchesError(error)
+      })
+    return () => { cancelled = true }
+  }, [])
 
   const handleLogout = async () => {
     await logout()
@@ -89,12 +124,23 @@ const [section, setSection] = useState('')
 
   /*
    * Batch is the source of truth: it is what selects the student and attendance
-   * tables, on the backend as well as here. The options come straight from the
-   * configured allow-list, so a department with no configured batches offers
-   * none rather than inventing one. The option value is the backend key
-   * ("2024_2028") and the label is presentation only.
+   * tables, on the backend as well as here. The options come from the batch
+   * registry the backend serves, so every cohort the application can actually
+   * serve is offered, including one provisioned after this build shipped.
+   *
+   * `batchOptionsForDepartment` supplies the built-in cohorts until that response
+   * arrives, which keeps the pre-existing behaviour intact on first paint and if
+   * the request fails. Once the response has landed it is the only source, so the
+   * hardcoded list can never hide a batch that exists in the database. The option
+   * value is the backend key ("2024_2028") and the label is presentation only.
    */
-  const batchOptions = useMemo(() => batchOptionsForDepartment(department), [department])
+  const batchOptions = useMemo(() => {
+    if (batchesByDepartment) {
+      const available = batchesByDepartment[department] || []
+      return available.map(({ key: value, label }) => ({ value, label }))
+    }
+    return batchOptionsForDepartment(department)
+  }, [batchesByDepartment, department])
 
   const batchConfigured = batchOptions.length > 0
 
@@ -356,6 +402,11 @@ const [section, setSection] = useState('')
                   {!batchConfigured && (
                     <StatusMessage variant="info">
                       Attendance is not configured for {department} yet.
+                    </StatusMessage>
+                  )}
+                  {batchesError && (
+                    <StatusMessage variant={batchListErrorMessage(batchesError).variant}>
+                      {batchListErrorMessage(batchesError).text}
                     </StatusMessage>
                   )}
                 </div>
