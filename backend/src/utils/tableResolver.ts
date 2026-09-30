@@ -4,7 +4,8 @@
  * Students and attendance rows live in physically separate tables per
  * department and batch, and those table names cannot be bound as SQL
  * parameters. Every call site therefore resolves its identifiers here, against a
- * static allow-list, instead of building them from request values.
+ * validated department and a strictly formatted batch, instead of building them
+ * from request values.
  *
  * The batch the staff member selects identifies the tables directly. Year of
  * study is deliberately NOT part of the lookup: it is client-supplied, it
@@ -13,29 +14,42 @@
  * the session and used only to pick which students of that batch are in the
  * class being taken.
  *
- * The allow-list only contains (department, batch) pairs whose tables actually
- * exist in D1. ECE and EEE are recognised as valid departments but have no
- * tables yet, so they resolve to `null` and callers return a clean "batch not
- * configured" error rather than letting D1 fail with an opaque "no such table".
- * Add a pair here once an administrator has created the tables for it.
+ * ## The registry is the only source of batches
  *
- * A batch becomes resolvable in two coordinated steps, and both are required
- * before a pair can be served:
+ * There is no built-in batch list in this file. That list used to exist, as a
+ * hardcoded floor, and it caused a real bug: a cohort was removed from the
+ * database and its tables were dropped, but because the floor was merged into
+ * the in-process index and only ever added to, the batch stayed resolvable and
+ * kept being offered in the staff batch selector indefinitely. A batch in this
+ * application exists if and only if it is registered in `academic_batches`.
  *
- *   1. An administrator provisions `<DEPARTMENT>_Students_<BATCH>` and
- *      `<DEPARTMENT>_Attendance_<BATCH>`. Both halves are needed: the student
- *      table holds the roster and the attendance table holds the marks, so a
- *      batch with only one of them cannot take attendance.
- *   2. The pair is recorded in the `academic_batches` registry, from which
- *      `hydrateBatchRegistry` merges it into the allow-list on the next request.
+ * A pair is treated as available only when three things all hold:
  *
- * `POST /api/admin/batches` performs both steps, and `POST /api/admin/students`
- * will do so for a batch that does not exist yet, so adding a cohort no longer
- * needs a hand-written migration or a code change. The registry rows are merged
- * into a per-isolate allow-list, and a table name is only ever produced by
- * `buildTableNames` from an allow-listed department and a strictly formatted
- * batch — the stored names are never interpolated, so a malformed or tampered
- * registry row cannot introduce a table name.
+ *   1. `academic_batches` has a row for it, which is what provisioning writes
+ *      and what makes the cohort real to the application.
+ *   2. Its department is in `SUPPORTED_DEPARTMENTS`. This is a format gate, not
+ *      a batch list: it is what makes the department half of an interpolated
+ *      table name safe, and it holds no admission cohort information.
+ *   3. Both `<DEPARTMENT>_Students_<BATCH>` and `<DEPARTMENT>_Attendance_<BATCH>`
+ *      physically exist. A row whose tables were dropped is not a cohort anyone
+ *      can take attendance for, so it must not be offered, and offering it would
+ *      put a selection in the UI that the API then refuses.
+ *
+ * Requiring both tables is deliberate: the student table holds the roster and
+ * the attendance table holds the marks, so a batch with only one of them cannot
+ * take attendance and is not a usable cohort.
+ *
+ * ## Names are derived, never read
+ *
+ * The table name is always *computed* from a validated department and a
+ * strictly formatted batch by `buildTableNames`, never read from the row, so a
+ * tampered or malformed `academic_batches` row cannot introduce a table name.
+ * The stored `student_table` / `attendance_table` columns are kept for operator
+ * visibility and for the provisioning tests, but resolution does not trust them.
+ *
+ * Because the index is rebuilt from the table on every hydration, a cohort that
+ * is unregistered or whose tables are dropped disappears on the next hydration
+ * rather than lingering for the life of the Worker isolate.
  */
 
 export const SUPPORTED_DEPARTMENTS = ["IT", "CSE", "ECE", "EEE"] as const;
@@ -50,49 +64,9 @@ export interface BatchTables {
   attendanceTable: string;
 }
 
-/*
- * The batches that existed before the registry, kept in code so the resolver still
- * works before migration 0016 has been applied, and so a database read can never
- * leave the Worker unable to serve attendance for the tables that are already in
- * production. `hydrateBatchRegistry` merges the `academic_batches` rows on top of
- * these, and provisioning writes new pairs into that table, so this list is a
- * floor rather than the set of known batches.
- */
-const BUILTIN_BATCHES: Record<Department, BatchTables[]> = {
-  IT: [
-    {
-      department: "IT",
-      batch: "2024_2028",
-      studentTable: "IT_Students_2024_2028",
-      attendanceTable: "IT_Attendance_2024_2028",
-    },
-    {
-      department: "IT",
-      batch: "2025_2029",
-      studentTable: "IT_Students_2025_2029",
-      attendanceTable: "IT_Attendance_2025_2029",
-    },
-  ],
-  // Departments are selectable in the UI but have no tables yet. Populate these
-  // when the student tables are created; every caller then starts working with
-  // no further change.
-  CSE: [
-    {
-      department: "CSE",
-      batch: "2026_2030",
-      studentTable: "CSE_Students_2026_2030",
-      attendanceTable: "CSE_Attendance_2026_2030",
-    },
-  ],
-  ECE: [],
-  EEE: [],
-};
-
-/*
+/**
  * The name a pair resolves to is always *computed* from a validated department
- * and batch, never read from the database. `academic_batches` records which pairs
- * have been provisioned, but the identifiers themselves are derived here, so a
- * tampered or malformed row cannot introduce a table name.
+ * and batch, never read from the database.
  */
 export function buildTableNames(
   department: Department,
@@ -109,22 +83,29 @@ const BATCH_INDEX = new Map<string, BatchTables>();
 const ALLOWED_STUDENT_TABLES = new Set<string>();
 const ALLOWED_ATTENDANCE_TABLES = new Set<string>();
 
-function registerBatchTables(tables: BatchTables): void {
-  BATCH_INDEX.set(`${tables.department}:${tables.batch}`, tables);
-  ALLOWED_STUDENT_TABLES.add(tables.studentTable);
-  ALLOWED_ATTENDANCE_TABLES.add(tables.attendanceTable);
-}
-
-for (const department of SUPPORTED_DEPARTMENTS) {
-  for (const tables of BUILTIN_BATCHES[department]) {
-    registerBatchTables(tables);
+/**
+ * Replaces the whole index.
+ *
+ * A rebuild rather than a merge is the point: merging is what allowed a deleted
+ * cohort to keep resolving, because the in-process index is per-isolate and
+ * outlives the request that deleted the row.
+ */
+function replaceBatchRegistry(entries: BatchTables[]): void {
+  BATCH_INDEX.clear();
+  ALLOWED_STUDENT_TABLES.clear();
+  ALLOWED_ATTENDANCE_TABLES.clear();
+  for (const tables of entries) {
+    const key = `${tables.department}:${tables.batch}`;
+    BATCH_INDEX.set(key, tables);
+    ALLOWED_STUDENT_TABLES.add(tables.studentTable);
+    ALLOWED_ATTENDANCE_TABLES.add(tables.attendanceTable);
   }
 }
 
 const REGISTRY_TABLE = "academic_batches";
 
-/*
- * Merges the provisioned batches from D1 into the in-process registry.
+/**
+ * Rebuilds the in-process registry from D1.
  *
  * Every call site of this module is synchronous, because a table name cannot be
  * bound as a SQL parameter and the identifiers are interpolated at the call site.
@@ -137,8 +118,12 @@ const REGISTRY_TABLE = "academic_batches";
  *      its batch matches the strict format, so the pair is safe to resolve.
  *   2. The table names are recomputed from that pair rather than read from the
  *      row, so a stored name is never trusted.
- *   3. A missing table (migration not yet applied) is not an error. The built-in
- *      list already covers production, so attendance keeps working.
+ *   3. Both physical tables must exist. A registered pair whose tables are gone
+ *      is not servable, so it is left out rather than offered and then rejected.
+ *   4. A failed read leaves the previous registry in place instead of emptying
+ *      it. A transient D1 error must not make every existing cohort disappear,
+ *      which would break student login and attendance wholesale. The cost of
+ *      keeping it is that the list is briefly stale, which is the safer error.
  */
 export async function hydrateBatchRegistry(db: D1Database): Promise<void> {
   let rows: { results?: { department: string; batch: string }[] };
@@ -147,8 +132,6 @@ export async function hydrateBatchRegistry(db: D1Database): Promise<void> {
       .prepare(`SELECT department, batch FROM ${REGISTRY_TABLE}`)
       .all<{ department: string; batch: string }>();
   } catch (error) {
-    // Before migration 0016 there is no registry table. The built-in batches
-    // stay authoritative and every existing flow keeps resolving.
     console.warn(
       JSON.stringify({
         event: "batch_registry_unavailable",
@@ -158,14 +141,56 @@ export async function hydrateBatchRegistry(db: D1Database): Promise<void> {
     return;
   }
 
+  /*
+   * Validate every row before touching the database again, so a malformed or
+   * hostile row cannot influence the existence query below.
+   */
+  const candidates: BatchTables[] = [];
+  const seen = new Set<string>();
   for (const row of rows?.results ?? []) {
     const department = normalizeDepartment(row?.department);
     const batch = normalizeBatch(row?.batch);
     if (!department || !batch) continue;
     const key = `${department}:${batch}`;
-    if (BATCH_INDEX.has(key)) continue;
-    registerBatchTables({ department, batch, ...buildTableNames(department, batch) });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ department, batch, ...buildTableNames(department, batch) });
   }
+
+  if (candidates.length === 0) {
+    replaceBatchRegistry([]);
+    return;
+  }
+
+  const present = await provisionedTables(db, candidates);
+
+  replaceBatchRegistry(
+    candidates.filter(
+      (tables) => present.has(tables.studentTable) && present.has(tables.attendanceTable)
+    )
+  );
+}
+
+/**
+ * The subset of the derived table names that exist as real tables.
+ *
+ * The names are bound as parameters rather than interpolated, and each was built
+ * by `buildTableNames` from an already-validated department and batch, so this
+ * query cannot be steered toward a name the resolver would not have produced.
+ */
+async function provisionedTables(
+  db: D1Database,
+  candidates: BatchTables[]
+): Promise<Set<string>> {
+  const names = candidates.flatMap((tables) => [tables.studentTable, tables.attendanceTable]);
+  const placeholders = names.map(() => "?").join(", ");
+  const { results } = await db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`
+    )
+    .bind(...names)
+    .all<{ name: string }>();
+  return new Set((results ?? []).map((row) => row.name));
 }
 
 /*
@@ -259,7 +284,7 @@ export function resolveTables(department: unknown, batch: unknown): BatchTables 
  * than guessing which tables it meant.
  */
 export function resolveSessionTables(
-  session: { department?: unknown; batch?: unknown } | null | undefined,
+  session: { department?: unknown; batch?: unknown } | null | undefined
 ): BatchTables | null {
   if (!session) return null;
   return resolveTables(session.department, session.batch);

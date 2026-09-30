@@ -20,6 +20,7 @@ import migration0011 from "../migrations/0011_attendance-session-otp-lookup-inde
 import migration0013 from "../migrations/0013_department-aware-attendance.sql?raw";
 import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
+import migration0016 from "../migrations/0016_academic_batches.sql?raw";
 
 type TestStudent = {
 	studentId: string;
@@ -194,6 +195,7 @@ describe("isolated D1 attendance integration", () => {
 		migration0013,
 		migration0014,
 		migration0015,
+	migration0016,
 	]) {
 			const statements = migration
 				.split("\n")

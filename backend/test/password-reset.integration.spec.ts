@@ -16,6 +16,8 @@ import migration0011 from "../migrations/0011_attendance-session-otp-lookup-inde
 import migration0012 from "../migrations/0012_password_reset_tokens.sql?raw";
 import migration0013 from "../migrations/0013_department-aware-attendance.sql?raw";
 import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
+import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
+import migration0016 from "../migrations/0016_academic_batches.sql?raw";
 
 const PASSWORD = "original-password-1";
 const NEW_PASSWORD = "brand-new-password-9";
@@ -73,9 +75,11 @@ describe("password reset over one-time tokens", () => {
 			migration0010,
 			migration0011,
 			migration0012,
-			migration0013,
-			migration0014,
-		]) {
+		migration0013,
+		migration0014,
+		migration0015,
+		migration0016,
+	]) {
 			const statements = migration
 				.split("\n")
 				.filter((line) => !line.trimStart().startsWith("--"))

@@ -18,6 +18,7 @@ export default defineConfig({
 			"test/adminApi.integration.spec.ts",
 			"test/adminNoMigration.integration.spec.ts",
 			"test/adminBulkImport.integration.spec.ts",
+			"test/staffBatches.integration.spec.ts",
 		],
 	},
 });

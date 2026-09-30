@@ -7,6 +7,27 @@ export function notConfiguredMessage() {
   }
 }
 
+/*
+ * The batch registry could not be loaded, so no batch can be offered at all.
+ *
+ * There is no hardcoded list to fall back to, which is the point: a fallback is
+ * how a cohort that had been deleted from the database kept being offered. An
+ * empty selector is the honest state, and the user needs to be told to retry
+ * rather than left looking at a dropdown that will never fill.
+ */
+export function batchListErrorMessage(error) {
+  if (error?.status === 401) {
+    return { variant: 'warning', text: 'Your staff session has expired. Please sign in again.' }
+  }
+  if (error?.status === 403) {
+    return { variant: 'danger', text: 'This account is not authorized to list batches. Please sign in with your staff account.' }
+  }
+  return {
+    variant: 'warning',
+    text: 'Could not load the list of available batches, so no batch can be selected. Please reload the page to retry.',
+  }
+}
+
 export function generateOtpErrorMessage(error) {
   if (error instanceof ApiError && error.code === 'not-configured') return notConfiguredMessage()
   if (error?.status === 503) {

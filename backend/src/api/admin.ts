@@ -172,7 +172,9 @@ function resolveTarget(
 
 app.get("/batches", requireAuth, requireAdmin, async (c) => {
   try {
-    await ensureBatchRegistry(c.env.DB);
+    // Forced for the same reason as the staff route: an admin picker must not
+    // show a cohort that has been unregistered or whose tables were dropped.
+    await ensureBatchRegistry(c.env.DB, { force: true });
 
     /*
      * `?department=CSE` narrows the response to one department's cohorts, which is

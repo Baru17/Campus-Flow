@@ -15,6 +15,7 @@ import migration0011 from "../migrations/0011_attendance-session-otp-lookup-inde
 import migration0013 from "../migrations/0013_department-aware-attendance.sql?raw";
 import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
+import migration0016 from "../migrations/0016_academic_batches.sql?raw";
 
 /*
  * CSE 2026-2030 provisioning, migration 0014+0015.
@@ -43,6 +44,7 @@ const APPLY_ORDER = [
 	migration0013,
 	migration0014,
 	migration0015,
+	migration0016,
 ];
 
 /* Wrangler-style: strip comment lines, then run each statement. */

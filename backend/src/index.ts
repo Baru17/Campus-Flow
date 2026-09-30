@@ -10,9 +10,12 @@ import {
   assertAllowedAttendanceTable,
   assertAllowedStudentTable,
   ensureBatchRegistry,
+  listBatchesForDepartment,
   normalizeDepartment,
   resolveTables,
+  SUPPORTED_DEPARTMENTS,
 } from "./utils/tableResolver";
+import { formatBatchLabel } from "./utils/batchValidation";
 
 type Bindings = {
   DB: D1Database;
@@ -593,6 +596,50 @@ app.get("/api/subjects", requireAuth, requireStaff, async (c) => {
     success: true,
     subjects: results,
   });
+});
+
+/*
+ * The complete batch registry, readable by any signed-in staff member.
+ *
+ * The staff dashboard has to offer every cohort the application can actually
+ * serve, which is the union of two sources: `BUILTIN_BATCHES`, the floor that
+ * keeps the pre-registry cohorts working on a database where migration 0016 was
+ * never applied, and the `academic_batches` rows that provisioning writes when an
+ * administrator adds a cohort. `ensureBatchRegistry` has already merged the two
+ * by the time this handler runs, so `listBatchesForDepartment` returns the union
+ * and a cohort created through Admin -> Add Students appears without a rebuild.
+ *
+ * This is the same registry `GET /api/admin/batches` serves and it returns the
+ * identical body, deliberately: the two pickers must never be able to disagree
+ * about which batches exist, and sharing the shape means a client that reads one
+ * reads the other unchanged. The difference is only the role gate. A batch list is
+ * not administrative data -- it is a list of which classes a lecturer may teach,
+ * and every signed-in staff member needs it, so requiring `requireAdmin` here
+ * would leave the staff dashboard with nothing to render.
+ *
+ * No table name is ever returned. `key` is the batch and `label` is derived from
+ * it, exactly as the admin route returns them, so nothing in this response can
+ * name a table and the client has no identifier to interpolate into SQL.
+ */
+app.get("/api/batches", requireAuth, requireStaff, async (c) => {
+  /*
+   * Forced, unlike the per-request TTL the `/api/*` middleware uses. This route
+   * exists to show a picker, and a picker that is briefly wrong is worse than the
+   * two extra small queries: without the force, a cohort that was unregistered or
+   * whose tables were dropped would keep being offered for up to a minute, which
+   * is exactly the stale-list behaviour this endpoint was added to remove.
+   */
+  await ensureBatchRegistry(c.env.DB, { force: true });
+
+  const batches: Record<string, { key: string; label: string }[]> = {};
+  for (const department of SUPPORTED_DEPARTMENTS) {
+    batches[department] = listBatchesForDepartment(department).map((key) => ({
+      key,
+      label: formatBatchLabel(key),
+    }));
+  }
+
+  return c.json({ success: true, departments: [...SUPPORTED_DEPARTMENTS], batches });
 });
 
 app.onError((error, c) => {

@@ -1,5 +1,5 @@
 import { YEAR_LABELS } from '../constants'
-import { formatBatchLabel } from '../constants'
+import { formatBatchLabel } from './batchValidation'
 
 export function formatYearLabel(year) {
   return YEAR_LABELS[year] || `${year} Year`
