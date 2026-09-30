@@ -781,7 +781,42 @@ describe("department scoping", () => {
 		scopedSessionIds.push(body.session.session_id as string);
 	});
 
-	it("refuses to generate for a department the staff member does not belong to", async () => {
+	it("lets an IT staff member generate for a CSE batch", async () => {
+		// The department in the request names the class being marked, not the
+		// authoriser. Any signed-in staff member may take attendance for any
+		// configured department, so the staff member's own department is irrelevant
+		// here and must not gate the request.
+		const response = await generate("dept-it-cookie", {
+			subject_code: `DSCSE${deptSuffix}`,
+			period: 1,
+			year: 1,
+			section: "A",
+			department: "CSE",
+			batch: "2026_2030",
+		});
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { success: boolean; session: Record<string, unknown> };
+		expect(body.success).toBe(true);
+		expect(body.session.department).toBe("CSE");
+		expect(body.session.batch).toBe("2026_2030");
+
+		// The router must follow the requested department rather than defaulting
+		// back to the one on the staff record.
+		const stored = await env.DB
+			.prepare("SELECT attendance_table, department, batch FROM attendance_session WHERE session_id = ?")
+			.bind(body.session.session_id as string)
+			.first<{ attendance_table: string; department: string; batch: string }>();
+		expect(stored?.attendance_table).toBe("CSE_Attendance_2026_2030");
+		expect(stored?.department).toBe("CSE");
+		expect(stored?.batch).toBe("2026_2030");
+		scopedSessionIds.push(body.session.session_id as string);
+	});
+
+	it("still refuses a department+batch pair that is not configured, whichever department the staff belongs to", async () => {
+		// Lifting the department check does not widen what exists. The allow-list is
+		// now the only gate on the target, so an unprovisioned pair is a 400 and is
+		// reported as unconfigured rather than as a permissions problem.
 		const response = await generate("dept-it-cookie", {
 			subject_code: `DSIT${deptSuffix}`,
 			period: 1,
@@ -791,8 +826,8 @@ describe("department scoping", () => {
 			batch: "2024_2028",
 		});
 
-		expect(response.status).toBe(403);
-		expect(((await response.json()) as { code: string }).code).toBe("department-forbidden");
+		expect(response.status).toBe(400);
+		expect(((await response.json()) as { code: string }).code).toBe("batch-not-configured");
 	});
 
 	it("requires the staff member to send a batch", async () => {

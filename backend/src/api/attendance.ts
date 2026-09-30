@@ -190,8 +190,17 @@ attendance.post(
       /*
        * Verify staff
        *
-       * Resolved before any table lookup so the department being attended is
-       * checked against the one the staff member actually belongs to.
+       * The staff record has to exist and carry a usable department of its own,
+       * but its department is deliberately NOT compared with the department being
+       * attended. Any signed-in staff member may take attendance for any
+       * configured department; the department in the form is the class being
+       * marked, not an assertion about who is allowed to mark it.
+       *
+       * What actually authorises the request is the allow-list below: only
+       * department+batch pairs that resolve to real tables are accepted, so
+       * lifting the department equality check does not open up an unconfigured
+       * department. `staff.department` remains meaningful for the staff profile
+       * and for class-advisor assignments.
        */
 
       const staff = await c.env.DB
@@ -223,17 +232,6 @@ attendance.post(
             success: false,
             error: "Your staff record has no usable department assigned",
             code: "staff-department-invalid",
-          },
-          403
-        );
-      }
-
-      if (staffDepartment !== requestedDepartment) {
-        return c.json(
-          {
-            success: false,
-            error: `You can only take attendance for your own department (${staffDepartment})`,
-            code: "department-forbidden",
           },
           403
         );

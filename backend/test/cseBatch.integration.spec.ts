@@ -541,10 +541,11 @@ describe("migration 0014 CSE 2026-2030 provisioning", () => {
 		});
 	});
 
-	describe("cross-department authorization is unchanged", () => {
-		it("still refuses a CSE staff member claiming IT", async () => {
-			// Explicitly out of scope for this change: the department check stays
-			// as it was, so a CSE advisor cannot reach an IT batch.
+	describe("cross-department attendance follows the requested department", () => {
+		it("lets a CSE class advisor generate for a configured IT batch", async () => {
+			// The department in the body is the class being marked, not a claim about
+			// who may mark it. A CSE advisor reaching an IT batch is now expected
+			// behaviour, and the request must route to the IT tables.
 			const response = await SELF.fetch("https://example.com/api/attendance/generate", {
 				method: "POST",
 				headers: { "Content-Type": "application/json", Cookie: advisorCookie() },
@@ -554,12 +555,40 @@ describe("migration 0014 CSE 2026-2030 provisioning", () => {
 					year: 3,
 					section: "A",
 					period: 1,
-					subject_code: "BE23CS410",
-					subject_name: "C# & .NET",
+					// Subjects are global, so the CSE test subject is a valid choice
+					// for an IT class too.
+					subject_code: SUBJECT_CODE,
+					subject_name: "CSE Year 1 Test Subject",
 				}),
 			});
-			const body = (await response.json()) as { code?: string };
-			expect(body.code).toBe("department-forbidden");
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as {
+				success: boolean;
+				session: Record<string, unknown>;
+			};
+			expect(body.success).toBe(true);
+			expect(body.session.department).toBe("IT");
+			expect(body.session.batch).toBe("2024_2028");
+		});
+
+		it("still refuses a department+batch pair that is not configured", async () => {
+			// IT has no 2026_2030 batch. Removing the department comparison must not
+			// turn that into a permissions error or, worse, let it through.
+			const response = await SELF.fetch("https://example.com/api/attendance/generate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Cookie: advisorCookie() },
+				body: JSON.stringify({
+					department: "IT",
+					batch: "2026_2030",
+					year: 3,
+					section: "A",
+					period: 1,
+					subject_code: SUBJECT_CODE,
+					subject_name: "CSE Year 1 Test Subject",
+				}),
+			});
+			expect(response.status).toBe(400);
+			expect(((await response.json()) as { code: string }).code).toBe("batch-not-configured");
 		});
 	});
 });

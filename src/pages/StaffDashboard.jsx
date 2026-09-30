@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
@@ -6,6 +6,7 @@ import StatChip from '../components/StatChip'
 import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
+import SearchableSelect from '../components/SearchableSelect'
 import OTPDisplay from '../components/OTPDisplay'
 import { finalizeAttendanceSession, generateOtp } from '../api/attendanceApi'
 import { getSubjects } from '../api/subjectsApi'
@@ -42,7 +43,6 @@ const [section, setSection] = useState('')
   const [subjectsError, setSubjectsError] = useState(null)
   const [selectedSubject, setSelectedSubject] = useState(null)
   const [allSubjects, setAllSubjects] = useState([])
-  const [subjectSearchTerm, setSubjectSearchTerm] = useState('')
 
   const [session, setSession] = useState(null)
   const [sessionExpired, setSessionExpired] = useState(false)
@@ -65,20 +65,27 @@ const [section, setSection] = useState('')
   const sessionInProgress = session && !sessionExpired
 
   /*
-   * Attendance can only be taken for the department the signed-in staff member
-   * belongs to - the backend rejects anything else. Treat the staff record as
-   * the source of truth for the department field rather than letting it be
-   * chosen, so a mismatch is impossible to request in the first place.
+   * Any configured department can be attended by any signed-in staff member, so
+   * the department field is a real choice rather than a readout of the staff
+   * record. The staff member's own department seeds the initial value, since it
+   * is the likeliest class for them, but it is applied once and never re-applied
+   * afterwards - choosing another department sticks.
+   *
+   * Which departments are actually usable is decided by the batch allow-list
+   * below: a department with no configured batch offers no batch, and the backend
+   * rejects the request. The list is not narrowed by staff.department.
    */
+
   const staffDepartment = staff?.department ? String(staff.department).trim().toUpperCase() : ''
+  const seededDepartment = useRef(false)
 
   useEffect(() => {
-    if (staffDepartment) setDepartment(staffDepartment)
+    if (seededDepartment.current || !staffDepartment) return
+    seededDepartment.current = true
+    setDepartment(staffDepartment)
   }, [staffDepartment])
 
-  const departmentOptions = staffDepartment
-    ? [{ value: staffDepartment, label: staffDepartment }]
-    : DEPARTMENTS.map((d) => ({ value: d, label: d }))
+  const departmentOptions = DEPARTMENTS.map((d) => ({ value: d, label: d }))
 
   /*
    * Batch is the source of truth: it is what selects the student and attendance
@@ -130,7 +137,6 @@ const [section, setSection] = useState('')
     const allFields = department && batch && year && section && period
     if (!allFields) {
       setAllSubjects([])
-      setSubjectSearchTerm('')
       setSelectedSubject(null)
       setSubjectsLoading(false)
       setSubjectsError(null)
@@ -138,7 +144,6 @@ const [section, setSection] = useState('')
     }
     let cancelled = false
     setAllSubjects([])
-    setSubjectSearchTerm('')
     setSelectedSubject(null)
     setSubjectsLoading(true)
     setSubjectsError(null)
@@ -157,9 +162,26 @@ const [section, setSection] = useState('')
     }
   }, [department, batch, year, section, period])
 
-  const filteredSubjects = allSubjects.filter((s) =>
-    s.subject_code.toLowerCase().includes(subjectSearchTerm.toLowerCase()) ||
-    s.subject_name.toLowerCase().includes(subjectSearchTerm.toLowerCase())
+  /*
+   * The catalog is global, so the same list backs every department and year. The
+   * option value is the subject code, which is what gets sent to the backend and
+   * what the attendance record is keyed on; the label is the "CODE - Name" form
+   * shown both in the open list and on the closed control. The original row is
+   * carried along on `subject` so selecting still yields the same object the
+   * rest of the page already expects.
+   *
+   * Filtering is not done here. SearchableSelect matches on value and label, so
+   * typing matches the code or the name case-insensitively, and it holds the
+   * typed term inside the open control where it belongs.
+   */
+  const subjectOptions = useMemo(
+    () =>
+      allSubjects.map((s) => ({
+        value: s.subject_code,
+        label: `${s.subject_code} - ${s.subject_name}`,
+        subject: s,
+      })),
+    [allSubjects]
   )
 
   const handleGenerate = async () => {
@@ -318,7 +340,7 @@ const [section, setSection] = useState('')
                     onChange={setDepartment}
                     options={departmentOptions}
                     placeholder="Select department"
-                    disabled={sessionInProgress || Boolean(staffDepartment)}
+                    disabled={sessionInProgress}
                   />
                 </div>
                 <div>
@@ -372,59 +394,25 @@ const [section, setSection] = useState('')
                   />
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="cf-form-label">
-                    <span className="text-muted-2">
-                      <KeyIcon size={15} />
-                    </span>
-                    Subject
-                  </label>
-                  {subjectSearchReady && (
-                    <div className="mt-1">
-                      {subjectsLoading && (
-                        <div className="cf-loading-inline">
-                          <span className="cf-spinner" role="status" aria-hidden="true" />
-                          Loading subjects…
-                        </div>
-                      )}
-                      <input
-                        type="text"
-                        className={`cf-input w-full${subjectsLoading ? ' hidden' : ''}`}
-                        placeholder="Search subject by code or name"
-                        aria-label="Search subject by code or name"
-                        value={subjectSearchTerm}
-                        onChange={(e) => setSubjectSearchTerm(e.target.value)}
-                        disabled={sessionInProgress || subjectsLoading}
-                      />
-                      {subjectsError && (
-                        <div className="mt-2">
-                          <StatusMessage variant="danger">{subjectsError.message}</StatusMessage>
-                        </div>
-                      )}
-                      {!subjectsLoading && !subjectsError && filteredSubjects.length === 0 && (
-                        <div className="mt-2">
-                          <StatusMessage variant="info">No subjects match &quot;{subjectSearchTerm}&quot;.</StatusMessage>
-                        </div>
-                      )}
-                      {!subjectsLoading && !subjectsError && filteredSubjects.length > 0 && (
-                        <select
-                          className="cf-select mt-2 w-full"
-                          value={selectedSubject?.subject_code ?? ''}
-                          onChange={(e) => {
-                            const subj = filteredSubjects.find((s) => s.subject_code === e.target.value)
-                            if (subj) setSelectedSubject(subj)
-                          }}
-                          disabled={sessionInProgress}
-                        >
-                          <option value="" disabled>Select subject</option>
-                          {filteredSubjects.map((subject) => (
-                            <option key={subject.subject_code} value={subject.subject_code}>
-                              {subject.subject_code} - {subject.subject_name}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  )}
+                  <SearchableSelect
+                    name="subject"
+                    label="Subject"
+                    icon={<KeyIcon size={15} />}
+                    value={selectedSubject?.subject_code ?? ''}
+                    options={subjectOptions}
+                    onChange={(option) => setSelectedSubject(option.subject)}
+                    placeholder="Select subject"
+                    searchPlaceholder="Search subject by code or name"
+                    loading={subjectsLoading}
+                    loadingText="Loading subjects…"
+                    disabled={!subjectSearchReady || sessionInProgress}
+                    emptyText="No subjects match your search."
+                    error={
+                      subjectsError ? (
+                        <StatusMessage variant="danger">{subjectsError.message}</StatusMessage>
+                      ) : null
+                    }
+                  />
                 </div>
               </div>
 

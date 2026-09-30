@@ -797,6 +797,121 @@ a {
 }
 
 /* ---------------------------------------------------------------------------
+   Searchable dropdown
+   --------------------------------------------------------------------------- */
+/*
+   A native <select> cannot host an <input>, so the searchable variant is built
+   from a button plus a popup. These rules cover the popup, its scroll area, and
+   the active-row highlight, and deliberately live here rather than as utility
+   classes: the .cf-input padding is declared with the same specificity as a
+   Tailwind padding utility, so a utility on the inner search box would lose the
+   cascade and the placeholder would sit under the icon.
+*/
+.cf-selectable {
+  position: relative;
+}
+
+.cf-selectable-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  text-align: left;
+  /*
+     .cf-select paints a static chevron through background-image. This control
+     animates its own, so the static one is switched off - otherwise the closed
+     control shows two chevrons. The right padding is then reduced to just clear
+     the icon that remains.
+  */
+  background-image: none;
+  padding-right: 0.85rem;
+}
+
+.cf-selectable-trigger-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cf-selectable-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--cf-border);
+  background: var(--cf-surface);
+  box-shadow: var(--cf-shadow-lg);
+  animation: cf-selectable-in 0.14s ease-out;
+}
+
+/*
+   Entry only. The popup unmounts on close, so animating the way out would mean
+   holding a stale node open and delaying focus; snapping shut is both cheaper
+   and what the arrow-down-into-a-closed-popup pattern expects anyway.
+*/
+@keyframes cf-selectable-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.cf-selectable-search {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--cf-border);
+}
+
+.cf-selectable-list {
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  /* Scroll anchoring keeps the list still while rows are filtered out. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: 15rem;
+}
+
+.cf-selectable-option {
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+  transition: background-color 0.12s ease;
+}
+
+.cf-selectable-option.is-active {
+  background: var(--cf-surface-muted);
+}
+
+.cf-selectable-option.is-selected {
+  font-weight: 600;
+  color: var(--cf-primary-dark);
+}
+
+/*
+   Reserves the height of a short list so the popup does not resize as results
+   come and go while typing, which used to pull the page content under the
+   cursor mid-search.
+*/
+.cf-selectable-empty {
+  margin: 0;
+  padding: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--cf-text-muted);
+  min-height: 6.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------------------
    Status messages
 --------------------------------------------------------------------------- */
 .cf-alert {
