@@ -1,18 +1,25 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { XIcon, UploadIcon, CheckIcon, AlertIcon } from '../Icons'
 import { parseImportFile, validateStudentRows } from '../../utils/adminImport'
-import { createAdminStudents } from '../../api/adminApi'
+import { createAdminStudents, fetchAdminBatches } from '../../api/adminApi'
 import { ALLOWED_SECTIONS } from '../../utils/sectionValidation'
+import { formatBatchLabel } from '../../utils/batchValidation'
 import ImportPreviewTable from './ImportPreviewTable'
 import ManualRowEditor from './ManualRowEditor'
 import InitialPasswordNotice from './InitialPasswordNotice'
+import BatchChooser from './BatchChooser'
 
 /*
- * The batch is chosen on the page before this modal opens, and the tables are
- * provisioned by `POST /api/admin/batches` at that point. This modal therefore
- * only has to add students to a cohort that already exists, which is why it no
- * longer carries a batch picker, a batch-format validator or a per-batch subject
- * form. Subjects are a global catalog and live on the subject page.
+ * The batch is a first step inside this modal, not a control on the page.
+ *
+ * Browsing a cohort and adding students to one are different jobs: selecting a
+ * batch on the page means "show me these students", and must not start a write
+ * workflow. So the chooser lives here, behind the Add Students button, and offers
+ * the two cases that actually differ -- an existing cohort, or a new one whose
+ * tables get provisioned on the spot.
+ *
+ * A new batch is provisioned before any row is inserted, so a failed import leaves
+ * an empty table rather than a half-populated one.
  */
 
 const PREVIEW_COLUMNS = [
@@ -43,6 +50,16 @@ const emptyStudent = () => ({
 })
 
 export default function AddStudentsModal({ department, batch, onClose, onImported }) {
+  /*
+   * `batch` is the cohort the admin was already looking at, so it is offered as the
+   * starting point. It is only a default: the chooser below can move to a different
+   * existing cohort or create a new one.
+   */
+  const [batches, setBatches] = useState([])
+  const [batchKey, setBatchKey] = useState('')
+  const [batchLabel, setBatchLabel] = useState('')
+  const [batchResolved, setBatchResolved] = useState(false)
+
   const [mode, setMode] = useState('upload')
   const [fileName, setFileName] = useState('')
   const [fileError, setFileError] = useState('')
@@ -54,8 +71,33 @@ export default function AddStudentsModal({ department, batch, onClose, onImporte
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef(null)
 
-  const batchKey = batch?.key || ''
-  const batchLabel = batch?.label || batchKey
+  // The cohort's own batches, so the chooser only ever offers this department.
+  useEffect(() => {
+    let cancelled = false
+    fetchAdminBatches(department)
+      .then((data) => {
+        if (!cancelled) setBatches(data.batches?.[department] || [])
+      })
+      .catch(() => {
+        // The chooser degrades to "New Batch" only, and the server still validates
+        // everything, so a failure here is not worth blocking the workflow.
+        if (!cancelled) setBatches([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [department])
+
+  const handleBatchResolved = (key, label) => {
+    setBatchKey(key)
+    setBatchLabel(label || formatBatchLabel(key))
+    setBatchResolved(true)
+    // Starting a different cohort invalidates anything already parsed.
+    setValidation(null)
+    setFileName('')
+    setFileError('')
+    setManualRows([emptyStudent()])
+  }
 
   const handleFile = async (file) => {
     setFileError('')
@@ -322,33 +364,61 @@ export default function AddStudentsModal({ department, batch, onClose, onImporte
       <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
         <div className="flex items-center gap-2 font-bold">
           <CheckIcon size={16} />
-          Import complete
+          Student provisioning successful
         </div>
-        <ul className="mt-1.5 space-y-0.5 text-xs">
-          <li>
-            <span className="font-bold">{result.created || 0}</span> student
-            {result.created === 1 ? '' : 's'} added to {department} {batchLabel}.
-          </li>
-        <li>
-          <span className="font-bold">{result.authAccountsCreated || 0}</span> login account
-          {result.authAccountsCreated === 1 ? '' : 's'} created.
-        </li>
-          <li>
-            <span className="font-bold">{result.skipped || 0}</span> already existed and{' '}
-            {result.skipped === 1 ? 'was' : 'were'} skipped.
-          </li>
-          {result.invalid?.length > 0 && (
-            <li>
-              <span className="font-bold">{result.invalid.length}</span> invalid rows skipped.
-            </li>
+
+        {/*
+          The resolved table names are shown because they are the outcome the admin
+          actually asked for, and the fastest way to confirm a new batch landed on the
+          name they expected. They are echoed from the server response, never built
+          here.
+        */}
+        <dl className="mt-2 space-y-1 text-xs">
+          <div className="flex gap-2">
+            <dt className="font-semibold">Department:</dt>
+            <dd>{result.department || department}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="font-semibold">Batch:</dt>
+            <dd>{formatBatchLabel(result.batch || batchKey)}</dd>
+          </div>
+          {result.studentTable && (
+            <div className="flex gap-2">
+              <dt className="font-semibold">Student table:</dt>
+              <dd className="font-mono">{result.studentTable}</dd>
+            </div>
           )}
-          {result.duplicates?.length > 0 && (
-            <li>
-              <span className="font-bold">{result.duplicates.length}</span> duplicate rows in the
-              file skipped.
-            </li>
+          {result.attendanceTable && (
+            <div className="flex gap-2">
+              <dt className="font-semibold">Attendance table:</dt>
+              <dd className="font-mono">{result.attendanceTable}</dd>
+            </div>
           )}
-        </ul>
+          <div className="flex gap-2">
+            <dt className="font-semibold">Students created:</dt>
+            <dd>{result.created || 0}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="font-semibold">Auth accounts created:</dt>
+            <dd>{result.authAccountsCreated || 0}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="font-semibold">Already existed, skipped:</dt>
+            <dd>{result.skipped || 0}</dd>
+          </div>
+        </dl>
+
+        {result.invalid?.length > 0 && (
+          <p className="mt-2 text-xs">
+            <span className="font-bold">{result.invalid.length}</span> invalid rows skipped.
+          </p>
+        )}
+        {result.duplicates?.length > 0 && (
+          <p className="mt-1 text-xs">
+            <span className="font-bold">{result.duplicates.length}</span> duplicate rows in the
+            file skipped.
+          </p>
+        )}
 
         {/* Only when accounts were actually created; see the staff modal for why. */}
         {result.authAccountsCreated > 0 && (
@@ -403,7 +473,7 @@ export default function AddStudentsModal({ department, batch, onClose, onImporte
         onClick={() => switchMode('upload')}
         className={`btn-cf-outline px-3 py-1.5 text-sm ${mode === 'upload' ? 'ring-2 ring-blue-500' : ''}`}
       >
-        Upload a file
+        Upload Document
       </button>
       <button
         type="button"
@@ -412,7 +482,7 @@ export default function AddStudentsModal({ department, batch, onClose, onImporte
         onClick={() => switchMode('manual')}
         className={`btn-cf-outline px-3 py-1.5 text-sm ${mode === 'manual' ? 'ring-2 ring-blue-500' : ''}`}
       >
-        Enter by hand
+        Manual Entry
       </button>
     </div>
   )
@@ -423,10 +493,13 @@ export default function AddStudentsModal({ department, batch, onClose, onImporte
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
           <div>
             <h2 className="text-lg font-extrabold tracking-tight text-slate-900">
-              Add Students — {department} {batchLabel}
+              Add Students — {department}
+              {batchLabel ? ` · ${batchLabel}` : ''}
             </h2>
             <p className="mt-0.5 text-sm text-slate-500">
-              Upload a CSV/Excel file, or type the records in yourself.
+              {batchResolved
+                ? 'Upload a CSV/Excel file, or type the records in yourself.'
+                : 'Choose a batch to add students to.'}
             </p>
           </div>
           <button type="button" onClick={onClose} className="admin-modal-close" aria-label="Close">
@@ -435,14 +508,53 @@ export default function AddStudentsModal({ department, batch, onClose, onImporte
         </div>
 
         <div className="space-y-4 p-5">
-          {!result && renderModeTabs()}
+          {/* Step 1: which cohort. */}
+          {!result && (
+            <BatchChooser
+              department={department}
+              batches={batches}
+              initialBatch={batch?.key}
+              onResolved={handleBatchResolved}
+            />
+          )}
+
+          {/* Step 2 onward, only once a cohort is settled. */}
+          {!result && batchResolved && (
+            <div className="flex items-center justify-between border-t border-slate-200 pt-4">
+              <p className="text-sm font-bold text-slate-700">
+                Adding to{' '}
+                <span className="text-blue-700">
+                  {department} {batchLabel}
+                </span>
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setBatchResolved(false)
+                  setValidation(null)
+                  setFileName('')
+                  setFileError('')
+                  setManualRows([emptyStudent()])
+                }}
+                className="text-xs font-semibold text-slate-500 underline transition-colors hover:text-blue-600"
+              >
+                Change batch
+              </button>
+            </div>
+          )}
+
+          {!result && batchResolved && (
+            <p className="text-sm font-bold text-slate-700">Choose Input Method</p>
+          )}
+
+          {!result && batchResolved && renderModeTabs()}
 
           {/* Stated before importing, so the password is known up front. */}
-          {!result && <InitialPasswordNotice />}
+          {!result && batchResolved && <InitialPasswordNotice />}
 
-          {!result && mode === 'upload' && renderFilePicker()}
+          {!result && batchResolved && mode === 'upload' && renderFilePicker()}
 
-          {!result && mode === 'manual' && (
+          {!result && batchResolved && mode === 'manual' && (
             <ManualRowEditor
               columns={MANUAL_COLUMNS}
               rows={manualRows}
@@ -453,7 +565,7 @@ export default function AddStudentsModal({ department, batch, onClose, onImporte
             />
           )}
 
-          {!result && renderValidation()}
+          {!result && batchResolved && renderValidation()}
 
           {submitError && (
             <div

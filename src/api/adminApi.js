@@ -98,9 +98,15 @@ function withTarget(path, department, batch) {
 
 /* ------------------------------------------------------------------ batches */
 
-/** Departments and the batches already provisioned for each of them. */
-export function fetchAdminBatches() {
-  return request('/api/admin/batches')
+/**
+ * Departments and the batches already provisioned for each of them.
+ *
+ * Pass a department to get only that department's cohorts, which is what the
+ * picker wants once the department step is done. Omit it for the full map, which is
+ * what the department step itself needs.
+ */
+export function fetchAdminBatches(department) {
+  return request(withTarget('/api/admin/batches', department))
 }
 
 /**
@@ -126,12 +132,26 @@ export function createAdminStudents(department, batch, rows) {
 
 /* --------------------------------------------------------------------- staff */
 
+/**
+ * Every staff member in a department.
+ *
+ * There is no batch parameter, and deliberately so: staff are rows in one `staff`
+ * table, not spread across per-cohort tables the way students are. A batch only
+ * appears on a staff record when the person is a class advisor, and that is
+ * surfaced as a column rather than used as a filter.
+ */
 export function fetchAdminStaff(department) {
   return request(withTarget('/api/admin/staff', department))
 }
 
-export function createAdminStaff(department, batch, rows) {
-  return request(withTarget('/api/admin/staff', department, batch), {
+/**
+ * Creates staff records and their accounts.
+ *
+ * No batch argument: `advisor_batch` travels inside each row, and only for rows
+ * that are actually advisors, so a file may mix people with and without a class.
+ */
+export function createAdminStaff(department, rows) {
+  return request(withTarget('/api/admin/staff', department), {
     method: 'POST',
     body: { rows },
   })

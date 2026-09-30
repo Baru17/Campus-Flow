@@ -172,6 +172,35 @@ function resolveTarget(
 app.get("/batches", requireAuth, requireAdmin, async (c) => {
   try {
     await ensureBatchRegistry(c.env.DB);
+
+    /*
+     * `?department=CSE` narrows the response to one department's cohorts, which is
+     * what the picker needs after the admin has chosen a department. Without it the
+     * full map is returned, because the department step needs the list of
+     * departments to choose from in the first place.
+     *
+     * `batches` is always keyed by every department rather than only the requested
+     * one, so a client can cache one response and index into it.
+     */
+    const requested = c.req.query("department");
+    if (requested !== undefined) {
+      const department = normalizeDepartment(requested);
+      if (!department) {
+        return fail(c, 400, "Choose a supported department", "invalid-department");
+      }
+      return c.json({
+        success: true,
+        department,
+        departments: [department],
+        batches: {
+          [department]: listBatchesForDepartment(department).map((key) => ({
+            key,
+            label: formatBatchLabel(key),
+          })),
+        },
+      });
+    }
+
     const batches: Record<string, { key: string; label: string }[]> = {};
     for (const department of SUPPORTED_DEPARTMENTS) {
       batches[department] = listBatchesForDepartment(department).map((key) => ({
@@ -620,6 +649,13 @@ app.get("/staff", requireAuth, requireAdmin, async (c) => {
 /**
  * Creates staff records and their accounts.
  *
+ * Staff live in one `staff` table, not in per-batch tables, so this endpoint takes
+ * only a department. A batch appears here solely as an *advisor* attribute: the
+ * cohort a class advisor is responsible for. It is therefore optional, and the
+ * per-row `advisor_batch` is what decides whether one is needed, rather than a
+ * request-wide query parameter that would force every staff import to name a
+ * cohort.
+ *
  * The department is the request's own, already validated, and is written to every
  * row. `advisor_year` / `advisor_section` / `advisor_batch` are preserved exactly
  * as the row supplied them, because those are what the class-advisor endpoints
@@ -635,21 +671,7 @@ app.post("/staff", requireAuth, requireAdmin, async (c) => {
       return fail(c, 400, "Choose a supported department", "invalid-department");
     }
 
-    // An advisor batch must be a real batch in the same department, or the
-    // advisor's attendance routes would fail to resolve at generate time.
-    const batchCheck = validateBatchInput(c.req.query("batch"));
-    if (!batchCheck.valid) {
-      return fail(c, 400, batchCheck.message, batchCheck.code);
-    }
     await ensureBatchRegistry(c.env.DB);
-    if (!resolveTables(department, batchCheck.batch)) {
-      return fail(
-        c,
-        400,
-        `That batch is not provisioned for ${department}. Create it first.`,
-        "batch-not-provisioned"
-      );
-    }
 
     const validated: { row: number; value: StaffInput }[] = [];
     const invalid: { row: number; errors: { field: string; message: string }[] }[] = [];
@@ -664,6 +686,33 @@ app.post("/staff", requireAuth, requireAdmin, async (c) => {
 
     if (validated.length === 0) {
       return fail(c, 400, "No valid rows to import", "import-validation-failed", { invalid });
+    }
+
+    /*
+     * An advisor batch must name a cohort that really exists in this department.
+     *
+     * It is checked here rather than by the row validator, which only knows the
+     * format, because "is this batch provisioned" is a database question. Doing it
+     * per row means a single file may contain advisors of different cohorts while
+     * the non-advisor rows need no batch at all.
+     */
+    const advisorBatches = [
+      ...new Set(
+        validated
+          .map((entry) => entry.value.advisor_batch)
+          .filter((batch): batch is string => Boolean(batch))
+      ),
+    ];
+    const unprovisioned = advisorBatches.filter((batch) => !resolveTables(department, batch));
+    if (unprovisioned.length > 0) {
+      return fail(
+        c,
+        400,
+        unprovisioned.length === 1
+          ? `Advisor batch ${unprovisioned[0]} is not provisioned for ${department}. Create it first.`
+          : `These advisor batches are not provisioned for ${department}: ${unprovisioned.join(", ")}. Create them first.`,
+        "batch-not-provisioned"
+      );
     }
 
     const seenEmails = new Set<string>();
@@ -786,7 +835,6 @@ app.post("/staff", requireAuth, requireAdmin, async (c) => {
     return c.json({
       success: true,
       department,
-      batch: batchCheck.batch,
       created: toInsert.length,
       authAccountsCreated: accountsCreated,
       skipped,

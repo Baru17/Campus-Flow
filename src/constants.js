@@ -67,7 +67,13 @@ export const YEAR_LABELS = {
  *
  * The backend enforces the same list in `backend/src/utils/adminValidation.ts`.
  */
-export { ALLOWED_SECTIONS, normalizeSection, isAllowedSection, validateSection } from './utils/sectionValidation'
+export {
+  ALLOWED_SECTIONS,
+  normalizeSection,
+  isAllowedSection,
+  validateSection,
+  isAdvisorFlag,
+} from './utils/sectionValidation'
 
 import { ALLOWED_SECTIONS } from './utils/sectionValidation'
 

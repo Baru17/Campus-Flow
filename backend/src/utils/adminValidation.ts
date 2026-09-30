@@ -242,11 +242,33 @@ function optionalSection(value: unknown): RowResult<string> {
   return validateSection(value);
 }
 
+/**
+ * Whether a staff row claims to be a class advisor.
+ *
+ * The flag is explicit rather than inferred from the presence of an advisor year
+ * and section. Inferring it made an omitted flag and a genuine "no" impossible to
+ * tell apart, and it meant a row could silently become an advisor just by carrying
+ * a stray year. A missing value is treated as "no", which is the safe default:
+ * non-advisors are the large majority of staff and requiring the three advisor
+ * fields from them would make the common case the awkward one.
+ *
+ * Accepts the several spellings a spreadsheet or a hand-typed form produces.
+ */
+function isAdvisorFlag(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  const normalized = text(value).trim().toLowerCase();
+  if (normalized === "") return false;
+  return normalized === "y" || normalized === "yes" || normalized === "true" || normalized === "1";
+}
+
 export function validateStaffRow(row: unknown): RowResult<StaffInput> {
   const source = (row ?? {}) as Record<string, unknown>;
 
   const name = text(source.staff_name);
   const emailResult = validateEmail(source.email);
+  const isAdvisor = isAdvisorFlag(source.class_advisor);
   const yearResult = optionalYear(source.advisor_year);
   const sectionResult = optionalSection(source.advisor_section);
   const batch = text(source.advisor_batch);
@@ -261,16 +283,28 @@ export function validateStaffRow(row: unknown): RowResult<StaffInput> {
   if (!yearResult.ok) errors.push(...yearResult.errors);
   if (!sectionResult.ok) errors.push(...sectionResult.errors);
 
-  // A batch is only meaningful in company with a year and a section: it is the
-  // advisor's class selector, and on its own it would route to a cohort the
-  // advisor does not teach.
   const advisorYear = yearResult.ok ? yearResult.value : null;
   const advisorSection = sectionResult.ok ? sectionResult.value : "";
-  if (batch && (advisorYear === null || !advisorSection)) {
-    errors.push({
-      field: "advisor_batch",
-      message: "Set an advisor year and section before assigning an advisor batch",
-    });
+
+  if (isAdvisor) {
+    /*
+     * An advisor is scoped to a cohort, a year of study and a section, and the
+     * attendance routes resolve tables from all three. Each is therefore required
+     * together: a batch without a section would route to a class the advisor does
+     * not teach, and a year without a batch has no table to resolve.
+     */
+    if (advisorYear === null) {
+      errors.push({ field: "advisor_year", message: "A class advisor needs an advisor year" });
+    }
+    if (advisorSection === "") {
+      errors.push({
+        field: "advisor_section",
+        message: `A class advisor needs an advisor section (${ALLOWED_SECTIONS.join(", ")})`,
+      });
+    }
+    if (!batch) {
+      errors.push({ field: "advisor_batch", message: "A class advisor needs an advisor batch" });
+    }
   }
 
   if (errors.length > 0) {
@@ -283,10 +317,12 @@ export function validateStaffRow(row: unknown): RowResult<StaffInput> {
       staff_name: name,
       email: (emailResult as { ok: true; value: string }).value,
       // `class_advisor` mirrors the flag the class-advisor endpoints authorise on.
-      class_advisor: advisorYear !== null && advisorSection !== "" ? "Y" : "N",
-      advisor_year: advisorYear,
-      advisor_section: advisorSection,
-      advisor_batch: batch,
+      // Only carried through for an advisor, so a stray year on a non-advisor row
+      // cannot promote them to one.
+      class_advisor: isAdvisor ? "Y" : "N",
+      advisor_year: isAdvisor ? advisorYear : null,
+      advisor_section: isAdvisor ? advisorSection : "",
+      advisor_batch: isAdvisor ? batch : "",
     },
   };
 }

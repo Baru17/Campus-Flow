@@ -186,6 +186,21 @@ describe("admin provisioning API", () => {
 			expect(body.batches.CSE.map((b: { key: string }) => b.key)).toContain("2026_2030");
 			expect(body.batches.CSE).toHaveLength(1);
 		});
+
+		it("narrows to one department when asked", async () => {
+			// The picker fetches this after the admin picks a department.
+			const { status, body } = await api("/api/admin/batches?department=CSE");
+			expect(status).toBe(200);
+			expect(body.department).toBe("CSE");
+			expect(body.batches.CSE.map((b: { key: string }) => b.key)).toContain("2026_2030");
+			// No other department leaks in, so the picker cannot offer a cohort that
+			// belongs to someone else's tables.
+			expect(Object.keys(body.batches)).toEqual(["CSE"]);
+		});
+
+		it("refuses an unsupported department", async () => {
+			expect((await api("/api/admin/batches?department=CSE_Students_2024_2028")).status).toBe(400);
+		});
 	});
 
 	describe("POST /api/admin/batches", () => {
@@ -561,8 +576,10 @@ describe("admin provisioning API", () => {
 	});
 
 	describe("POST /api/admin/staff", () => {
-		it("creates staff with a generated numeric staff_id and a login account", async () => {
-			const { status, body } = await api(`/api/admin/staff?department=CSE&batch=${NEW_BATCH}`, {
+		it("creates staff with a generated numeric staff_id and a login account, with no batch", async () => {
+			// No batch in the URL. Staff are rows in one department-scoped table, so a
+			// batch is not needed to say where the person goes.
+			const { status, body } = await api("/api/admin/staff?department=CSE", {
 				method: "POST",
 				body: JSON.stringify({
 					rows: [
@@ -570,6 +587,7 @@ describe("admin provisioning API", () => {
 						{
 							staff_name: "Omar Farouk",
 							email: "omar.farouk@kiot.ac.in",
+							class_advisor: true,
 							advisor_year: 3,
 							advisor_section: "D",
 							advisor_batch: NEW_BATCH,
@@ -579,6 +597,7 @@ describe("admin provisioning API", () => {
 			});
 			expect(status).toBe(200);
 			expect(body.created).toBe(2);
+			expect(body.department).toBe("CSE");
 
 			const { results } = await env.DB
 				.prepare("SELECT staff_id, staff_name, email, department, class_advisor, auth_user_id, advisor_batch FROM staff WHERE department = ? AND email IN (?, ?) ORDER BY email")
@@ -602,6 +621,7 @@ describe("admin provisioning API", () => {
 			expect(omar.advisor_batch).toBe(NEW_BATCH);
 			const nisha = results.find((row: any) => row.email === "nisha.iyer@kiot.ac.in");
 			expect(nisha.advisor_batch).toBeNull();
+			expect(nisha.class_advisor).toBe("N");
 
 			// An advisor gets the class-advisor role so the advisor routes authorize.
 			const account = await env.DB
@@ -611,11 +631,97 @@ describe("admin provisioning API", () => {
 			expect(account.role).toBe("class_advisor");
 		});
 
+		it("does not require advisor fields when class_advisor is false", async () => {
+			const { status, body } = await api("/api/admin/staff?department=IT", {
+				method: "POST",
+				body: JSON.stringify({
+					rows: [{ staff_name: "Plain Lecturer", email: "plain.lecturer@kiot.ac.in", class_advisor: false }],
+				}),
+			});
+			expect(status).toBe(200);
+			expect(body.created).toBe(1);
+
+			const row = await env.DB
+				.prepare("SELECT class_advisor, advisor_year, advisor_section, advisor_batch FROM staff WHERE email = ?")
+				.bind("plain.lecturer@kiot.ac.in")
+				.first<any>();
+			expect(row.class_advisor).toBe("N");
+			expect(row.advisor_batch).toBeNull();
+		});
+
+		it("ignores advisor fields on a row that is not a class advisor", async () => {
+			// A stray year in a spreadsheet must not promote someone to advisor.
+			const { body } = await api("/api/admin/staff?department=IT", {
+				method: "POST",
+				body: JSON.stringify({
+					rows: [
+						{ staff_name: "Stray Fields", email: "stray.fields@kiot.ac.in", advisor_year: 3, advisor_section: "A", advisor_batch: NEW_BATCH },
+					],
+				}),
+			});
+			expect(body.created).toBe(1);
+
+			const row = await env.DB
+				.prepare("SELECT class_advisor, advisor_batch FROM staff WHERE email = ?")
+				.bind("stray.fields@kiot.ac.in")
+				.first<any>();
+			expect(row.class_advisor).toBe("N");
+			expect(row.advisor_batch).toBeNull();
+		});
+
+		it("requires the whole advisor set when class_advisor is true", async () => {
+			// Each of the three missing in turn, so a partial advisor assignment is
+			// refused rather than stored as an advisor who can resolve no table.
+			const incomplete = [
+				{ class_advisor: true, advisor_year: 3, advisor_section: "A" },
+				{ class_advisor: true, advisor_batch: NEW_BATCH, advisor_section: "A" },
+				{ class_advisor: true, advisor_batch: NEW_BATCH, advisor_year: 3 },
+			];
+			for (const [index, advisor] of incomplete.entries()) {
+				const { status, body } = await api("/api/admin/staff?department=IT", {
+					method: "POST",
+					body: JSON.stringify({ rows: [{ staff_name: "Partial", email: `partial.${index}@kiot.ac.in`, ...advisor }] }),
+				});
+				expect(status, `case ${index} should be rejected`).toBe(400);
+				expect(body.code).toBe("import-validation-failed");
+				expect(body.details.invalid).toHaveLength(1);
+			}
+		});
+
+		it("refuses an advisor batch that is not provisioned for the department", async () => {
+			// 2026_2030 is a CSE cohort. IT has 2024_2028 and 2025_2029, so naming the
+			// CSE one here would point the advisor at tables that do not exist.
+			const { status, body } = await api("/api/admin/staff?department=IT", {
+				method: "POST",
+				body: JSON.stringify({
+					rows: [
+						{ staff_name: "Wrong Dept", email: "wrong.dept@kiot.ac.in", class_advisor: true, advisor_year: 3, advisor_section: "A", advisor_batch: "2026_2030" },
+					],
+				}),
+			});
+			expect(status).toBe(400);
+			expect(body.code).toBe("batch-not-provisioned");
+		});
+
+		it("accepts an advisor batch created moments earlier in the same request cycle", async () => {
+			const { status } = await api("/api/admin/batches", {
+				method: "POST",
+				body: JSON.stringify({ department: "EEE", batch: "2031_2035" }),
+			});
+			expect(status).toBe(200);
+
+			const { status: staffStatus, body } = await api("/api/admin/staff?department=EEE", {
+				method: "POST",
+				body: JSON.stringify({
+					rows: [{ staff_name: "New Dept Advisor", email: "eee.advisor@kiot.ac.in", class_advisor: true, advisor_year: 3, advisor_section: "A", advisor_batch: "2031_2035" }],
+				}),
+			});
+			expect(staffStatus).toBe(200);
+			expect(body.created).toBe(1);
+		});
+
 		it("assigns distinct staff_id values to consecutive rows in one import", async () => {
-			// ECE has no tables yet, so its batch is provisioned through the API in
-			// the batch suite above; this import is about the id sequence, which is
-			// derived in SQL and would collide if it were read once in the handler.
-			const { body } = await api(`/api/admin/staff?department=ECE&batch=2030_2034`, {
+			const { body } = await api("/api/admin/staff?department=ECE", {
 				method: "POST",
 				body: JSON.stringify({
 					rows: [
@@ -635,17 +741,8 @@ describe("admin provisioning API", () => {
 			expect(new Set(ids).size).toBe(3);
 		});
 
-		it("refuses a department and batch that do not go together", async () => {
-			const { status, body } = await api("/api/admin/staff?department=EEE&batch=2030_2034", {
-				method: "POST",
-				body: JSON.stringify({ rows: [{ staff_name: "Nowhere", email: "nowhere@kiot.ac.in" }] }),
-			});
-			expect(status).toBe(400);
-			expect(body.code).toBe("batch-not-provisioned");
-		});
-
 		it("skips an email that is already on the staff table", async () => {
-			const { status, body } = await api(`/api/admin/staff?department=CSE&batch=${NEW_BATCH}`, {
+			const { status, body } = await api("/api/admin/staff?department=CSE", {
 				method: "POST",
 				body: JSON.stringify({ rows: [{ staff_name: "Nisha Again", email: "nisha.iyer@kiot.ac.in" }] }),
 			});
@@ -656,10 +753,25 @@ describe("admin provisioning API", () => {
 	});
 
 	describe("GET /api/admin/staff", () => {
-		it("lists the department's staff", async () => {
+		it("lists the department's staff with no batch parameter", async () => {
 			const { status, body } = await api("/api/admin/staff?department=CSE");
 			expect(status).toBe(200);
+			expect(body.staff.length).toBeGreaterThan(0);
 			expect(body.staff.every((member: any) => member.department === "CSE")).toBe(true);
+		});
+
+		it("returns staff from every cohort, advisors and not, in one list", async () => {
+			// The point of dropping the batch step: a department's staff is one list,
+			// not a set of per-cohort lists that would hide a non-advisor.
+			const { body } = await api("/api/admin/staff?department=CSE");
+			const names = body.staff.map((member: any) => member.email);
+			expect(names).toContain("omar.farouk@kiot.ac.in");
+			expect(names).toContain("nisha.iyer@kiot.ac.in");
+		});
+
+		it("refuses a missing or unsupported department", async () => {
+			expect((await api("/api/admin/staff")).status).toBe(400);
+			expect((await api("/api/admin/staff?department=NOPE")).status).toBe(400);
 		});
 	});
 
@@ -714,7 +826,7 @@ describe("admin provisioning API", () => {
 	 */
 	describe("initial password", () => {
 		it("is 1234 for a newly provisioned staff account, stored only as a hash", async () => {
-			const { body } = await api(`/api/admin/staff?department=IT&batch=${NEW_BATCH}`, {
+			const { body } = await api("/api/admin/staff?department=IT", {
 				method: "POST",
 				body: JSON.stringify({ rows: [{ staff_name: "Password Check", email: "pw.check@kiot.ac.in" }] }),
 			});
@@ -765,7 +877,7 @@ describe("admin provisioning API", () => {
 		it("lets a newly provisioned staff account sign in with 1234", async () => {
 			// End to end through the real login route, which is the only proof that
 			// the hash written by provisioning is one the application accepts.
-			await api(`/api/admin/staff?department=IT&batch=${NEW_BATCH}`, {
+			await api("/api/admin/staff?department=IT", {
 				method: "POST",
 				body: JSON.stringify({ rows: [{ staff_name: "Login Check", email: "login.check@kiot.ac.in" }] }),
 			});

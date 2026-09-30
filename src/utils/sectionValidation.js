@@ -35,3 +35,22 @@ export function validateSection(value) {
   }
   return null
 }
+
+/**
+ * Whether a staff row claims to be a class advisor.
+ *
+ * The `staff.class_advisor` column is historical and the same meaning has been
+ * written several ways: 'Y' by the admin API, '1' by an older migration, and NULL
+ * or blank for "no". Every one of those has to read as false, and `true`/`1`/`yes`
+ * has to read as true, otherwise a real advisor is hidden or a lecturer is promoted.
+ *
+ * A missing value is false rather than an error: most staff teach without holding a
+ * class, so the column being absent must not force three more onto every row.
+ */
+export function isAdvisorFlag(value) {
+  if (value === undefined || value === null) return false
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value === 1
+  const normalized = String(value).trim().toLowerCase()
+  return normalized === 'y' || normalized === 'yes' || normalized === 'true' || normalized === '1'
+}

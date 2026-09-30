@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx'
-import { ALLOWED_SECTIONS } from './sectionValidation'
+import { ALLOWED_SECTIONS, isAdvisorFlag } from './sectionValidation'
 
 const HEADER_ALIASES = {
   student_id: ['studentid', 'studentidno', 'id'],
@@ -202,26 +202,42 @@ function validateRows(rows, required, options = {}) {
     } else {
       const staffName = trimString(raw.staff_name)
       const email = trimString(raw.email).toLowerCase()
+      const isAdvisor = isAdvisorFlag(raw.class_advisor)
       const advisorYear = trimString(raw.advisor_year)
       const advisorSection = trimString(raw.advisor_section).toUpperCase()
       const advisorBatch = trimString(raw.advisor_batch)
 
       value.staff_name = staffName
       value.email = email
-      // Only forwarded when supplied, so the server's "absent means not an
-      // advisor" rule sees the same thing the spreadsheet said.
-      if (advisorYear) value.advisor_year = Number(advisorYear)
-      if (advisorSection) value.advisor_section = advisorSection
-      if (advisorBatch) value.advisor_batch = advisorBatch
+      // Always forwarded, so the server sees an explicit yes or no rather than
+      // having to infer it from whether the advisor columns happen to be filled in.
+      value.class_advisor = isAdvisor
+      // Only meaningful for an advisor, and stripped otherwise so a stray value on a
+      // non-advisor row cannot promote them to one.
+      if (isAdvisor) {
+        if (advisorYear) value.advisor_year = Number(advisorYear)
+        if (advisorSection) value.advisor_section = advisorSection
+        if (advisorBatch) value.advisor_batch = advisorBatch
+      }
 
       if (!staffName) reason = 'Missing staff_name'
       else if (!email || !email.includes('@')) reason = 'Missing or invalid email'
-      else if (advisorYear && (!Number.isInteger(Number(advisorYear)) || Number(advisorYear) < 1 || Number(advisorYear) > 4))
+      else if (isAdvisor) {
+        // An advisor is scoped to a cohort, a year and a section, and the attendance
+        // routes resolve tables from all three, so they are required together.
+        if (!advisorBatch) reason = 'A class advisor needs advisor_batch'
+        else if (!advisorYear) reason = 'A class advisor needs advisor_year'
+        else if (!advisorSection) reason = 'A class advisor needs advisor_section'
+        else if (!Number.isInteger(Number(advisorYear)) || Number(advisorYear) < 1 || Number(advisorYear) > 4)
+          reason = `Invalid advisor year: ${advisorYear}`
+        else if (!ALLOWED_SECTIONS.includes(advisorSection))
+          reason = `Invalid advisor section "${advisorSection}". Use one of ${ALLOWED_SECTIONS.join(', ')}`
+      } else if (advisorYear && (!Number.isInteger(Number(advisorYear)) || Number(advisorYear) < 1 || Number(advisorYear) > 4))
+        // A non-advisor with a bad year is still worth flagging, so a column-mapping
+        // mistake in the spreadsheet surfaces here rather than being silently dropped.
         reason = `Invalid advisor year: ${advisorYear}`
       else if (advisorSection && !ALLOWED_SECTIONS.includes(advisorSection))
         reason = `Invalid advisor section "${advisorSection}". Use one of ${ALLOWED_SECTIONS.join(', ')}`
-      else if (advisorBatch && (!advisorYear || !advisorSection))
-        reason = 'advisor_batch needs advisor_year and advisor_section as well'
 
       if (email) {
         seenEmails.set(email, (seenEmails.get(email) || 0) + 1)
@@ -278,6 +294,10 @@ function validateRows(rows, required, options = {}) {
  * Expected columns per entity, kept next to the upload UI so the two cannot drift.
  * These mirror the columns the admin API validates server-side; the browser copy is
  * for preview only and is never the authority.
+ *
+ * `class_advisor` is optional on staff because most staff teach without holding a
+ * class, and every `advisor_*` column is optional for the same reason. They become
+ * required together once `class_advisor` is set, which is checked per row.
  */
 export const STUDENT_COLUMNS = [
   'student_id',
@@ -287,16 +307,16 @@ export const STUDENT_COLUMNS = [
   'section',
   'email',
 ]
-export const STAFF_COLUMNS = ['staff_name', 'email', 'advisor_year', 'advisor_section', 'advisor_batch']
+export const STAFF_COLUMNS = ['staff_name', 'email', 'class_advisor', 'advisor_year', 'advisor_section', 'advisor_batch']
 export const SUBJECT_COLUMNS = ['subject_code', 'subject_name']
 
-/**
- * Optional columns are still accepted when present, so a fuller spreadsheet does
- * not have to be stripped down first. `advisor_*` is optional on staff because
- * most staff teach without holding a class.
+/*
+ * Columns that may be absent from a staff file. `class_advisor` is absent for the
+ * common case of someone who teaches without holding a class, and the `advisor_*`
+ * columns are only meaningful for one who does.
  */
 const STUDENT_OPTIONAL = new Set([])
-const STAFF_OPTIONAL = new Set(['advisor_year', 'advisor_section', 'advisor_batch'])
+const STAFF_OPTIONAL = new Set(['class_advisor', 'advisor_year', 'advisor_section', 'advisor_batch'])
 
 export function validateStudentRows(rows) {
   return validateRows(rows, STUDENT_COLUMNS, {
