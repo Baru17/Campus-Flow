@@ -4,7 +4,7 @@ import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
 import AddStudentsModal from '../components/admin/AddStudentsModal'
-import { adminStudents } from '../api/adminApi'
+import { fetchAdminBatches, fetchAdminStudents, createAdminBatch } from '../api/adminApi'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
   ChevronLeftIcon,
@@ -30,12 +30,21 @@ export default function AdminStudentManagement() {
   const navigate = useNavigate()
   const { logout } = useAdminAuth()
 
-  const [meta, setMeta] = useState(null)
+  const [departments, setDepartments] = useState([])
+  const [batchesByDepartment, setBatchesByDepartment] = useState({})
   const [metaLoading, setMetaLoading] = useState(true)
   const [metaError, setMetaError] = useState(null)
 
   const [department, setDepartment] = useState('')
   const [batch, setBatch] = useState('')
+
+  // Creating a cohort is a first-class step, not a side effect of an import: the
+  // admin picks the department, then either an existing batch or a new one, and
+  // the tables are created before any student is added to them.
+  const [showNewBatch, setShowNewBatch] = useState(false)
+  const [newBatch, setNewBatch] = useState('')
+  const [newBatchError, setNewBatchError] = useState(null)
+  const [creatingBatch, setCreatingBatch] = useState(false)
 
   const [students, setStudents] = useState([])
   const [studentsLoading, setStudentsLoading] = useState(false)
@@ -47,12 +56,19 @@ export default function AdminStudentManagement() {
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
 
+  /*
+   * `fetchAdminBatches` replaces the `adminStudents('meta')` call, which asked the
+   * nonexistent `admin-students` Supabase function for the department list. The
+   * batch list now comes from `academic_batches`, so a cohort created through the
+   * dashboard appears here without a code change or redeploy.
+   */
   const loadMeta = useCallback(async () => {
     setMetaLoading(true)
     setMetaError(null)
     try {
-      const data = await adminStudents('meta')
-      setMeta(data)
+      const data = await fetchAdminBatches()
+      setDepartments(data.departments || [])
+      setBatchesByDepartment(data.batchesByDepartment || {})
     } catch (err) {
       setMetaError(err)
     } finally {
@@ -61,29 +77,14 @@ export default function AdminStudentManagement() {
   }, [])
 
   useEffect(() => {
-    let cancelled = false
-    setMetaLoading(true)
-    setMetaError(null)
-    adminStudents('meta')
-      .then((data) => {
-        if (!cancelled) setMeta(data)
-      })
-      .catch((err) => {
-        if (!cancelled) setMetaError(err)
-      })
-      .finally(() => {
-        if (!cancelled) setMetaLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    loadMeta()
+  }, [loadMeta])
 
   // All departments now use batches.
   const departmentBatches = useMemo(() => {
-    if (!meta || !department) return []
-    return meta.batches_by_dept?.[department] || []
-  }, [department, meta])
+    if (!department) return []
+    return batchesByDepartment[department] || []
+  }, [department, batchesByDepartment])
 
   const selectedBatch = useMemo(() => {
     if (!department || !batch) return null
@@ -101,7 +102,7 @@ export default function AdminStudentManagement() {
     let cancelled = false
     setStudentsLoading(true)
     setStudentsError(null)
-    adminStudents('list', { department, batch })
+    fetchAdminStudents(department, batch)
       .then((data) => {
         if (!cancelled) setStudents(data.students || [])
       })
@@ -115,6 +116,34 @@ export default function AdminStudentManagement() {
       cancelled = true
     }
   }, [studentsReady, department, batch])
+
+  /**
+   * Creates the cohort's tables, then moves straight to its student list.
+   *
+   * The backend provisions the student and attendance tables and registers the
+   * batch, so by the time this resolves the batch is importable. Errors are shown
+   * inline rather than as an alert, and the form keeps what was typed so a typo in
+   * one character does not cost the whole entry.
+   */
+  const handleCreateBatch = async (event) => {
+    event.preventDefault()
+    if (creatingBatch) return
+    setCreatingBatch(true)
+    setNewBatchError(null)
+    try {
+      const data = await createAdminBatch(department, newBatch)
+      setShowNewBatch(false)
+      setNewBatch('')
+      await loadMeta()
+      setBatch(data.batch)
+      setSearch('')
+      setPage(1)
+    } catch (err) {
+      setNewBatchError(err)
+    } finally {
+      setCreatingBatch(false)
+    }
+  }
 
   const handleLogout = async () => {
     await logout()
@@ -199,7 +228,7 @@ export default function AdminStudentManagement() {
           </span>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {meta.departments.map((dept) => (
+          {departments.map((dept) => (
             <button
               key={dept}
               type="button"
@@ -279,15 +308,107 @@ export default function AdminStudentManagement() {
               />
             </button>
           ))}
-          {departmentBatches.length === 0 && (
-            <div className="col-span-full rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
-              <p className="text-sm text-slate-500">
-                No batches found for {department}. Click &quot;Add Students&quot; to create the first batch.
+
+          {/* New cohort: creates the batch's tables, then lands on its empty student list. */}
+          <button
+            type="button"
+            onClick={() => {
+              setShowNewBatch(true)
+              setNewBatchError(null)
+            }}
+            className="admin-option-card admin-option-card-compact group text-left border-dashed"
+          >
+            <div className="min-w-0 flex-1">
+              <h3 className="text-lg font-extrabold tracking-tight text-blue-700 group-hover:text-blue-800">
+                New batch
+              </h3>
+              <p className="mt-0.5 text-sm text-slate-500">
+                Create a new cohort and its tables, then add students.
               </p>
             </div>
-          )}
+            <PlusIcon
+              size={20}
+              className="shrink-0 text-slate-300 transition-all group-hover:text-blue-500"
+            />
+          </button>
         </div>
       </div>
+
+      {showNewBatch && (
+        <div className="cf-card mt-4 p-4 md:p-6 page-enter">
+          <div className="cf-card-header">
+            <div>
+              <h2 className="section-title">Create a new batch — {department}</h2>
+              <p className="text-muted-2 text-sm mb-0">
+                This provisions the student and attendance tables for the cohort. Use the format
+                <code className="mx-1 rounded bg-slate-100 px-1 py-0.5 text-xs">YYYY_YYYY</code>
+                (e.g. 2024_2028).
+              </p>
+            </div>
+            <span className="cf-icon-badge violet">
+              <PlusIcon size={22} />
+            </span>
+          </div>
+
+          <form onSubmit={handleCreateBatch} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <label htmlFor="new-batch-input" className="cf-label">
+                Batch
+              </label>
+              <input
+                id="new-batch-input"
+                type="text"
+                value={newBatch}
+                onChange={(e) => {
+                  setNewBatch(e.target.value)
+                  setNewBatchError(null)
+                }}
+                placeholder="2024_2028"
+                className="cf-input"
+                autoFocus
+                disabled={creatingBatch}
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNewBatch(false)
+                  setNewBatch('')
+                  setNewBatchError(null)
+                }}
+                className="btn-cf-outline px-4 py-2 text-sm"
+                disabled={creatingBatch}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn-cf-primary px-4 py-2 text-sm inline-flex items-center gap-2"
+                disabled={creatingBatch || !newBatch.trim()}
+              >
+                {creatingBatch ? (
+                  <>
+                    <span className="cf-spinner" role="status" aria-hidden="true" />
+                    Creating…
+                  </>
+                ) : (
+                  <>
+                    <PlusIcon size={16} />
+                    Create batch
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+
+          {newBatchError && (
+            <StatusMessage variant="danger" className="mt-3">
+              {newBatchError.message}
+            </StatusMessage>
+          )}
+        </div>
+      )}
     </div>
   )
 
@@ -452,9 +573,9 @@ export default function AdminStudentManagement() {
 
         {metaError && <StatusMessage variant="danger">{metaError.message}</StatusMessage>}
 
-        {!metaLoading && !metaError && meta && !department && renderDepartmentStep()}
-        {!metaLoading && !metaError && meta && department && !batch && renderBatchStep()}
-        {!metaLoading && !metaError && meta && department && batch && renderStudentsStep()}
+        {!metaLoading && !metaError && !department && renderDepartmentStep()}
+        {!metaLoading && !metaError && department && !batch && renderBatchStep()}
+        {!metaLoading && !metaError && department && batch && renderStudentsStep()}
 
         {showAdd && (
           <AddStudentsModal

@@ -3,11 +3,13 @@ import { cors } from "hono/cors";
 import auth from "./api/auth";
 import passwordReset from "./api/passwordReset";
 import attendance, { finalizeSession } from "./api/attendance";
+import admin from "./api/admin";
 import { requireAuth, requireClassAdvisor, requireStaff } from "./middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "./utils/databaseErrors";
 import {
   assertAllowedAttendanceTable,
   assertAllowedStudentTable,
+  ensureBatchRegistry,
   normalizeDepartment,
   resolveTables,
 } from "./utils/tableResolver";
@@ -65,9 +67,30 @@ app.use("/*", cors({
   allowHeaders: ["Content-Type", "Authorization", "Cookie"],
 }));
 
+/*
+ * The batch registry is hydrated once per request before any handler resolves a
+ * table, so a cohort created through the admin dashboard is usable immediately
+ * rather than after a restart. The handlers below read the registry
+ * synchronously because a table name cannot be bound as a SQL parameter; this is
+ * where the single asynchronous read happens.
+ *
+ * A failure here is not fatal: the built-in batch list already covers the cohorts
+ * that exist in production, and `hydrateBatchRegistry` logs and returns when the
+ * registry table is absent.
+ */
+app.use("/api/*", async (c, next) => {
+  try {
+    await ensureBatchRegistry(c.env.DB);
+  } catch (error) {
+    console.error("batch registry hydration failed", getErrorMessageForLog(error));
+  }
+  await next();
+});
+
 app.route("/api/auth", auth);
 app.route("/api/auth", passwordReset);
 app.route("/api/attendance", attendance);
+app.route("/api/admin", admin);
 
 app.get("/api/class-advisors", requireAuth, requireClassAdvisor, async (c) => {
   const staffId = c.req.query("staff_id");

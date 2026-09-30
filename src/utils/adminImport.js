@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { ALLOWED_SECTIONS } from './sectionValidation'
 
 const HEADER_ALIASES = {
   student_id: ['studentid', 'studentidno', 'id'],
@@ -128,7 +129,8 @@ function trimString(value) {
  */
 function validateRows(rows, required, options = {}) {
   const presentHeaders = new Set(rows[0] ? Object.keys(rows[0]) : [])
-  const missingColumns = required.filter((col) => !presentHeaders.has(col))
+  const optional = options.optional || new Set()
+  const missingColumns = required.filter((col) => !optional.has(col) && !presentHeaders.has(col))
 
   if (missingColumns.length > 0) {
     return {
@@ -171,7 +173,7 @@ function validateRows(rows, required, options = {}) {
       value.student_name = studentName
       value.year = Number.isInteger(year) ? year : ''
       value.section = section
-      if (email) value.email = email
+      value.email = email
 
       if (!studentId) reason = 'Missing student_id'
       else if (!registerNo) reason = 'Missing register_no'
@@ -179,6 +181,12 @@ function validateRows(rows, required, options = {}) {
       else if (!Number.isInteger(year) || year < 1 || year > 4)
         reason = `Invalid year: ${trimString(raw.year) || '(empty)'}`
       else if (!section) reason = 'Missing section'
+      // The student table has `email TEXT NOT NULL UNIQUE`, so a blank email is a
+      // hard error rather than something to fill in later.
+      else if (!email) reason = 'Missing email'
+      else if (!email.includes('@')) reason = 'Invalid email'
+      else if (!ALLOWED_SECTIONS.includes(section))
+        reason = `Invalid section "${section}". Use one of ${ALLOWED_SECTIONS.join(', ')}`
 
       if (studentId) {
         const key = studentId.toLowerCase()
@@ -188,15 +196,32 @@ function validateRows(rows, required, options = {}) {
         const key = registerNo.toLowerCase()
         seenRegisterNos.set(key, (seenRegisterNos.get(key) || 0) + 1)
       }
+      if (email) {
+        seenEmails.set(email, (seenEmails.get(email) || 0) + 1)
+      }
     } else {
       const staffName = trimString(raw.staff_name)
       const email = trimString(raw.email).toLowerCase()
+      const advisorYear = trimString(raw.advisor_year)
+      const advisorSection = trimString(raw.advisor_section).toUpperCase()
+      const advisorBatch = trimString(raw.advisor_batch)
 
       value.staff_name = staffName
       value.email = email
+      // Only forwarded when supplied, so the server's "absent means not an
+      // advisor" rule sees the same thing the spreadsheet said.
+      if (advisorYear) value.advisor_year = Number(advisorYear)
+      if (advisorSection) value.advisor_section = advisorSection
+      if (advisorBatch) value.advisor_batch = advisorBatch
 
       if (!staffName) reason = 'Missing staff_name'
       else if (!email || !email.includes('@')) reason = 'Missing or invalid email'
+      else if (advisorYear && (!Number.isInteger(Number(advisorYear)) || Number(advisorYear) < 1 || Number(advisorYear) > 4))
+        reason = `Invalid advisor year: ${advisorYear}`
+      else if (advisorSection && !ALLOWED_SECTIONS.includes(advisorSection))
+        reason = `Invalid advisor section "${advisorSection}". Use one of ${ALLOWED_SECTIONS.join(', ')}`
+      else if (advisorBatch && (!advisorYear || !advisorSection))
+        reason = 'advisor_batch needs advisor_year and advisor_section as well'
 
       if (email) {
         seenEmails.set(email, (seenEmails.get(email) || 0) + 1)
@@ -249,37 +274,63 @@ function validateRows(rows, required, options = {}) {
   }
 }
 
+/*
+ * Expected columns per entity, kept next to the upload UI so the two cannot drift.
+ * These mirror the columns the admin API validates server-side; the browser copy is
+ * for preview only and is never the authority.
+ */
+export const STUDENT_COLUMNS = [
+  'student_id',
+  'register_no',
+  'student_name',
+  'year',
+  'section',
+  'email',
+]
+export const STAFF_COLUMNS = ['staff_name', 'email', 'advisor_year', 'advisor_section', 'advisor_batch']
+export const SUBJECT_COLUMNS = ['subject_code', 'subject_name']
+
+/**
+ * Optional columns are still accepted when present, so a fuller spreadsheet does
+ * not have to be stripped down first. `advisor_*` is optional on staff because
+ * most staff teach without holding a class.
+ */
+const STUDENT_OPTIONAL = new Set([])
+const STAFF_OPTIONAL = new Set(['advisor_year', 'advisor_section', 'advisor_batch'])
+
 export function validateStudentRows(rows) {
-  return validateRows(rows, ['student_id', 'register_no', 'student_name', 'year', 'section'], {
+  return validateRows(rows, STUDENT_COLUMNS, {
     kind: 'student',
     idColumn: 'student_id',
+    optional: STUDENT_OPTIONAL,
   })
 }
 
 export function validateStaffRows(rows) {
-  return validateRows(rows, ['staff_name', 'email'], {
+  return validateRows(rows, STAFF_COLUMNS, {
     kind: 'staff',
     idColumn: 'email',
+    optional: STAFF_OPTIONAL,
   })
 }
 
 export function validateSubjectRows(rows) {
   const present = new Set(rows[0] ? Object.keys(rows[0]) : [])
-  const missingColumns = ['semester', 'subject_code', 'subject_name'].filter((key) => !present.has(key))
+  const missingColumns = SUBJECT_COLUMNS.filter((key) => !present.has(key))
   if (missingColumns.length) return { missingColumns, total: 0, validRows: [], invalidRows: [] }
-  const seen = new Set(), validRows = [], invalidRows = []
+  const seen = new Set(),
+    validRows = [],
+    invalidRows = []
   rows.forEach((raw, index) => {
-    const semester = Number(raw.semester)
     const subject_code = trimString(raw.subject_code).toUpperCase()
     const subject_name = trimString(raw.subject_name)
     let reason = ''
-    if (!Number.isInteger(semester) || semester < 1 || semester > 8) reason = 'Semester must be an integer from 1 to 8'
-    else if (!subject_code) reason = 'Missing subject_code'
+    if (!subject_code) reason = 'Missing subject_code'
     else if (!subject_name) reason = 'Missing subject_name'
-    else if (seen.has(`${semester}:${subject_code}`)) reason = 'Duplicate semester + subject code in upload'
-    else seen.add(`${semester}:${subject_code}`)
+    else if (seen.has(subject_code)) reason = `Duplicate subject code ${subject_code} in upload`
+    else seen.add(subject_code)
     if (reason) invalidRows.push({ rowNumber: index + 2, reason })
-    else validRows.push({ semester, subject_code, subject_name })
+    else validRows.push({ subject_code, subject_name })
   })
   return { missingColumns: [], total: rows.length, validRows, invalidRows }
 }

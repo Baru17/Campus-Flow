@@ -58,7 +58,20 @@ export const YEAR_LABELS = {
   4: 'IV Year',
 }
 
-export const SECTIONS = ['A', 'B', 'C']
+/*
+ * Sections a cohort may use.
+ *
+ * Re-exported from `utils/sectionValidation`, which is the single source: the
+ * admin upload parser and the student form both need the list, and two copies
+ * drifted before, which is how section D came to be missing.
+ *
+ * The backend enforces the same list in `backend/src/utils/adminValidation.ts`.
+ */
+export { ALLOWED_SECTIONS, normalizeSection, isAllowedSection, validateSection } from './utils/sectionValidation'
+
+import { ALLOWED_SECTIONS } from './utils/sectionValidation'
+
+export const SECTIONS = ALLOWED_SECTIONS
 
 export const PERIODS = [1, 2, 3, 4, 5, 6, 7, 8]
 

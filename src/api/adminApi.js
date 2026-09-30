@@ -1,6 +1,21 @@
 import { ApiError } from './attendanceApi'
 import { BACKEND_URL } from './backendUrl'
 
+/**
+ * The admin dashboard's data layer.
+ *
+ * This used to call `POST /api/functions/admin-students`, and the three
+ * `admin-*` functions it named have no implementation on the Worker. That URL
+ * shape is the old Supabase Edge Function convention, where one function per
+ * domain multiplexed every operation through an `action` field in the body. It is
+ * deliberately not revived here.
+ *
+ * These are ordinary REST resources under `/api/admin`, mounted in `index.ts` and
+ * authorised with `requireAuth` + `requireAdmin` on the Worker, so access depends
+ * on the session and role in the database rather than on anything the browser
+ * sends. Errors come back in the same `{ success, error, code }` shape the rest of
+ * the API uses, and a bulk import reports per-row problems alongside them.
+ */
 const NOT_CONFIGURED_MESSAGE =
   'The admin backend is not configured yet. Contact the administrator.'
 
@@ -15,40 +30,119 @@ function assertBackend() {
   if (!BACKEND_URL) throw notConfigured()
 }
 
-async function apiRequest(functionName, payload) {
-  assertBackend()
+function isNetworkFailure(error) {
+  if (error instanceof TypeError) return true
+  const message = String(error?.message || '').toLowerCase()
+  return message.includes('failed to fetch') || message.includes('networkerror')
+}
+
+/**
+ * Parses a response body, tolerating a non-JSON error page.
+ *
+ * The Worker answers an unrouted path with a plain-text 404, and `response.json()`
+ * on that throws a `SyntaxError` which is neither an `ApiError` nor a network
+ * failure, so it used to escape unhandled. A failed parse is treated as an empty
+ * body and the status code decides the message.
+ */
+async function readBody(response) {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/functions/${functionName}`, {
+    return await response.json()
+  } catch {
+    return {}
+  }
+}
+
+async function request(path, { method = 'GET', query, body } = {}) {
+  assertBackend()
+
+  const url = new URL(`${BACKEND_URL}${path}`)
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.set(key, String(value))
+    }
+  }
+
+  let response
+  try {
+    response = await fetch(url.toString(), {
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      method: 'POST',
-      body: JSON.stringify(payload),
+      method,
+      body: body === undefined ? undefined : JSON.stringify(body),
     })
-    const data = await response.json()
-    if (!response.ok) {
-      const error = new Error(data.error || 'Request failed')
-      error.status = response.status
-      error.code = data.code || null
-      throw error
-    }
-    return data
   } catch (error) {
-    if (error instanceof ApiError) throw error
-    if (error instanceof TypeError || String(error?.message || '').toLowerCase().includes('failed to fetch')) {
+    if (isNetworkFailure(error)) {
       throw new ApiError(NETWORK_MESSAGE, { code: 'network' })
     }
     throw error
   }
+
+  const data = await readBody(response)
+  if (!response.ok) {
+    throw new ApiError(data.error || `Request failed (${response.status})`, {
+      code: data.code || null,
+      status: response.status,
+      details: data.details || data.invalid || null,
+    })
+  }
+  return data
 }
 
-export async function adminStudents(action, payload = {}) {
-  return apiRequest('admin-students', { action, ...payload })
+function withTarget(path, department, batch) {
+  const query = new URLSearchParams()
+  if (department) query.set('department', department)
+  if (batch) query.set('batch', batch)
+  const suffix = query.toString()
+  return suffix ? `${path}?${suffix}` : path
 }
 
-export async function adminStaff(action, payload = {}) {
-  return apiRequest('admin-staff', { action, ...payload })
+/* ------------------------------------------------------------------ batches */
+
+/** Departments and the batches already provisioned for each of them. */
+export function fetchAdminBatches() {
+  return request('/api/admin/batches')
 }
 
-export async function adminSubjects(action, payload = {}) {
-  return apiRequest('admin-subjects', { action, ...payload })
+/**
+ * Creates a cohort's tables and registers it. Idempotent, so calling it for a
+ * batch that already exists reports `created: false` rather than failing.
+ */
+export function createAdminBatch(department, batch) {
+  return request('/api/admin/batches', { method: 'POST', body: { department, batch } })
+}
+
+/* ------------------------------------------------------------------ students */
+
+export function fetchAdminStudents(department, batch) {
+  return request(withTarget('/api/admin/students', department, batch))
+}
+
+export function createAdminStudents(department, batch, rows) {
+  return request(withTarget('/api/admin/students', department, batch), {
+    method: 'POST',
+    body: { rows },
+  })
+}
+
+/* --------------------------------------------------------------------- staff */
+
+export function fetchAdminStaff(department) {
+  return request(withTarget('/api/admin/staff', department))
+}
+
+export function createAdminStaff(department, batch, rows) {
+  return request(withTarget('/api/admin/staff', department, batch), {
+    method: 'POST',
+    body: { rows },
+  })
+}
+
+/* ----------------------------------------------------------------- subjects */
+
+export function fetchAdminSubjects() {
+  return request('/api/admin/subjects')
+}
+
+export function createAdminSubjects(rows) {
+  return request('/api/admin/subjects', { method: 'POST', body: { rows } })
 }

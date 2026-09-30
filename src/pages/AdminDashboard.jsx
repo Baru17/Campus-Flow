@@ -42,8 +42,8 @@ export default function AdminDashboard() {
     },
     {
       title: 'SUBJECTS',
-      subtitle: 'Semester Master',
-      description: 'Import semester-wise subjects and configure each batch’s current semester.',
+      subtitle: 'Subject Catalog',
+      description: 'Add and search the subject catalog shared by every department and batch.',
       icon: <BookIcon size={30} />,
       tone: 'blue',
       onClick: () => navigate('/admin/subjects'),
