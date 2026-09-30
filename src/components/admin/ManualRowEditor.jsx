@@ -10,6 +10,13 @@
  * Validation is intentionally *not* performed here. The modals hand the rows to
  * the same validators the upload path uses, so a hand-typed row and an uploaded
  * row are checked by identical code, and the server re-checks both.
+ *
+ * A column may carry a `when(row)` predicate to hide itself for rows that do not
+ * need it. The staff form uses this for the three advisor fields: they only apply
+ * to a class advisor, so showing an "advisor batch" box next to someone who
+ * teaches without a class implies a requirement that does not exist. The fields
+ * are still validated server-side, so hiding them is a presentation choice and not
+ * the thing that makes an advisor row safe.
  */
 import { PlusIcon, TrashIcon } from '../Icons'
 
@@ -61,34 +68,44 @@ export default function ManualRowEditor({
             {rows.map((row, index) => (
               <tr key={index}>
                 <td className="advisor-table-num">{index + 1}</td>
-                {columns.map((column) => (
-                  <td key={column.key}>
-                    {column.type === 'select' ? (
-                      <select
-                        value={row[column.key] ?? ''}
-                        onChange={(e) => update(index, column.key, e.target.value)}
-                        className="cf-select w-full min-w-[6rem] text-sm"
-                        aria-label={`${column.label} for ${rowLabel.toLowerCase()} ${index + 1}`}
-                      >
-                        {column.options.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type={column.type === 'number' ? 'number' : 'text'}
-                        inputMode={column.type === 'number' ? 'numeric' : undefined}
-                        value={row[column.key] ?? ''}
-                        onChange={(e) => update(index, column.key, e.target.value)}
-                        placeholder={column.placeholder}
-                        className="cf-input w-full min-w-[7rem] text-sm"
-                        aria-label={`${column.label} for ${rowLabel.toLowerCase()} ${index + 1}`}
-                      />
-                    )}
-                  </td>
-                ))}
+                {columns.map((column) => {
+                  const applies = !column.when || column.when(row)
+                  return (
+                    <td key={column.key}>
+                      {!applies ? (
+                        // A muted dash rather than a blank cell, so an inapplicable
+                        // field reads as deliberately not applicable instead of as
+                        // something the admin forgot to fill in.
+                        <span className="text-slate-300" aria-label="Not applicable">
+                          —
+                        </span>
+                      ) : column.type === 'select' ? (
+                        <select
+                          value={row[column.key] ?? ''}
+                          onChange={(e) => update(index, column.key, e.target.value)}
+                          className="cf-select w-full min-w-[6rem] text-sm"
+                          aria-label={`${column.label} for ${rowLabel.toLowerCase()} ${index + 1}`}
+                        >
+                          {column.options.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type={column.type === 'number' ? 'number' : 'text'}
+                          inputMode={column.type === 'number' ? 'numeric' : undefined}
+                          value={row[column.key] ?? ''}
+                          onChange={(e) => update(index, column.key, e.target.value)}
+                          placeholder={column.placeholder}
+                          className="cf-input w-full min-w-[7rem] text-sm"
+                          aria-label={`${column.label} for ${rowLabel.toLowerCase()} ${index + 1}`}
+                        />
+                      )}
+                    </td>
+                  )
+                })}
                 <td className="advisor-table-num">
                   <button
                     type="button"

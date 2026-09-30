@@ -32,13 +32,24 @@ const PREVIEW_COLUMNS = [
   { key: 'advisor_section', label: 'Advisor section' },
 ]
 
+/*
+ * The three advisor columns only apply to a class advisor.
+ *
+ * `when` hides their inputs for a row whose Advisor? toggle is No, so the grid does
+ * not show an "advisor batch" box next to someone who teaches without a class. The
+ * requirement itself is enforced by the validator, not by the hiding: a row that
+ * claims to be an advisor still has to supply all three, whether the form showed
+ * them or not.
+ */
+const isAdvisorRow = (row) => String(row.class_advisor).toLowerCase() === 'yes'
+
 const MANUAL_COLUMNS = [
   { key: 'staff_name', label: 'Name', required: true },
   { key: 'email', label: 'Email', required: true },
   { key: 'class_advisor', label: 'Advisor?', required: true, type: 'select', options: ['No', 'Yes'] },
-  { key: 'advisor_batch', label: 'Advisor batch' },
-  { key: 'advisor_year', label: 'Advisor year', type: 'number', placeholder: '1-4' },
-  { key: 'advisor_section', label: 'Advisor section', type: 'select', options: ['', ...ALLOWED_SECTIONS] },
+  { key: 'advisor_batch', label: 'Advisor batch', when: isAdvisorRow },
+  { key: 'advisor_year', label: 'Advisor year', type: 'number', placeholder: '1-4', when: isAdvisorRow },
+  { key: 'advisor_section', label: 'Advisor section', type: 'select', options: ['', ...ALLOWED_SECTIONS], when: isAdvisorRow },
 ]
 
 const emptyStaff = () => ({
@@ -458,9 +469,10 @@ export default function AddStaffModal({ department, onClose, onImported }) {
           {!result && mode === 'manual' && (
             <>
               <p className="text-sm text-slate-600">
-                Set <span className="font-bold">Advisor? = Yes</span> only for a class advisor, then
-                give the cohort they advise, their year, and their section. Everyone else needs just
-                a name and an email.
+                With <span className="font-bold">Advisor? = No</span>, a name and an email are all
+                that is needed, and no batch is asked for. Set{' '}
+                <span className="font-bold">Yes</span> only for a class advisor, then give the
+                cohort they advise, their year, and their section.
                 {advisorBatches.length > 0 && (
                   <>
                     {' '}

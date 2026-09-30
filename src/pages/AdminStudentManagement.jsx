@@ -49,18 +49,32 @@ export default function AdminStudentManagement() {
   const [showAdd, setShowAdd] = useState(false)
 
   /*
-   * `fetchAdminBatches` replaces the `adminStudents('meta')` call, which asked the
-   * nonexistent `admin-students` Supabase function for the department list. The
-   * batch list now comes from `academic_batches`, so a cohort created through the
-   * dashboard appears here without a code change or redeploy.
+   * Departments and their cohorts, from `GET /api/admin/batches`.
+   *
+   * The response is keyed `batches`, an object of department -> cohort list. It used
+   * to be read as `batchesByDepartment`, which is not a key the API ever returned, so
+   * the lookup always produced `{}`, every department showed zero cohorts, and the
+   * batch step rendered an empty grid. The bug was invisible from the API tests,
+   * which only ever assert the response, and from the page itself, which rendered
+   * "no batches" exactly as it would for a department that genuinely has none.
+   *
+   * The explicit check below is the guard that class of mistake needs: a missing key
+   * is now an error the admin can see, rather than a silent empty list that reads as
+   * legitimate data.
    */
   const loadMeta = useCallback(async () => {
     setMetaLoading(true)
     setMetaError(null)
     try {
       const data = await fetchAdminBatches()
+      const batches = data?.batches
+      if (!batches || typeof batches !== 'object') {
+        throw new Error(
+          'The batch list came back in an unexpected format. Reload the page; if it persists, tell an administrator.'
+        )
+      }
       setDepartments(data.departments || [])
-      setBatchesByDepartment(data.batchesByDepartment || {})
+      setBatchesByDepartment(batches)
     } catch (err) {
       setMetaError(err)
     } finally {
