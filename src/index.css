@@ -898,7 +898,7 @@ a {
    Reserves the height of a short list so the popup does not resize as results
    come and go while typing, which used to pull the page content under the
    cursor mid-search.
-*/
+ */
 .cf-selectable-empty {
   margin: 0;
   padding: 0.75rem;
@@ -910,6 +910,68 @@ a {
   justify-content: center;
   text-align: center;
 }
+
+/* ---------------------------------------------------------------------------
+
+   Stacked-layout rules for the searchable select.
+
+   The cause of the overlap is the layout, not the device. The panel is absolutely
+   positioned with a z-index, which is correct for the two-column dashboard: the
+   field sits in the left column and the panel drops into the empty space to its
+   right, over nothing. The dashboard only becomes two columns at the `lg`
+   breakpoint (1024px, `lg:grid-cols-12` on the page's outer grid), and below that
+   it is a single column, so the form card and the "No active session" card stack
+   vertically and the panel lands directly on top of the latter. The 15rem list
+   also runs past the bottom of a short screen, leaving part of it unreachable.
+
+   The breakpoint is therefore 1024px, where the two-column layout begins, rather
+   than a phone width. Anything narrower than that gets the panel in normal flow;
+   anything at or above it keeps the existing overlay untouched. Using the layout
+   boundary instead of a device guess also covers landscape phones, small tablets
+   and a narrow desktop window, all of which sit in the same single-column
+   arrangement and had the same collision.
+
+   The panel joins the flow rather than just being given a bigger z-index: it
+   expands the form card and pushes the card below it down, so it stays contained
+   by the field it belongs to instead of floating over the page. The list then
+   scrolls within whatever height is left, capped against the viewport so a short
+   screen is handled as well as a narrow one.
+
+   --------------------------------------------------------------------------- */
+@media (max-width: 1023.98px) {
+  .cf-selectable-panel {
+    position: static;
+    inset: auto;
+    width: 100%;
+    margin-top: 0.5rem;
+    /* An in-flow panel should not carry the shadow that makes it read as an
+       overlay, since there is nothing left for it to float above. */
+    box-shadow: var(--cf-shadow);
+    animation: none;
+  }
+
+  .cf-selectable-list {
+    /* Capped against the viewport so the list scrolls rather than running off a
+       short screen. `min()` keeps the existing 15rem whenever there is room for
+       it, so a tall layout is unchanged. */
+    max-height: min(15rem, 40vh);
+    /* A long subject label must not push the list wider than its card. */
+    overflow-x: hidden;
+  }
+
+  .cf-selectable-option {
+    /* A comfortable touch target, and long codes wrap instead of overflowing. */
+    min-height: 2.75rem;
+    display: flex;
+    align-items: center;
+    overflow-wrap: break-word;
+  }
+
+  .cf-selectable-empty {
+    min-height: 4rem;
+  }
+}
+
 
 /* ---------------------------------------------------------------------------
    Status messages
