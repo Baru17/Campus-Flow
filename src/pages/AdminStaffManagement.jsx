@@ -4,6 +4,7 @@ import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
 import AddStaffModal from '../components/admin/AddStaffModal'
+import EditStaffModal from '../components/admin/EditStaffModal'
 import { fetchAdminBatches, fetchAdminStaff } from '../api/adminApi'
 import { isAdvisorFlag } from '../utils/sectionValidation'
 import { useAdminAuth } from '../hooks/useAdminAuth'
@@ -13,6 +14,7 @@ import {
   SearchIcon,
   StaffIcon,
   PlusIcon,
+  EditIcon,
 } from '../components/Icons'
 
 /*
@@ -55,6 +57,18 @@ export default function AdminStaffManagement() {
   const [sortDir, setSortDir] = useState('asc')
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [notice, setNotice] = useState(null)
+
+  /*
+   * Bumped after a write so the department's staff are fetched again.
+   *
+   * A refetch rather than an in-place patch, because the stored row is not
+   * necessarily what was submitted: the server clears an advisor's three fields
+   * when the flag is turned off, normalises the email, and may move the person to
+   * another department -- in which case they are no longer in this list at all.
+   */
+  const [reloadToken, setReloadToken] = useState(0)
 
   /*
    * Only the department list is needed from the batch endpoint here, to know which
@@ -100,7 +114,7 @@ export default function AdminStaffManagement() {
     return () => {
       cancelled = true
     }
-  }, [department])
+  }, [department, reloadToken])
 
   const handleLogout = async () => {
     await logout()
@@ -275,12 +289,15 @@ export default function AdminStaffManagement() {
                 <th>Department</th>
                 <th>Class advisor</th>
                 <th>Advisors</th>
+                <th>
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
               {staffLoading && (
                 <tr>
-                  <td colSpan={SORTABLE_COLUMNS.length + 5} className="advisor-table-empty">
+                  <td colSpan={SORTABLE_COLUMNS.length + 6} className="advisor-table-empty">
                     <span className="cf-spinner" role="status" aria-hidden="true" />
                     Loading staff…
                   </td>
@@ -288,7 +305,7 @@ export default function AdminStaffManagement() {
               )}
               {!staffLoading && !staffError && paged.length === 0 && (
                 <tr>
-                  <td colSpan={SORTABLE_COLUMNS.length + 5} className="advisor-table-empty">
+                  <td colSpan={SORTABLE_COLUMNS.length + 6} className="advisor-table-empty">
                     {search ? 'No staff match your search.' : 'No staff found in this department yet.'}
                   </td>
                 </tr>
@@ -326,6 +343,17 @@ export default function AdminStaffManagement() {
                               .filter(Boolean)
                               .join(' · ')
                           : '—'}
+                      </td>
+                      <td className="advisor-table-num">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(member)}
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
+                          aria-label={`Edit ${member.staff_name}`}
+                        >
+                          <EditIcon size={14} />
+                          Edit
+                        </button>
                       </td>
                     </tr>
                   )
@@ -373,6 +401,12 @@ export default function AdminStaffManagement() {
           subtitle="View staff by department, or add new staff members."
         />
 
+        {notice && (
+          <StatusMessage variant="success" dismissible onDismiss={() => setNotice(null)}>
+            {notice}
+          </StatusMessage>
+        )}
+
         {metaLoading && (
           <div className="cf-empty">
             <span className="cf-spinner" role="status" aria-hidden="true" />
@@ -391,6 +425,25 @@ export default function AdminStaffManagement() {
             onClose={() => setShowAdd(false)}
             onImported={() => {
               setShowAdd(false)
+            }}
+          />
+        )}
+        {editing && (
+          <EditStaffModal
+            member={editing}
+            onClose={() => setEditing(null)}
+            onSaved={(saved) => {
+              setEditing(null)
+              // Refetch: the saved row is what D1 holds, and a department change
+              // takes this person out of the list being viewed.
+              setReloadToken((token) => token + 1)
+              setNotice(
+                `Updated ${saved?.staff_name || editing.staff_name}${
+                  saved?.department && saved.department !== department
+                    ? ` — now listed under ${saved.department}`
+                    : ''
+                }.`
+              )
             }}
           />
         )}

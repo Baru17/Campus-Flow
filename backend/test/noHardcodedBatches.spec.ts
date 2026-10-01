@@ -29,6 +29,7 @@ import frontendConstants from "../../src/constants.js?raw";
 import frontendBatchesApi from "../../src/api/batchesApi.js?raw";
 import frontendStaffDashboard from "../../src/pages/StaffDashboard.jsx?raw";
 import frontendBatchValidation from "../../src/utils/batchValidation.js?raw";
+import frontendEditStaffModal from "../../src/components/admin/EditStaffModal.jsx?raw";
 
 import tableResolver from "../src/utils/tableResolver.ts?raw";
 import provisioning from "../src/utils/provisioning.ts?raw";
@@ -119,6 +120,13 @@ const GUARDED: { path: string; source: string }[] = [
   { path: "src/constants.js", source: frontendConstants },
   { path: "src/api/batchesApi.js", source: frontendBatchesApi },
   { path: "src/pages/StaffDashboard.jsx", source: frontendStaffDashboard },
+  // The staff edit form is a second place a cohort is chosen, so it is guarded for
+  // the same reason the staff dashboard is: a list written here would offer a
+  // cohort the registry does not have, and refuse one it does.
+  {
+    path: "src/components/admin/EditStaffModal.jsx",
+    source: frontendEditStaffModal,
+  },
   { path: "backend/src/utils/tableResolver.ts", source: tableResolver },
   { path: "backend/src/utils/provisioning.ts", source: provisioning },
   { path: "backend/src/api/admin.ts", source: adminApi },
