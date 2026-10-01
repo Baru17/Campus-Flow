@@ -9,6 +9,8 @@ import {
   BookIcon,
   ChevronRightIcon,
   ShieldIcon,
+  GraduationIcon,
+  CompassIcon,
 } from '../components/Icons'
 
 export default function AdminDashboard() {
@@ -48,6 +50,22 @@ export default function AdminDashboard() {
       tone: 'blue',
       onClick: () => navigate('/admin/subjects'),
     },
+    {
+      title: 'HODs',
+      subtitle: 'Manage HODs',
+      description: "Maintain each department's head of department, and their login accounts.",
+      icon: <GraduationIcon size={30} />,
+      tone: 'violet',
+      onClick: () => navigate('/admin/hods'),
+    },
+    {
+      title: 'CONTEST COORDINATORS',
+      subtitle: 'Manage Coordinators',
+      description: "Maintain each department's contest coordinator, and their login accounts.",
+      icon: <CompassIcon size={30} />,
+      tone: 'blue',
+      onClick: () => navigate('/admin/contest-coordinators'),
+    },
   ]
 
   return (
@@ -57,7 +75,7 @@ export default function AdminDashboard() {
         <DashboardHero
           icon={<ShieldIcon size={26} />}
           title="Administrative Dashboard"
-          subtitle={`${clock.greeting} — manage students and staff across all departments.`}
+          subtitle={`${clock.greeting} — manage students, staff and departments across the campus.`}
           right={
             <div className="live-clock">
               <div className="time">{clock.time}</div>

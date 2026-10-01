@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx'
 import { ALLOWED_SECTIONS, isAdvisorFlag } from './sectionValidation'
+import { DEPARTMENTS } from '../constants'
 
 const HEADER_ALIASES = {
   student_id: ['studentid', 'studentidno', 'id'],
@@ -13,6 +14,14 @@ const HEADER_ALIASES = {
   semester: ['semester', 'sem'],
   subject_code: ['subjectcode', 'code'],
   subject_name: ['subjectname', 'subject'],
+  department: ['department', 'dept'],
+  hod_name: ['hodname', 'hod', 'headofdepartment', 'headofdepartmentname'],
+  coordinator_name: [
+    'coordinatorname',
+    'coordinator',
+    'contestcoordinator',
+    'contestcoordinatorname',
+  ],
 }
 
 const KEY_TO_CANONICAL = {
@@ -27,6 +36,9 @@ const KEY_TO_CANONICAL = {
   semester: 'semester',
   subject_code: 'subject_code',
   subject_name: 'subject_name',
+  department: 'department',
+  hod_name: 'hod_name',
+  coordinator_name: 'coordinator_name',
 }
 
 /**
@@ -311,6 +323,16 @@ export const STAFF_COLUMNS = ['staff_name', 'email', 'class_advisor', 'advisor_y
 export const SUBJECT_COLUMNS = ['subject_code', 'subject_name']
 
 /*
+ * Heads of department and contest coordinators.
+ *
+ * Both files are three columns: a name, an address, and the department the person
+ * belongs to. Every column is required, unlike a staff file where the advisor
+ * columns are optional, because there is nothing optional about a directory entry.
+ */
+export const HOD_COLUMNS = ['hod_name', 'email', 'department']
+export const COORDINATOR_COLUMNS = ['coordinator_name', 'email', 'department']
+
+/*
  * Columns that may be absent from a staff file. `class_advisor` is absent for the
  * common case of someone who teaches without holding a class, and the `advisor_*`
  * columns are only meaningful for one who does.
@@ -353,4 +375,89 @@ export function validateSubjectRows(rows) {
     else validRows.push({ subject_code, subject_name })
   })
   return { missingColumns: [], total: rows.length, validRows, invalidRows }
+}
+
+/**
+ * Validates a directory file: a name, an address, and a department.
+ *
+ * Used for both heads of department and contest coordinators, parameterised by the
+ * column the name arrives in. Those two tables hold the same three facts under
+ * different column names, and the checks below are identical -- required name, an
+ * address with an `@` in it, and a department from the shared `DEPARTMENTS` list --
+ * so writing them once means the two screens cannot drift apart.
+ *
+ * The name is passed as `nameKey` rather than hard-coded, because the row the
+ * validator returns and the reason string it reports both have to name the column
+ * the admin's spreadsheet actually used.
+ *
+ * Duplicates are handled exactly as they are for staff: an address repeated inside
+ * one file is a data error, the first occurrence wins, and the repeat is reported
+ * rather than offered for insertion. That is also what keeps a file from creating
+ * two accounts for one person, since the account name is the address.
+ */
+function validateDirectoryRows(rows, { nameKey, required }) {
+  const present = new Set(rows[0] ? Object.keys(rows[0]) : [])
+  const missingColumns = required.filter((key) => !present.has(key))
+  if (missingColumns.length) {
+    return {
+      missingColumns,
+      total: 0,
+      validRows: [],
+      invalidRows: [],
+      duplicateEmails: [],
+    }
+  }
+
+  const seenEmails = new Set()
+  const emailCounts = new Map()
+  const validRows = []
+  const invalidRows = []
+
+  rows.forEach((raw, index) => {
+    const rowNumber = index + 2 // 1-indexed + header row
+    const name = trimString(raw[nameKey])
+    const email = trimString(raw.email).toLowerCase()
+    const department = trimString(raw.department).toUpperCase()
+
+    const value = { [nameKey]: name, email, department }
+
+    let reason = ''
+    if (!name) reason = `Missing ${nameKey}`
+    else if (name.length > 120) reason = `${nameKey} must be 120 characters or fewer`
+    else if (!email || !email.includes('@')) reason = 'Missing or invalid email'
+    else if (!department) reason = 'Missing department'
+    else if (!DEPARTMENTS.includes(department))
+      reason = `Invalid department "${department}". Use one of ${DEPARTMENTS.join(', ')}`
+    else if (seenEmails.has(email)) reason = `Duplicate email ${email} in upload`
+
+    // Counted on every row, valid or not, so the summary tile can name a repeated
+    // address even when the second occurrence was already reported as invalid for
+    // some other reason. One pass, because a 2000-row file is a legitimate upload.
+    if (email) emailCounts.set(email, (emailCounts.get(email) || 0) + 1)
+
+    if (reason) {
+      invalidRows.push({ rowNumber, [nameKey]: name, reason })
+    } else {
+      seenEmails.add(email)
+      validRows.push(value)
+    }
+  })
+
+  return {
+    missingColumns: [],
+    total: rows.length,
+    validRows,
+    invalidRows,
+    duplicateEmails: [...emailCounts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([email]) => email),
+  }
+}
+
+export function validateHodRows(rows) {
+  return validateDirectoryRows(rows, { nameKey: 'hod_name', required: HOD_COLUMNS })
+}
+
+export function validateContestCoordinatorRows(rows) {
+  return validateDirectoryRows(rows, { nameKey: 'coordinator_name', required: COORDINATOR_COLUMNS })
 }

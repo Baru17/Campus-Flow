@@ -39,7 +39,27 @@ export const DEFAULT_INITIAL_PASSWORD = "1234";
  */
 const BCRYPT_ROUNDS = 10;
 
-export type ProvisionedRole = "student" | "staff" | "class_advisor";
+/**
+ * The roles this application issues for an account it provisions.
+ *
+ * `hod` and `contest_coordinator` join the three that already existed. They are
+ * deliberately *not* folded into `staff` or `class_advisor`: those two are the
+ * roles `/api/auth/staff/login` and `requireStaff` authorise on, so widening
+ * either would silently grant a head of department the staff dashboard, the
+ * subject catalog and the attendance generator. Their accounts exist so they can
+ * be identified at sign-in; what they are allowed to do is decided by the workflow
+ * that needs them, and until then they hold no permissions at all.
+ *
+ * Nothing enforces membership of this union at runtime -- `auth_users.role` is
+ * plain TEXT -- but it is the set the provisioning code is allowed to write, so a
+ * typo becomes a type error rather than a row nobody can ever be granted access.
+ */
+export type ProvisionedRole =
+  | "student"
+  | "staff"
+  | "class_advisor"
+  | "hod"
+  | "contest_coordinator";
 
 export interface AccountPlan {
   auth_user_id: string;
@@ -71,6 +91,22 @@ export function studentUserName(studentId: string): string {
 }
 
 export function staffUserName(email: string): string {
+  return emailUserName(email);
+}
+
+/**
+ * The account name for anyone who signs in with an email address.
+ *
+ * A staff member, a head of department and a contest coordinator all sign in with
+ * their address and nothing else, so all three get the same treatment: the
+ * lower-cased address as `user_name`.
+ *
+ * Lower-casing matters because `/api/auth/login` looks an account up with
+ * `WHERE user_name = ? OR email = ?` and upper-cases the identifier it was given
+ * unless it contains an `@`, in which case it lower-cases it. Storing the address
+ * lower-cased is what makes the two paths agree.
+ */
+export function emailUserName(email: string): string {
   return email.trim().toLowerCase();
 }
 

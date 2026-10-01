@@ -1,0 +1,65 @@
+/**
+ * Unit-test configuration. This file exists so `npm test` can never reach a real
+ * D1 database.
+ *
+ * ## Why this file has to exist
+ *
+ * The unit test config used to read `wrangler.jsonc`, which is the *production*
+ * configuration: it names the production database (`campus-flow-db`,
+ * `814ad3eb-0811-4fa2-86a3-953de59dcf5e`) and sets `"remote": true` on the `DB`
+ * binding. That combination is not safe under `@cloudflare/vitest-plugin`, and the
+ * reason is worth writing down because it is not obvious:
+ *
+ *   1. The plugin's pool options schema declares `remoteBindings: z.boolean()
+ *      .default(true)`. A config that does not mention it still gets `true`.
+ *   2. With `remoteBindings` on, the pool collects "remote" bindings via
+ *      `pickRemoteBindings`, which selects any binding where
+ *      `"remote" in binding && binding.remote`. `"remote": true` on the D1 binding
+ *      qualifies.
+ *   3. A non-empty selection makes the pool open a genuine remote dev session
+ *      (`startRemoteProxySession`) against the Cloudflare API using that binding's
+ *      `database_id`.
+ *   4. `d1DatabaseEntry` only routes a binding through that proxy when *both* a
+ *      connection string and `remote` are present -- which is exactly the case
+ *      here.
+ *
+ * So `npm test` would have opened the production database, and `tableResolver.spec.ts`
+ * contains `DROP TABLE IF EXISTS`, `DELETE FROM academic_batches` and
+ * `DROP TABLE academic_batches`. Whether that failed loudly or destroyed real data
+ * came down to whether a remote session could be authenticated -- not a safe
+ * default.
+ *
+ * ## What this file guarantees
+ *
+ * No `remote` key, so `pickRemoteBindings` finds nothing, no remote session is
+ * opened, `d1DatabaseEntry` returns a local `{ id }`, and the pool serves D1 from
+ * Miniflare's isolated per-test-file storage under `.wrangler/state/`.
+ *
+ * The `database_id` is a placeholder in the all-zeroes test range. It is only ever
+ * used as a local storage key, and it cannot resolve to a real Cloudflare database,
+ * so pointing this binding at production would require deliberately typing the
+ * production id here.
+ *
+ * `remoteBindings: false` is also set explicitly in `vitest.config.mts` and
+ * `vitest.integration.config.mts`, so that a future `"remote": true` added to this
+ * file still cannot open a proxy session.
+ *
+ * This file must never be used by `wrangler dev` or `wrangler deploy`.
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "campus-flow-unit-tests",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-21",
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "campus-flow-unit-tests",
+			"database_id": "00000000-0000-0000-0000-000000000002"
+		}
+	],
+	"vars": {
+		"NODE_ENV": "test",
+		"ALLOWED_ORIGINS": "http://localhost:5173"
+	}
+}

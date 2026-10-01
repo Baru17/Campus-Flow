@@ -11,6 +11,8 @@
  * import can report all of its row errors at once instead of failing on the first.
  */
 
+import { normalizeDepartment, SUPPORTED_DEPARTMENTS } from "./tableResolver";
+
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Years of study. Matches what the student table stores and what login reads. */
@@ -397,4 +399,136 @@ export function validateSubjectRow(row: unknown): RowResult<SubjectInput> {
     return { ok: false, errors };
   }
   return { ok: true, value: { subject_code: subjectCode, subject_name: subjectName } };
+}
+
+/* ------------------------------------------------ hods / contest coordinators */
+
+/**
+ * The longest a person's name may be.
+ *
+ * One limit for `student_name`, `staff_name`, `hod_name` and
+ * `coordinator_name`, because they are the same column in four different tables
+ * and a name that is too long to store for one of them is too long for all of
+ * them. Kept as a constant so raising it cannot leave one table behind.
+ */
+export const MAX_NAME_LENGTH = 120;
+
+/**
+ * A person's display name.
+ *
+ * Required and length-capped, and nothing else: names are free text and the
+ * application has never imposed a pattern on them. Trimming happens in `text`, so
+ * a spreadsheet cell padded with spaces stores the name and not the padding.
+ */
+function validateName(value: unknown, field: string, label: string): RowResult<string> {
+  const name = text(value);
+  if (!name) {
+    return { ok: false, errors: [{ field, message: `${label} is required` }] };
+  }
+  if (name.length > MAX_NAME_LENGTH) {
+    return { ok: false, errors: [{ field, message: `${label} must be ${MAX_NAME_LENGTH} characters or fewer` }] };
+  }
+  return { ok: true, value: name };
+}
+
+/**
+ * A department, checked against the one list the application already uses.
+ *
+ * `normalizeDepartment` is the single authority for which departments exist -- it
+ * is what builds the student and attendance table names, so a department this
+ * accepted but that function rejected would produce a row pointing at a table
+ * that cannot exist. Delegating rather than keeping a second copy of the list is
+ * what stops the two from drifting apart.
+ */
+export function validateDepartment(value: unknown): RowResult<string> {
+  const candidate = upper(value);
+  if (!candidate) {
+    return { ok: false, errors: [{ field: "department", message: "Department is required" }] };
+  }
+  const department = normalizeDepartment(candidate);
+  if (!department) {
+    return {
+      ok: false,
+      errors: [
+        {
+          field: "department",
+          message: `Department must be one of ${SUPPORTED_DEPARTMENTS.join(", ")}`,
+        },
+      ],
+    };
+  }
+  return { ok: true, value: department };
+}
+
+export interface HodInput {
+  hod_name: string;
+  email: string;
+  department: string;
+}
+
+export interface ContestCoordinatorInput {
+  coordinator_name: string;
+  email: string;
+  department: string;
+}
+
+/**
+ * A head of department, and a contest coordinator, are the same record under two
+ * names: a person, an address, and the department they belong to.
+ *
+ * Both tables are single, department-keyed tables like `staff` rather than
+ * per-cohort ones, so a batch is not part of the row and never needs to be named.
+ *
+ * They are still validated separately rather than through one shared function with
+ * a name parameter, for one reason that outlives the duplication: the field names
+ * are part of the contract. `validateStaffRow` reports `{ field: "staff_name" }`
+ * and the dashboard highlights the input by that name, so a shared validator that
+ * reported a generic `"name"` would leave every message pointing at a field no
+ * form has. Keeping the column names literal is what lets the same error format be
+ * used everywhere.
+ */
+export function validateHodRow(row: unknown): RowResult<HodInput> {
+  const source = (row ?? {}) as Record<string, unknown>;
+  const parts = [
+    validateName(source.hod_name, "hod_name", "HOD name"),
+    validateEmail(source.email),
+    validateDepartment(source.department),
+  ];
+
+  const errors = parts.flatMap((part) => (part.ok ? [] : part.errors));
+  if (errors.length > 0) {
+    return { ok: false, errors };
+  }
+
+  return {
+    ok: true,
+    value: {
+      hod_name: (parts[0] as { ok: true; value: string }).value,
+      email: (parts[1] as { ok: true; value: string }).value,
+      department: (parts[2] as { ok: true; value: string }).value,
+    },
+  };
+}
+
+export function validateContestCoordinatorRow(row: unknown): RowResult<ContestCoordinatorInput> {
+  const source = (row ?? {}) as Record<string, unknown>;
+  const parts = [
+    validateName(source.coordinator_name, "coordinator_name", "Coordinator name"),
+    validateEmail(source.email),
+    validateDepartment(source.department),
+  ];
+
+  const errors = parts.flatMap((part) => (part.ok ? [] : part.errors));
+  if (errors.length > 0) {
+    return { ok: false, errors };
+  }
+
+  return {
+    ok: true,
+    value: {
+      coordinator_name: (parts[0] as { ok: true; value: string }).value,
+      email: (parts[1] as { ok: true; value: string }).value,
+      department: (parts[2] as { ok: true; value: string }).value,
+    },
+  };
 }

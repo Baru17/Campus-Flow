@@ -214,3 +214,62 @@ export function updateAdminSubject(subjectId, fields) {
     body: fields,
   })
 }
+
+/* --------------------------------------------- hods / contest coordinators */
+
+/**
+ * Every head of department, or every contest coordinator.
+ *
+ * Both directories are single, department-keyed tables holding one person per
+ * department, so both are listed whole. A department filter is accepted by the
+ * server for a caller that wants to narrow, but the pages do not use it: an admin
+ * checking whether a department already has an HOD needs to see the whole list to
+ * know that, and a filtered picker could answer "none" while the answer should
+ * have been "none in this department".
+ */
+export function fetchAdminHods() {
+  return request('/api/admin/hods')
+}
+
+export function fetchAdminContestCoordinators() {
+  return request('/api/admin/contest-coordinators')
+}
+
+/**
+ * Creates directory entries and their accounts.
+ *
+ * Rows arrive in the entity's own column names -- `hod_name, email, department` or
+ * `coordinator_name, email, department` -- exactly as the upload parser and the
+ * manual editor produce them. No id is ever sent: `hod_id` and `coordinator_id`
+ * are database-generated, and the server does not read them from the body.
+ */
+export function createAdminHods(rows) {
+  return request('/api/admin/hods', { method: 'POST', body: { rows } })
+}
+
+export function createAdminContestCoordinators(rows) {
+  return request('/api/admin/contest-coordinators', { method: 'POST', body: { rows } })
+}
+
+/**
+ * Edits one directory entry.
+ *
+ * The id is the last path segment and is deliberately absent from the body: it is
+ * the table's primary key and is assigned by the database, so an edit form does not
+ * get to set it. The three editable fields -- the name, the address and the
+ * department -- are validated server-side, and changing the address moves the
+ * existing account's sign-in handle without touching its password.
+ */
+export function updateAdminHod(hodId, fields) {
+  return request(`/api/admin/hods/${encodeURIComponent(hodId)}`, {
+    method: 'PATCH',
+    body: fields,
+  })
+}
+
+export function updateAdminContestCoordinator(coordinatorId, fields) {
+  return request(`/api/admin/contest-coordinators/${encodeURIComponent(coordinatorId)}`, {
+    method: 'PATCH',
+    body: fields,
+  })
+}
