@@ -4,6 +4,8 @@ import auth from "./api/auth";
 import passwordReset from "./api/passwordReset";
 import attendance, { finalizeSession } from "./api/attendance";
 import admin from "./api/admin";
+import studentOd from "./api/studentOd";
+import odApprovals from "./api/odApprovals";
 import { requireAuth, requireClassAdvisor, requireStaff } from "./middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "./utils/databaseErrors";
 import {
@@ -94,6 +96,17 @@ app.route("/api/auth", auth);
 app.route("/api/auth", passwordReset);
 app.route("/api/attendance", attendance);
 app.route("/api/admin", admin);
+
+/*
+ * The student OD and mentor routes, and the approver half of the workflow.
+ *
+ * Mounted at their own prefixes rather than folded into `/api/admin` or the student
+ * attendance routes: these are student-facing rather than administrative, and the
+ * approver half is neither. Each keeps its own `requireStudent` / `requireAuth` gate
+ * so a session of one role cannot reach the other's surface.
+ */
+app.route("/api/student", studentOd);
+app.route("/api/od", odApprovals);
 
 app.get("/api/class-advisors", requireAuth, requireClassAdvisor, async (c) => {
   const staffId = c.req.query("staff_id");

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useParams } from 'react-router-dom'
 import AuthProvider from './context/AuthContext'
 import StaffAuthProvider from './context/StaffAuthContext'
 import AdminAuthProvider from './context/AdminAuthContext'
@@ -15,8 +15,31 @@ import AdminStaffManagement from './pages/AdminStaffManagement'
 import AdminSubjectManagement from './pages/AdminSubjectManagement'
 import AdminHodManagement from './pages/AdminHodManagement'
 import AdminContestCoordinatorManagement from './pages/AdminContestCoordinatorManagement'
+import StudentEntry from './pages/StudentEntry'
+import StudentMentorAllocation from './pages/StudentMentorAllocation'
+import StudentOdForm from './pages/StudentOdForm'
+import ApproverLogin from './pages/ApproverLogin'
+import ApproverOdInbox from './pages/ApproverOdInbox'
 import AdminRoute from './components/AdminRoute'
 import NotFound from './pages/NotFound'
+
+/*
+ * The four stages of the OD approval chain, as a route parameter.
+ *
+ * Anything outside this list is answered with NotFound rather than being passed to the
+ * inbox, so a mistyped or stale link cannot open a queue for a stage that does not
+ * exist. The server matches the same four values and refuses anything else, so this is
+ * about not rendering an empty screen rather than about security.
+ */
+const OD_STAGES = ['MENTOR', 'CONTEST_COORDINATOR', 'CLASS_ADVISOR', 'HOD']
+
+function ApproverOdInboxRoute() {
+  const { stage } = useParams()
+  if (!OD_STAGES.includes(stage)) {
+    return <NotFound />
+  }
+  return <ApproverOdInbox stage={stage} />
+}
 
 export default function App() {
   return (
@@ -31,6 +54,20 @@ export default function App() {
               <Route path="/staff" element={<StaffDashboard />} />
               <Route path="/advisor" element={<AdvisorDashboard />} />
               <Route path="/student" element={<StudentDashboard />} />
+              {/*
+                The student's entry screen, and the two things it leads to.
+
+                A student login now lands on `/student/entry` rather than going
+                straight to the OTP page, because attendance is one of three things a
+                student can come here to do. `/student` is unchanged and is what
+                "Mark Attendance" opens.
+              */}
+              <Route path="/student/entry" element={<StudentEntry />} />
+              <Route path="/student/mentor" element={<StudentMentorAllocation />} />
+              <Route path="/student/od" element={<StudentOdForm />} />
+              {/* Approvers. The stage is in the path and is re-checked server-side. */}
+              <Route path="/approver/login" element={<ApproverLogin />} />
+              <Route path="/approver/od/:stage" element={<ApproverOdInboxRoute />} />
               <Route path="/admin" element={<AdminLoginPage />} />
               <Route
                 path="/admin/dashboard"

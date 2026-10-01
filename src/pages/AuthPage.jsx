@@ -20,7 +20,6 @@ export default function AuthPage() {
   const navigate = useNavigate()
   const { student: authenticatedStudent } = useAuth()
   const [step, setStep] = useState('roles')
-  const [studentId, setStudentId] = useState('')
   const [otp, setOtp] = useState('')
   const [verifying, setVerifying] = useState(false)
   const [error, setError] = useState(null)
@@ -43,11 +42,23 @@ export default function AuthPage() {
     navigate('/advisor')
   }
 
-  const handleStudentContinue = (id) => {
-    setStudentId(id)
-    setOtp('')
-    setError(null)
-    setStep('otp')
+  /*
+   * A successful student login goes to the entry screen, not to an OTP box.
+   *
+   * The OTP page is still reachable -- it is the "Mark Attendance" option from there --
+   * but it is no longer the next thing a signed-in student sees, because attendance is
+   * one of three things they might want and it was being presented as the only one.
+   *
+   * The session already exists by this point: `StudentLogin` calls `/api/auth/login`
+   * before calling `onContinue`, so navigating is safe and the entry screen can read
+   * the student's own record straight away.
+   *
+   * The inline `otp` and `success` stages below are left in place. Nothing in this flow
+   * reaches them now, but they are the same OTP path the entry screen links to, and
+   * removing working code to tidy a navigation decision is not a trade worth making.
+   */
+  const handleStudentContinue = () => {
+    navigate('/student/entry')
   }
 
   const handleSubmitOtp = async () => {
@@ -80,7 +91,7 @@ export default function AuthPage() {
         return
       }
 
-      const expectedStudentId = authenticatedStudent?.student_id || studentId
+      const expectedStudentId = authenticatedStudent?.student_id || ''
       if (currentStudent.student_id.toUpperCase() !== expectedStudentId.toUpperCase()) {
         setError({
           variant: 'warning',
@@ -150,7 +161,7 @@ export default function AuthPage() {
                   Student
                 </span>
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700">
-                  {authenticatedStudent?.student_id || studentId}
+                  {authenticatedStudent?.student_id || ''}
                 </span>
               </div>
 

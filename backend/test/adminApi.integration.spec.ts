@@ -232,7 +232,7 @@ describe("admin provisioning API", () => {
 			});
 		});
 
-		it("gives the new tables the same shape as the migrated ones", async () => {
+		it("gives the new tables the same shape as the migrated ones, plus the optional mentor column", async () => {
 			const columnNames = async (table: string) => {
 				const { results } = await env.DB
 					.prepare("SELECT name FROM pragma_table_info(?) ORDER BY cid")
@@ -240,11 +240,32 @@ describe("admin provisioning API", () => {
 					.all();
 				return results.map((row: { name: string }) => row.name);
 			};
-			// Structural parity is what lets the shared attendance queries run
-			// against a table that no migration ever mentioned.
-			expect(await columnNames(`CSE_Students_${NEW_BATCH}`)).toEqual(
-				await columnNames("CSE_Students_2026_2030"),
+			const provisionedStudents = await columnNames(`CSE_Students_${NEW_BATCH}`);
+			const migratedStudents = await columnNames("CSE_Students_2026_2030");
+
+			/*
+			 * Structural parity is what lets the shared attendance queries run against
+			 * a table that no migration ever mentioned.
+			 *
+			 * The comparison is a prefix rather than whole-list equality because the
+			 * seeded cohort predates `mentor_email` while a newly provisioned one has
+			 * it. The seeded table is a migration fixture, not production: the real
+			 * cohorts carry the column, because it was added to them after the fact.
+			 * Asserting whole-list equality would force one of two wrong conclusions
+			 * -- either that new tables must not have the column, or that the
+			 * migrations should be edited to pretend they created it.
+			 *
+			 * So the shared prefix is asserted exactly and in order, and the single
+			 * permitted addition is asserted by name. A future column added to one
+			 * side and not the other fails here, which is the property that makes this
+			 * test worth keeping.
+			 */
+			expect(migratedStudents.every((name, index) => provisionedStudents[index] === name)).toBe(
+				true,
 			);
+			expect(provisionedStudents.slice(migratedStudents.length)).toEqual(["mentor_email"]);
+
+			// The attendance table is untouched by this and must still match outright.
 			expect(await columnNames(`CSE_Attendance_${NEW_BATCH}`)).toEqual(
 				await columnNames("CSE_Attendance_2026_2030"),
 			);
@@ -306,6 +327,211 @@ describe("admin provisioning API", () => {
 				body: JSON.stringify({ department: "CSE'; DROP TABLE students", batch: "2030_2034" }),
 			});
 			expect(status).toBe(400);
+		});
+	});
+
+	/*
+	 * `mentor_email` on a provisioned student table.
+	 *
+	 * This is the one column a newly created cohort has that the cohorts the DDL
+	 * was originally copied from did not, so it gets its own suite rather than only
+	 * a mention in the parity test. Three things have to hold at once, and only the
+	 * first is obvious:
+	 *
+	 *   1. A new student table HAS the column, for every department and every future
+	 *      batch. It is added in the DDL rather than by an `ALTER` afterwards, because
+	 *      provisioning is `CREATE TABLE IF NOT EXISTS` and nothing runs a second
+	 *      statement against an existing table.
+	 *   2. It is NULLABLE, and provably so from `pragma_table_info` rather than from
+	 *      a comment: a `NOT NULL` here would make every existing student import
+	 *      fail, since nothing supplies a value.
+	 *   3. Admin student creation works WITHOUT it, and leaves it NULL. This is the
+	 *      assertion that would catch `mentor_email` quietly becoming a required
+	 *      field of a student record -- the failure mode the feature was explicitly
+	 *      not supposed to introduce.
+	 *
+	 * A fresh cohort is provisioned here rather than reusing the one earlier tests
+	 * created, so this file's mentor assertions do not depend on another test having
+	 * run first.
+	 */
+	describe("mentor_email on a newly provisioned student table", () => {
+		const MENTOR_DEPARTMENT = "ECE";
+		const MENTOR_BATCH = "2036_2040";
+		const MENTOR_STUDENT_TABLE = `${MENTOR_DEPARTMENT}_Students_${MENTOR_BATCH}`;
+
+		beforeAll(async () => {
+			await api("/api/admin/batches", {
+				method: "POST",
+				body: JSON.stringify({ department: MENTOR_DEPARTMENT, batch: MENTOR_BATCH }),
+			});
+		});
+
+		it("provisions a student table that has the column", async () => {
+			const { results } = await env.DB
+				.prepare("SELECT name, type FROM pragma_table_info(?) ORDER BY cid")
+				.bind(MENTOR_STUDENT_TABLE)
+				.all<{ name: string; type: string }>();
+
+			const mentor = results.find((column) => column.name === "mentor_email");
+			expect(mentor, `${MENTOR_STUDENT_TABLE} has no mentor_email column`).toBeTruthy();
+			// A TEXT column, declared as production declares it.
+			expect(mentor?.type).toBe("TEXT");
+		});
+
+		it("declares it nullable, so nothing is ever obliged to supply one", async () => {
+			const { results } = await env.DB
+				.prepare("SELECT name, \"notnull\" AS not_null FROM pragma_table_info(?)")
+				.bind(MENTOR_STUDENT_TABLE)
+				.all<{ name: string; not_null: number }>();
+
+			const mentor = results.find((column) => column.name === "mentor_email");
+			// `notnull = 0` is what "optional" means to the database. A NOT NULL here
+			// would break every student import, because no import supplies a mentor.
+			expect(mentor?.not_null).toBe(0);
+
+			// The same check on a column that IS required, so the assertion above is
+			// known to be able to fail rather than always reading zero.
+			const email = results.find((column) => column.name === "email");
+			expect(email?.not_null).toBe(1);
+		});
+
+		it("stores NULL for an imported student who has no mentor", async () => {
+			// The import carries no mentor field at all -- not an empty one, not a
+			// placeholder. The row has to land anyway.
+			const { status, body } = await api(
+				`/api/admin/students?department=${MENTOR_DEPARTMENT}&batch=${MENTOR_BATCH}`,
+				{
+					method: "POST",
+					body: JSON.stringify({
+						rows: [
+							{
+								student_id: "2K36EC001",
+								register_no: "36EC001",
+								student_name: "No Mentor Yet",
+								year: 3,
+								section: "A",
+								email: "no.mentor@kiot.ac.in",
+							},
+						],
+					}),
+				},
+			);
+
+			expect(status).toBe(200);
+			expect(body.created).toBe(1);
+			expect(body.authAccountsCreated).toBe(1);
+
+			const row = await env.DB
+				.prepare(
+					`SELECT mentor_email FROM ${MENTOR_STUDENT_TABLE} WHERE student_id = ?`,
+				)
+				.bind("2K36EC001")
+				.first<{ mentor_email: string | null }>();
+			// The column exists, the row exists, and the value is NULL rather than an
+			// empty string or a sentinel.
+			expect(row).toBeTruthy();
+			expect(row?.mentor_email).toBeNull();
+		});
+
+		it("ignores a mentor_email sent by the client rather than failing", async () => {
+			// The admin import does not accept a mentor. If a document carries the
+			// column anyway, the row must still import -- silently dropping the value
+			// is the correct behaviour, and refusing the file would make mentor
+			// allocation part of the student import flow, which it is not.
+			const { status, body } = await api(
+				`/api/admin/students?department=${MENTOR_DEPARTMENT}&batch=${MENTOR_BATCH}`,
+				{
+					method: "POST",
+					body: JSON.stringify({
+						rows: [
+							{
+								student_id: "2K36EC002",
+								register_no: "36EC002",
+								student_name: "Mentor In Upload",
+								year: 3,
+								section: "A",
+								email: "mentor.in.upload@kiot.ac.in",
+								mentor_email: "someone.else@kiot.ac.in",
+							},
+						],
+					}),
+				},
+			);
+
+			expect(status).toBe(200);
+			expect(body.created).toBe(1);
+
+			const row = await env.DB
+				.prepare(`SELECT mentor_email FROM ${MENTOR_STUDENT_TABLE} WHERE student_id = ?`)
+				.bind("2K36EC002")
+				.first<{ mentor_email: string | null }>();
+			expect(row?.mentor_email).toBeNull();
+		});
+
+		it("lets a mentor be assigned later by writing the column directly", async () => {
+			// The column is a plain nullable TEXT, so assigning one needs no schema
+			// change and no new endpoint. This asserts the column accepts a value, so
+			// the workflow that will populate it is not blocked by the declaration.
+			await env.DB
+				.prepare(
+					`UPDATE ${MENTOR_STUDENT_TABLE} SET mentor_email = ? WHERE student_id = ?`,
+				)
+				.bind("advisor.of.record@kiot.ac.in", "2K36EC001")
+				.run();
+
+			const row = await env.DB
+				.prepare(`SELECT mentor_email FROM ${MENTOR_STUDENT_TABLE} WHERE student_id = ?`)
+				.bind("2K36EC001")
+				.first<{ mentor_email: string | null }>();
+			expect(row?.mentor_email).toBe("advisor.of.record@kiot.ac.in");
+		});
+
+		it("does not alter a student table that already exists", async () => {
+			// Provisioning is idempotent and creates nothing for a pair that is already
+			// there. A cohort created before this column existed therefore keeps its
+			// own shape -- provisioning never rewrites one, which is what makes this
+			// safe to run against a database holding real cohorts.
+			const before = await env.DB
+				.prepare("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+				.bind(MENTOR_STUDENT_TABLE)
+				.all<{ name: string }>();
+
+			const { body } = await api("/api/admin/batches", {
+				method: "POST",
+				body: JSON.stringify({ department: MENTOR_DEPARTMENT, batch: MENTOR_BATCH }),
+			});
+			expect(body.created).toBe(false);
+			expect(body.tablesCreated).toBe(false);
+
+			const after = await env.DB
+				.prepare("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+				.bind(MENTOR_STUDENT_TABLE)
+				.all<{ name: string }>();
+			expect(after.results.map((column) => column.name)).toEqual(
+				before.results.map((column) => column.name),
+			);
+		});
+
+		it("leaves the attendance table of the same cohort without the column", async () => {
+			// The mentor belongs to a student record. Attendance has no such concept,
+			// and adding the column there would be a schema change nobody asked for.
+			const { results } = await env.DB
+				.prepare("SELECT name FROM pragma_table_info(?)")
+				.bind(`${MENTOR_DEPARTMENT}_Attendance_${MENTOR_BATCH}`)
+				.all<{ name: string }>();
+			expect(results.some((column) => column.name === "mentor_email")).toBe(false);
+		});
+
+		it("does not put a batch label into the provisioning code", async () => {
+			// The change is a schema line, not a list of cohorts. This asserts the
+			// provisioning source still names no batch, so the column cannot have been
+			// added by special-casing particular departments or years.
+			// `?raw` because this pool has a virtual filesystem.
+			const provisioningSource = await import("../src/utils/provisioning.ts?raw");
+			const withoutComments = provisioningSource.default
+				.replace(/\/\*[\s\S]*?\*\//g, "")
+				.replace(/(^|[^:])\/\/.*$/gm, "$1");
+			expect(withoutComments).not.toMatch(/\b\d{4}_\d{4}\b/);
 		});
 	});
 

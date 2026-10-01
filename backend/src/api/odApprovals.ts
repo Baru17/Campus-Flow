@@ -1,0 +1,318 @@
+/**
+ * The approver half of the OD workflow, mounted at `/api/od`.
+ *
+ * Every decision passes through `applyDecision`, which decides authority from the
+ * request's own status and the approver's real position in the college. Nothing in
+ * this file decides who may act -- it reads the session, reads the body, and hands
+ * over. That is deliberate: authorisation spread across four route handlers is
+ * authorisation that eventually disagrees with itself, and the thing it has to agree
+ * with is a four-stage chain.
+ *
+ * The approver's identity is their own sign-in address. Every role in this workflow
+ * authenticates by address -- students by student id, and staff, coordinators and
+ * HODs by email -- so the address is the one handle that exists for all of them, and
+ * it is the one that gets checked against the directory.
+ */
+
+import { Hono, type Context } from "hono";
+import { requireAuth, type AuthUser } from "../middleware/auth";
+import { getErrorMessageForLog, isTransientD1Error } from "../utils/databaseErrors";
+import { resolveAuthenticatedStudent, type AuthenticatedStudent } from "../utils/studentIdentity";
+import {
+  applyDecision,
+  listRequestsForStage,
+  verifyApprover,
+} from "../utils/odService";
+import { OD_DECISION, STAGES, type OdDecision, type OdStage } from "../utils/odWorkflow";
+
+const app = new Hono<{ Bindings: { DB: D1Database; BREVO_API_KEY?: string } }>();
+
+/** A stage requested by the client, matched against the fixed chain. */
+function stageFromKey(key: string | undefined): OdStage | null {
+  const wanted = String(key ?? "").trim().toUpperCase();
+  return STAGES.find((stage) => stage.key === wanted) ?? null;
+}
+
+/**
+ * Puts the signed-in approver's own address on the context.
+ *
+ * `requireAuth` resolves the session from `auth_users` but its projection is the
+ * identity columns only -- id, user name, role -- and deliberately not the email. Every
+ * role in this workflow authorises by address, though: a coordinator is matched on
+ * `contest_coordinators.email`, an HOD on `hods.email`, an advisor on `staff.email`, and
+ * a mentor on the address snapshotted onto the request.
+ *
+ * So the address is read back from `auth_users` by the id the session already
+ * established. One indexed lookup per request, and the value is the account's own --
+ * there is no path by which a client can nominate a different approver.
+ *
+ * Runs after `requireAuth`, which is what puts the user on the context it reads.
+ */
+async function withApproverEmail(c: Context<{ Bindings: { DB: D1Database } }>, next: () => Promise<void>): Promise<void> {
+  const authUser = (c as any).get("authUser") as AuthUser;
+  const row = await c.env.DB
+    .prepare("SELECT email FROM auth_users WHERE auth_user_id = ?")
+    .bind(authUser.auth_user_id)
+    .first<{ email: string | null }>();
+  (c as any).set("approverEmail", (row?.email ?? "").trim().toLowerCase());
+  await next();
+}
+
+/** The approver's own address, lower-cased. Never taken from the request body. */
+function approverEmail(c: any): string {
+  return (((c as any).get("approverEmail") as string | undefined) ?? "").trim().toLowerCase();
+}
+
+/**
+ * A class advisor is a staff member, so their cohort -- department, batch, year,
+ * section -- comes from the advisor columns on their own `staff` row.
+ *
+ * This is the same mapping the attendance routes use, and it is read live rather than
+ * from a request body, because an advisor's inbox is defined by the class they are
+ * mapped to and a client cannot be allowed to widen it.
+ */
+async function advisorCohort(
+  db: D1Database,
+  authUserId: string
+): Promise<AuthenticatedStudent["student"] & { department: string; batch: string } | null> {
+  const row = await db
+    .prepare(
+      `SELECT department, advisor_batch, advisor_year, advisor_section
+       FROM staff
+       WHERE auth_user_id = ? AND class_advisor = 'Y'
+         AND advisor_batch IS NOT NULL AND advisor_year IS NOT NULL AND advisor_section IS NOT NULL
+       LIMIT 1`
+    )
+    .bind(authUserId)
+    .first<{ department: string; advisor_batch: string; advisor_year: number; advisor_section: string }>();
+  if (!row) return null;
+
+  // Shaped like an AuthenticatedStudent so the shared listing helper can scope by it
+  // without knowing it is being given an advisor rather than a student.
+  return {
+    student_id: "",
+    register_no: "",
+    student_name: "",
+    year: row.advisor_year,
+    section: row.advisor_section,
+    email: "",
+    mentor_email: null,
+    department: row.department as AuthenticatedStudent["department"],
+    batch: row.advisor_batch,
+    studentTable: "",
+  } as AuthenticatedStudent["student"] & { department: string; batch: string };
+}
+
+/* --------------------------------------------------------------- inbox */
+
+/**
+ * Requests waiting on one stage, for the signed-in approver.
+ *
+ * `?stage=` names the role's place in the chain and is matched against `STAGES`, so an
+ * unknown value is refused rather than treated as some default. A class advisor's list
+ * is additionally narrowed to their own cohort on the server.
+ */
+app.get("/requests", requireAuth, withApproverEmail, async (c) => {
+  try {
+    const authUser = (c as any).get("authUser") as AuthUser;
+    const stage = stageFromKey(c.req.query("stage"));
+    if (!stage) {
+      return c.json(
+        { success: false, error: "Unknown approval stage", code: "od-unknown-stage" },
+        400
+      );
+    }
+
+    const email = approverEmail(c);
+    const isAdvisor = stage.key === "CLASS_ADVISOR";
+
+    /*
+     * A class advisor is scoped by their cohort, which is a property of their staff
+     * row. Everyone else is scoped by the directory check inside the listing itself.
+     */
+    let scope: AuthenticatedStudent | null = null;
+    if (isAdvisor) {
+      const cohort = await advisorCohort(c.env.DB, authUser.auth_user_id);
+      if (!cohort) {
+        return c.json(
+          {
+            success: false,
+            error: "Your account is not mapped to a class. Ask your administrator to set your advisor class.",
+            code: "advisor-unmapped",
+          },
+          403
+        );
+      }
+      scope = {
+        authUserId: authUser.auth_user_id,
+        department: cohort.department as AuthenticatedStudent["department"],
+        batch: cohort.batch,
+        studentTable: "",
+        student: cohort,
+      };
+    }
+
+    const requests = await listRequestsForStage(c.env.DB, stage, email, scope);
+    return c.json({ success: true, stage: stage.key, stage_label: stage.label, requests });
+  } catch (error) {
+    console.error("od_inbox_failed", getErrorMessageForLog(error));
+    const transient = isTransientD1Error(error);
+    return c.json(
+      {
+        success: false,
+        error: transient ? "The service is temporarily busy. Please retry." : "Could not load approval requests",
+        code: transient ? "database-busy" : "od-inbox-failed",
+      },
+      transient ? 503 : 500
+    );
+  }
+});
+
+/* ------------------------------------------------------------- decision */
+
+/**
+ * Records an approve or reject on one request.
+ *
+ * The body is exactly two fields: `decision` and an optional `comment`. There is no
+ * field for the new status, for the approver, for the student, or for the stage's
+ * outcome -- `applyDecision` derives all of those, because anything a client can send
+ * is something a client can lie about.
+ *
+ * The response reports `notification_sent` so the UI can say "saved, but the email
+ * did not go" rather than pretending everything worked. The decision itself is stored
+ * either way.
+ */
+app.post("/requests/:requestId/decision", requireAuth, withApproverEmail, async (c) => {
+  try {
+    const requestId = c.req.param("requestId") ?? "";
+    if (!requestId) {
+      return c.json({ success: false, error: "No OD request was named", code: "od-not-found" }, 404);
+    }
+    const stage = stageFromKey(c.req.query("stage"));
+    if (!stage) {
+      return c.json({ success: false, error: "Unknown approval stage", code: "od-unknown-stage" }, 400);
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await c.req.json();
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return c.json({ success: false, error: "Expected a JSON object", code: "invalid-body" }, 400);
+      }
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return c.json({ success: false, error: "Invalid JSON body", code: "invalid-json" }, 400);
+    }
+
+    const decision = String(body.decision ?? "").trim().toUpperCase();
+    if (decision !== OD_DECISION.APPROVED && decision !== OD_DECISION.REJECTED) {
+      return c.json(
+        { success: false, error: "Decision must be APPROVED or REJECTED", code: "od-invalid-decision" },
+        400
+      );
+    }
+
+    const result = await applyDecision(
+      c.env.DB,
+      c.env,
+      requestId,
+      stage,
+      decision as OdDecision,
+      approverEmail(c),
+      body.comment
+    );
+
+    if (!result.ok) {
+      /*
+       * Three different refusals, and they are not interchangeable:
+       *
+       *   - 403: the request is fine and this caller may not action it. Either they do
+       *     not hold the role it is waiting on, or they are the role but for another
+       *     department, batch or section. Both are a permission failure.
+       *   - 400: the decision itself was malformed -- not APPROVED or REJECTED, or a
+       *     rejection with no reason.
+       *   - 409: the request is in a state that cannot be decided again. Already
+       *     approved, already rejected, or moved on since it was loaded.
+       *
+       * Mapping them by code rather than by "it failed" is what lets a client tell
+       * "you cannot do this" from "this is over" and react differently.
+       */
+      const FORBIDDEN = new Set(["od-not-your-request", "od-wrong-stage"]);
+      const BAD_REQUEST = new Set(["od-invalid-comment", "od-invalid-decision"]);
+      const NOT_FOUND = new Set(["od-not-found"]);
+
+      // A literal union rather than `number`, because Hono types the status argument.
+      let status: 400 | 403 | 404 | 409 = 409;
+      if (FORBIDDEN.has(String(result.code))) status = 403;
+      else if (BAD_REQUEST.has(String(result.code))) status = 400;
+      else if (NOT_FOUND.has(String(result.code))) status = 404;
+
+      return c.json({ success: false, error: result.reason, code: result.code }, status);
+    }
+
+    return c.json({
+      success: true,
+      request: result.request,
+      status: result.status,
+      next_stage: result.nextStage ?? null,
+      notification_sent: result.notified,
+      ...(result.notified
+        ? {}
+        : {
+            warning:
+              "Your decision was saved, but the notification email could not be sent.",
+          }),
+    });
+  } catch (error) {
+    console.error("od_decision_failed", getErrorMessageForLog(error));
+    const transient = isTransientD1Error(error);
+    return c.json(
+      {
+        success: false,
+        error: transient ? "The service is temporarily busy. Please retry." : "Could not record that decision",
+        code: transient ? "database-busy" : "od-decision-failed",
+      },
+      transient ? 503 : 500
+    );
+  }
+});
+
+/**
+ * Whether the signed-in approver may action a given request, without acting on it.
+ *
+ * The approver screens call this to decide whether to show the Approve and Reject
+ * buttons at all. It is a convenience, not the control: `applyDecision` runs the same
+ * check again, so hiding a button is never what stops an unauthorised decision.
+ */
+app.get("/requests/:requestId/permission", requireAuth, withApproverEmail, async (c) => {
+  try {
+    const requestId = c.req.param("requestId");
+    const stage = stageFromKey(c.req.query("stage"));
+    if (!stage) {
+      return c.json({ success: false, error: "Unknown approval stage", code: "od-unknown-stage" }, 400);
+    }
+
+    const row = await c.env.DB
+      .prepare("SELECT * FROM od_requests WHERE od_request_id = ?")
+      .bind(requestId)
+      .first<Parameters<typeof verifyApprover>[1]>();
+    if (!row) {
+      return c.json({ success: false, error: "OD request not found", code: "od-not-found" }, 404);
+    }
+
+    const check = await verifyApprover(c.env.DB, row, stage, approverEmail(c));
+    return c.json({
+      success: true,
+      can_act: check.ok,
+      ...(check.ok ? {} : { reason: check.reason, code: check.code }),
+    });
+  } catch (error) {
+    console.error("od_permission_failed", getErrorMessageForLog(error));
+    return c.json(
+      { success: false, error: "Could not check your permission", code: "od-permission-failed" },
+      500
+    );
+  }
+});
+
+export default app;

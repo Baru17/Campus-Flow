@@ -11,10 +11,11 @@
  *      department and a batch that has already passed `validateBatchInput`, and
  *      the names are built from those two values by `buildTableNames`. There is no
  *      path by which a client-supplied string reaches the DDL.
- *   2. The schemas are the ones already in production, copied from
- *      `IT_Students_2024_2028` and `IT_Attendance_2024_2028`. A new cohort has to
- *      behave identically to an existing one or the attendance code, which reads
- *      a fixed set of columns, would break for it.
+ *   2. The schemas are the ones already in production. A new cohort has to behave
+ *      identically to an existing one, or the attendance code -- which reads a
+ *      fixed set of columns -- would break for it. The one place they deliberately
+ *      differ is the student table's trailing `mentor_email`, which the existing
+ *      cohorts also carry; it is documented on `studentTableDdl`.
  *
  * D1 has no `CREATE TABLE IF NOT EXISTS` rollback: DDL is auto-committed
  * separately from DML, so a batch of statements containing DDL is not a
@@ -26,12 +27,33 @@
 import { buildTableNames, type Department } from "./tableResolver";
 
 /**
- * The student roster schema, identical to `IT_Students_2024_2028`.
+ * The student roster schema.
  *
  * The three UNIQUE constraints are what make re-importing the same file safe:
  * a second upload collides at the database rather than creating a near-duplicate
  * row. `auth_user_id` is nullable and indexed because a student can be added to a
  * roster before, or without, an account, and login resolves through it.
+ *
+ * `mentor_email` is the one column a new cohort gets that the cohorts this schema
+ * was first copied from did not have. It is appended last, which is where the
+ * existing tables carry it: they gained the column after the fact, so a
+ * column-ordered comparison between a new cohort and an old one only matches if
+ * the addition goes at the end rather than being slotted into the middle.
+ *
+ * It is deliberately declared with no `NOT NULL` and no `DEFAULT`, which is what
+ * makes it optional in both senses that matter:
+ *
+ *   - the column list here is the whole contract, so a reader can see at a glance
+ *     that a student table is not obliged to carry a mentor;
+ *   - `mentor_email` is absent from the student INSERT in `api/admin.ts`, so an
+ *     imported student gets SQL's implicit NULL rather than being asked for a
+ *     value. Adding it to the admin import would have made a mentor a required
+ *     field of a student record, which it is not.
+ *
+ * No statement anywhere alters an existing cohort. Provisioning only ever runs
+ * `CREATE TABLE IF NOT EXISTS`, so a table that already exists is left exactly as
+ * it is -- this column reaches cohorts created from here on, and the ones that
+ * predate it keep whatever shape they already had.
  */
 function studentTableDdl(table: string): string {
   return `CREATE TABLE IF NOT EXISTS ${table} (
@@ -43,7 +65,8 @@ function studentTableDdl(table: string): string {
     section TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    auth_user_id TEXT
+    auth_user_id TEXT,
+    mentor_email TEXT
   )`;
 }
 
