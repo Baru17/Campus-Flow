@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import StatusMessage from '../StatusMessage'
 import { fetchPendingApprovals, submitApprovalDecision } from '../../api/odApi'
-import { CheckIcon, ClockIcon, XIcon } from '../Icons'
+import { CheckIcon, ChevronRightIcon, ClockIcon, XIcon } from '../Icons'
 
 /**
  * The OD requests waiting on one approver, with the two buttons.
@@ -20,13 +20,20 @@ import { CheckIcon, ClockIcon, XIcon } from '../Icons'
  * dashboard anyone reaches from the normal role selection -- they exist to action OD
  * requests -- so for them it is the whole page.
  *
- * ## What the buttons are not
+ * ## Collapsed or open
  *
- * Hiding Approve and Reject is a convenience, not a control. `submitApprovalDecision`
- * re-checks on the server that this address holds this stage of this request, so a
- * student, another mentor, a coordinator from another department or an advisor of a
- * different section is refused there exactly as they would be here. Nothing about
- * authorisation depends on this component rendering or not rendering a button.
+ * `collapsible` decides whether a request opens its own details. It defaults to false,
+ * which leaves every existing caller rendering exactly what it rendered before -- a
+ * mentor's list stays open, an HOD's stays open. The class advisor turns it on because
+ * that dashboard is primarily an attendance report, and a queue of requests with a full
+ * set of fields each would bury the thing the advisor actually opened the page for.
+ *
+ * Nothing about authority changes between the two. The buttons are a convenience either
+ * way: `submitApprovalDecision` re-checks on the server that this address holds this
+ * stage of this request, so a student, another mentor, a coordinator from another
+ * department or an advisor of a different section is refused there exactly as they would
+ * be here. Whether a button is drawn, drawn inside a collapsed row, or not drawn at all
+ * makes no difference to that.
  *
  * No email is sent from here. The decision is recorded by the Worker, which then sends
  * the student's notification and the next approver's request itself.
@@ -36,11 +43,15 @@ export default function OdApprovalPanel({
   title,
   subtitle,
   emptyText = 'Nothing is waiting on you. Requests appear here as soon as the previous stage approves them.',
+  collapsible = false,
 }) {
   const [requests, setRequests] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
+
+  // Which request's details are open, in collapsible mode.
+  const [expanded, setExpanded] = useState(null)
 
   // Which request the rejection dialog is open for, and what has been typed into it.
   const [rejecting, setRejecting] = useState(null)
@@ -72,6 +83,9 @@ export default function OdApprovalPanel({
       const result = await submitApprovalDecision(requestId, stage, decision, comment)
       setRejecting(null)
       setReason('')
+      // The row is gone from this queue now that it has been decided, so there is
+      // nothing left to leave open.
+      setExpanded(null)
       await load()
       setNotice(
         result.warning
@@ -109,6 +123,12 @@ export default function OdApprovalPanel({
               {loading ? 'Loading requests…' : subtitle || `${requests.length} waiting`}
             </p>
           </div>
+          {!loading && requests.length > 0 && (
+            <span className="cf-status-pill active">
+              <span className="dot" aria-hidden="true" />
+              {requests.length} waiting
+            </span>
+          )}
         </div>
 
         {loading ? (
@@ -120,148 +140,70 @@ export default function OdApprovalPanel({
           <p className="mt-3 text-sm text-slate-500">{emptyText}</p>
         ) : (
           <ul className="mt-3 space-y-3">
-            {requests.map((request) => (
-              <li key={request.od_request_id} className="rounded-xl border border-slate-200 bg-white p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="font-extrabold tracking-tight text-slate-900">
-                      {request.student_name}
-                    </h3>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      {request.student_id} · {request.department} · {request.batch} · Year{' '}
-                      {request.year} · Section {request.section}
-                    </p>
-                  </div>
-                  <span className="cf-status-pill active">
-                    <span className="dot" aria-hidden="true" />
-                    {request.od_days_requested} day{request.od_days_requested === 1 ? '' : 's'}
-                  </span>
-                </div>
+            {requests.map((request) => {
+              const open = !collapsible || expanded === request.od_request_id
+              return (
+                <li
+                  key={request.od_request_id}
+                  className="rounded-xl border border-slate-200 bg-white p-4"
+                >
+                  <RequestSummary
+                    request={request}
+                    collapsible={collapsible}
+                    open={open}
+                    onToggle={() =>
+                      setExpanded(expanded === request.od_request_id ? null : request.od_request_id)
+                    }
+                  />
 
-                <dl className="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
-                  <div>
-                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      OD dates
-                    </dt>
-                    <dd className="mt-0.5 font-semibold text-slate-700">
-                      {request.od_dates.join(', ')}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      Mentor
-                    </dt>
-                    <dd className="mt-0.5 text-slate-700">
-                      {request.mentor_email || '—'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      OD already gained
-                    </dt>
-                    <dd className="mt-0.5 text-slate-700">
-                      {request.od_days_gained_before} day
-                      {request.od_days_gained_before === 1 ? '' : 's'} before this request
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      Submitted
-                    </dt>
-                    <dd className="mt-0.5 text-slate-700">{request.submitted_date}</dd>
-                  </div>
-                  <div className="sm:col-span-2">
-                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      Reason
-                    </dt>
-                    <dd className="mt-0.5 text-slate-700">{request.reason}</dd>
-                  </div>
-                  <div className="sm:col-span-2">
-                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      Request ID
-                    </dt>
-                    <dd className="mt-0.5 font-mono text-xs text-slate-500">
-                      {request.od_request_id}
-                    </dd>
-                  </div>
-                </dl>
+                  {open && (
+                    <>
+                      <RequestDetails request={request} />
 
-                {/* Which stages have already said yes, so an approver is not asked to
-                    decide blind about a request three people have already seen. */}
-                <ProgressTrail request={request} />
+                      {/* Which stages have already said yes, so an approver is not asked to
+                          decide blind about a request three people have already seen. */}
+                      <ProgressTrail request={request} />
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => decide(request.od_request_id, 'APPROVED', '')}
-                    disabled={working === request.od_request_id}
-                    className="btn-cf-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
-                  >
-                    <CheckIcon size={16} />
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRejecting(request.od_request_id)
-                      setReason('')
-                      setDecisionError(null)
-                    }}
-                    disabled={working === request.od_request_id}
-                    className="btn-cf-outline inline-flex items-center gap-2 px-4 py-2 text-sm"
-                  >
-                    <XIcon size={16} />
-                    Reject
-                  </button>
-                </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => decide(request.od_request_id, 'APPROVED', '')}
+                          disabled={working === request.od_request_id}
+                          className="btn-cf-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
+                        >
+                          <CheckIcon size={16} />
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRejecting(request.od_request_id)
+                            setReason('')
+                            setDecisionError(null)
+                          }}
+                          disabled={working === request.od_request_id}
+                          className="btn-cf-outline inline-flex items-center gap-2 px-4 py-2 text-sm"
+                        >
+                          <XIcon size={16} />
+                          Reject
+                        </button>
+                      </div>
 
-                {rejecting === request.od_request_id && (
-                  <div
-                    className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm"
-                    role="alert"
-                  >
-                    <label htmlFor={`od-reason-${request.od_request_id}`} className="cf-form-label">
-                      Reason for rejecting{' '}
-                      <span className="text-red-500" aria-hidden="true">
-                        *
-                      </span>
-                    </label>
-                    <textarea
-                      id={`od-reason-${request.od_request_id}`}
-                      rows={2}
-                      className="cf-input"
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                      placeholder="Tell the student why this cannot be approved…"
-                    />
-                    <p className="mt-1 text-xs text-slate-600">
-                      The student is emailed this. A rejection stops the request here, so nothing
-                      further is sent.
-                    </p>
-                    <div className="mt-3 flex flex-wrap justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setRejecting(null)}
-                        className="btn-cf-outline px-3 py-1.5 text-sm"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => decide(request.od_request_id, 'REJECTED', reason)}
-                        disabled={!reason.trim() || working === request.od_request_id}
-                        className="btn-cf-primary inline-flex items-center gap-2 px-3 py-1.5 text-sm"
-                      >
-                        {working === request.od_request_id && (
-                          <span className="cf-spinner" role="status" aria-hidden="true" />
-                        )}
-                        Confirm rejection
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </li>
-            ))}
+                      {rejecting === request.od_request_id && (
+                        <RejectForm
+                          request={request}
+                          reason={reason}
+                          setReason={setReason}
+                          onCancel={() => setRejecting(null)}
+                          onConfirm={() => decide(request.od_request_id, 'REJECTED', reason)}
+                          busy={working === request.od_request_id}
+                        />
+                      )}
+                    </>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </div>
@@ -272,6 +214,188 @@ export default function OdApprovalPanel({
       </p>
     </div>
   )
+}
+
+/*
+ * One request's heading: who it is from, how long for, and whether it opens.
+ *
+ * Rendered as a real button when it is collapsible so the row is reachable by keyboard
+ * and announces its state; a plain div when it is not, because a row that does nothing
+ * when clicked should not be dressed up as something that does.
+ */
+function RequestSummary({ request, collapsible, open, onToggle }) {
+  const inner = (
+    <>
+      <div className="min-w-0">
+        <h3 className="font-extrabold tracking-tight text-slate-900">{request.student_name}</h3>
+        <p className="mt-0.5 text-xs text-slate-500">
+          {request.student_id} · {request.department} · {request.batch} · Year {request.year} · Section{' '}
+          {request.section}
+        </p>
+        <p className="mt-1 text-xs font-semibold text-blue-700">{STATUS_LABEL[request.status] || request.status}</p>
+      </div>
+
+      <span className="cf-status-pill active">
+        <span className="dot" aria-hidden="true" />
+        {request.od_days_requested} day{request.od_days_requested === 1 ? '' : 's'}
+      </span>
+
+      {collapsible && (
+        <ChevronRightIcon
+          size={18}
+          className={`text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`}
+        />
+      )}
+    </>
+  )
+
+  const layout = 'flex w-full flex-wrap items-start justify-between gap-3 text-left'
+
+  if (!collapsible) return <div className={layout}>{inner}</div>
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-controls={`od-detail-${request.od_request_id}`}
+      className={`${layout} rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500`}
+    >
+      {inner}
+    </button>
+  )
+}
+
+/**
+ * Everything the existing OD response knows about one request.
+ *
+ * Register number is deliberately absent. `od_requests` snapshots the student id, name,
+ * department, batch, year and section, and the register number is not among them -- so
+ * there is nothing to show, and inventing one or adding a column for it is out of scope.
+ * The student's own dashboard reads the register number live from their student table,
+ * but this list is a snapshot and cannot.
+ */
+function RequestDetails({ request }) {
+  return (
+    <dl
+      id={`od-detail-${request.od_request_id}`}
+      className="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2"
+    >
+      <Detail label="Student name" value={request.student_name} />
+      <Detail label="Student ID" value={request.student_id} />
+      <Detail label="Department" value={request.department} />
+      <Detail label="Batch" value={request.batch} />
+      <Detail label="Year" value={request.year} />
+      <Detail label="Section" value={request.section} />
+      <Detail label="Mentor" value={request.mentor_email || 'Not assigned'} />
+      <Detail label="Number of OD days" value={request.od_days_requested} />
+      <Detail label="OD dates" value={request.od_dates.join(', ')} wide />
+      <Detail label="OD already gained" value={`${request.od_days_gained_before} day(s) before this request`} />
+      <Detail label="Submitted" value={request.submitted_date} />
+      <Detail label="Current stage" value={STAGE_LABEL[request.status] || request.status} />
+      <Detail label="Reason" value={request.reason} wide />
+      <Detail label="Request ID" value={request.od_request_id} mono wide />
+
+      {request.rejected_at_stage && (
+        <Detail
+          label="Rejected at"
+          value={`${STAGE_LABEL[request.rejected_at_stage] || request.rejected_at_stage}${
+            request.rejected_at ? ` on ${request.rejected_at}` : ''
+          }`}
+          tone="danger"
+          wide
+        />
+      )}
+      {request.rejection_reason && (
+        <Detail label="Rejection reason" value={request.rejection_reason} tone="danger" wide />
+      )}
+    </dl>
+  )
+}
+
+function Detail({ label, value, mono, wide, tone }) {
+  return (
+    <div className={wide ? 'sm:col-span-2' : undefined}>
+      <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">{label}</dt>
+      <dd
+        className={`mt-0.5 ${mono ? 'font-mono text-xs' : ''} ${
+          tone === 'danger' ? 'text-red-700' : 'text-slate-700'
+        }`}
+      >
+        {value}
+      </dd>
+    </div>
+  )
+}
+
+/**
+ * The rejection dialog.
+ *
+ * A reason is required before it will send, because a bare "no" leaves a student with
+ * nothing to act on. The button is disabled until there is text, and the server validates
+ * it again -- this is a courtesy, not the control.
+ */
+function RejectForm({ request, reason, setReason, onCancel, onConfirm, busy }) {
+  return (
+    <div
+      className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm"
+      role="alert"
+    >
+      <label htmlFor={`od-reason-${request.od_request_id}`} className="cf-form-label">
+        Reason for rejecting{' '}
+        <span className="text-red-500" aria-hidden="true">
+          *
+        </span>
+      </label>
+      <textarea
+        id={`od-reason-${request.od_request_id}`}
+        rows={2}
+        className="cf-input"
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="Tell the student why this cannot be approved…"
+      />
+      <p className="mt-1 text-xs text-slate-600">
+        The student is emailed this. A rejection stops the request here, so nothing further is
+        sent.
+      </p>
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        <button type="button" onClick={onCancel} className="btn-cf-outline px-3 py-1.5 text-sm">
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={!reason.trim() || busy}
+          className="btn-cf-primary inline-flex items-center gap-2 px-3 py-1.5 text-sm"
+        >
+          {busy && <span className="cf-spinner" role="status" aria-hidden="true" />}
+          Confirm rejection
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* Read straight off the request, so these labels cannot drift from the state machine. */
+const STATUS_LABEL = {
+  PENDING_MENTOR: 'Awaiting mentor approval',
+  PENDING_CONTEST_COORDINATOR: 'Awaiting contest coordinator approval',
+  PENDING_CLASS_ADVISOR: 'Awaiting class advisor approval',
+  PENDING_HOD: 'Awaiting HOD approval',
+  APPROVED: 'Fully approved',
+  REJECTED: 'Rejected',
+}
+
+const STAGE_LABEL = {
+  PENDING_MENTOR: 'Mentor',
+  PENDING_CONTEST_COORDINATOR: 'Contest Coordinator',
+  PENDING_CLASS_ADVISOR: 'Class Advisor',
+  PENDING_HOD: 'Head of Department',
+  MENTOR: 'Mentor',
+  CONTEST_COORDINATOR: 'Contest Coordinator',
+  CLASS_ADVISOR: 'Class Advisor',
+  HOD: 'Head of Department',
 }
 
 /*

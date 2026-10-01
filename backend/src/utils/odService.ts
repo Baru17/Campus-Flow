@@ -33,9 +33,17 @@ import {
   odMentorAssignedEmail,
   OD_APPROVED_HEADLINES,
   OD_FULLY_APPROVED_HEADLINE,
+  OD_FULLY_APPROVED_SUBJECT,
   OD_REJECTED_HEADLINE,
+  OD_REJECTED_SUBJECT,
+  type OdApprovalAction,
   type OdRequestFacts,
 } from "./odEmail";
+import {
+  OdApprovalTokenError,
+  issueApprovalToken,
+  type OdApprovalTokenBindings,
+} from "./odApprovalToken";
 import {
   OD_DECISION,
   OD_STATUS,
@@ -50,6 +58,16 @@ import {
 import { validateDecisionComment, validateRejectionReason } from "./odValidation";
 import { assertAllowedStudentTable } from "./tableResolver";
 import type { AuthenticatedStudent } from "./studentIdentity";
+
+/**
+ * Everything the workflow needs from the Worker bindings.
+ *
+ * The email key is optional because mail is a side effect and a decision must still be
+ * recorded without it. The approval-link secret is *not* optional in practice: a link
+ * cannot be signed without it, and `issueApprovalToken` refuses rather than signing with
+ * something weak.
+ */
+export type OdWorkflowEnv = EmailBindings & OdApprovalTokenBindings;
 
 /** A row of `od_requests`, as the routes read it. */
 export interface OdRequestRow {
@@ -198,6 +216,7 @@ export function toEmailFacts(row: OdRequestRow): OdRequestFacts {
     studentName: row.student_name,
     studentId: row.student_id,
     department: row.department,
+    batch: row.batch,
     year: row.year,
     section: row.section,
     odDates: parseOdDates(row.od_dates),
@@ -410,6 +429,20 @@ async function loadRequest(db: D1Database, odRequestId: string): Promise<OdReque
     .first<OdRequestRow>();
 }
 
+/**
+ * One request row, by id, for a caller that has to read it before it may act.
+ *
+ * Exported for the emailed-approval route, which resolves a token to a request id and then
+ * has to look the request up before it can say anything about it. Read-only by
+ * construction: nothing here mutates, and every check that follows is `verifyApprover`.
+ */
+export async function findOdRequest(
+  db: D1Database,
+  odRequestId: string
+): Promise<OdRequestRow | null> {
+  return loadRequest(db, odRequestId);
+}
+
 /** A student's own requests, newest first. Scoped by cohort *and* id. */
 export async function listStudentOdRequests(
   db: D1Database,
@@ -618,10 +651,19 @@ export interface DecisionResult {
  * A failure in any mail is swallowed after being logged. The decision stands: the
  * workflow state is the record, and an approver who was told "saved" must be able to
  * rely on it. The caller is told with `notified: false` so the UI can say so.
+ *
+ * ## Where the approver's identity comes from
+ *
+ * It is `approverEmail`, and that is checked against the directory on line two of the
+ * body -- not against anything the caller asserted. A route may legitimately arrive here
+ * from a signed-in session or from an emailed approval link; both hand over an address,
+ * and this function is what decides whether that address may act. That is why the magic
+ * link cannot bypass authorisation: it supplies a claim, and the claim is verified here
+ * exactly as a session's would be.
  */
 export async function applyDecision(
   db: D1Database,
-  env: EmailBindings,
+  env: OdWorkflowEnv,
   requestId: string,
   stage: OdStage,
   decision: OdDecision,
@@ -638,6 +680,9 @@ export async function applyDecision(
   if (!authority.ok) {
     return { ok: false, code: authority.code, reason: authority.reason };
   }
+  // Kept for the student's mail: "rejected by your Class Advisor" is actionable,
+  // "rejected at the Class Advisor stage" leaves them guessing who to ask.
+  const decidedByName = (authority.approverName ?? "").trim();
 
   // A rejection must say why; an approval may carry a comment but need not.
   if (decision === OD_DECISION.REJECTED) {
@@ -712,17 +757,38 @@ export async function applyDecision(
   const facts = toEmailFacts(updated);
   let notified = true;
 
-  // 2. The student hears the outcome, whatever it was.
-  notified = (await safeSend(env, updated.student_email, odDecisionEmail(
-    facts,
-    rejecting ? OD_REJECTED_HEADLINE : headlineForStage(stage),
-    rejecting
-      ? `Your OD request has been rejected at the ${stage.label} stage.`
-      : stage.key === "HOD"
-        ? "Every stage has approved your on-duty request."
-        : `Your OD request has moved on to the next stage of approval.`,
-    comment.value || undefined
-  ), { event: "od_decision_email_failed", odRequestId: requestId, stage: stage.key })) && notified;
+  /*
+   * 2. The student hears the outcome, whatever it was.
+   *
+   * Both subjects are set explicitly rather than falling back to the headline, because
+   * this is the mail a student searches their inbox for and "OD Request Rejected" is what
+   * they are looking at, not a sentence.
+   */
+  const decidedBy = decidedByName || `your ${stage.label.toLowerCase()}`;
+  notified = (await safeSend(
+    env,
+    updated.student_email,
+    odDecisionEmail(
+      facts,
+      rejecting ? OD_REJECTED_HEADLINE : headlineForStage(stage),
+      rejecting
+        ? `Your OD request has been rejected at the ${stage.label} stage by ${decidedBy}. It will not go to any further approver.`
+        : stage.key === "HOD"
+          ? `Every stage has approved your on-duty request, so the ${facts.odDays} day${
+              facts.odDays === 1 ? "" : "s"
+            } on ${facts.odDates.join(", ")} is approved.`
+          : `Your OD request has been approved at the ${stage.label} stage by ${decidedBy} and has moved on to the next stage of approval.`,
+      {
+        note: comment.value || undefined,
+        subject: rejecting
+          ? OD_REJECTED_SUBJECT
+          : stage.key === "HOD"
+            ? OD_FULLY_APPROVED_SUBJECT
+            : undefined,
+      }
+    ),
+    { event: "od_decision_email_failed", odRequestId: requestId, stage: stage.key }
+  )) && notified;
 
   // 3. An approval hands the request to the next approver. A rejection stops here.
   let nextStageName: string | undefined;
@@ -732,11 +798,22 @@ export async function applyDecision(
       nextStageName = nextStage.label;
       const approver = await findNextApprover(db, updated, nextStage);
       if (approver) {
-        notified = (await safeSend(env, approver.email, odApprovalRequestEmail(facts, nextStage.label, stageActionUrl(appOrigin, nextStage)), {
-          event: "od_next_stage_email_failed",
-          odRequestId: requestId,
-          stage: nextStage.key,
-        })) && notified;
+        /*
+         * The link is built before the mail, and a failure to build it is a failure to
+         * send: a coordinator handed the sign-in page instead of a link would be the exact
+         * regression this is fixing, so it is treated as one -- logged, reported through
+         * `notified`, and never silently downgraded to a worse link.
+         */
+        const action = await stageAction(db, env, appOrigin, updated, nextStage, approver.email);
+        if (action) {
+          notified = (await safeSend(env, approver.email, odApprovalRequestEmail(facts, nextStage.label, action), {
+            event: "od_next_stage_email_failed",
+            odRequestId: requestId,
+            stage: nextStage.key,
+          })) && notified;
+        } else {
+          notified = false;
+        }
       } else {
         // No one holds the next role for this department. Recorded, logged, and the
         // approval still stands -- an administrative gap is not a reason to discard a
@@ -767,7 +844,8 @@ function headlineForStage(stage: OdStage): string {
  * A mail failure must never undo a decision that is already stored, so this catches
  * everything the provider can throw and returns false instead. The log records the
  * event and the request id and nothing else -- no recipient, no API key, no provider
- * message, since all three can carry something that should not be written down.
+ * message, and never an approval token, since all four can carry something that should
+ * not be written down.
  */
 async function safeSend(
   env: EmailBindings,
@@ -775,7 +853,15 @@ async function safeSend(
   message: { subject: string; html: string; text: string },
   context: Record<string, unknown>
 ): Promise<boolean> {
-  if (!to) return false;
+  if (!to) {
+    /*
+     * Logged rather than returned silently. An empty recipient is a data problem the
+     * approver cannot see and cannot fix, and a workflow that stalls with no trace of
+     * why is worse than one that stalls noisily.
+     */
+    console.error(JSON.stringify({ ...context, outcome: "no_recipient_address" }));
+    return false;
+  }
   try {
     await sendBrevoEmail(env, { to, subject: message.subject, html: message.html, text: message.text });
     return true;
@@ -789,25 +875,76 @@ async function safeSend(
  * Where each stage's approver reviews its requests.
  *
  * A mentor is staff and already has a dashboard; a class advisor already has another.
- * Neither has to be told where to go, so the link goes straight to the thing they use.
+ * Neither has to be told where to go, so the link goes straight to the thing they use,
+ * and neither link carries a credential -- they sign in where they always do.
  *
  * A Contest Coordinator and an HOD have no dashboard anyone reaches from the normal role
- * selection -- deliberately, since they exist only to action OD requests -- so their link
- * goes to the approver sign-in page. Arriving there requires signing in, and the
- * backend then checks the role, the department and the stage before anything can be
- * decided.
+ * selection -- deliberately, since they exist only to action OD requests -- and their mail
+ * is the only way anybody reaches them. So their link is not a destination but the
+ * authorisation itself: a single-use, expiring token that opens the approval page for that
+ * one request at that one stage, with no sign-in form in front of it. See
+ * `utils/odApprovalToken.ts`.
  */
 const STAGE_DASHBOARD_PATH: Record<string, string> = {
   MENTOR: "/staff",
   CLASS_ADVISOR: "/advisor",
-  CONTEST_COORDINATOR: "/approver/login",
-  HOD: "/approver/login",
 };
 
-/** The link an approver of `stage` should follow, on a given app origin. */
-function stageActionUrl(appOrigin: string, stage: OdStage): string {
-  return appUrl(appOrigin, STAGE_DASHBOARD_PATH[stage.key] ?? "/approver/login");
+/** The route an emailed approval link opens. Never a login page. */
+export const OD_EMAIL_APPROVAL_PATH = "/od/approve";
+
+/**
+ * The action link one approver of one request should be sent.
+ *
+ * Returns null when a signed link cannot be produced, and the caller treats that as a
+ * failed notification rather than falling back to something weaker. There is no safe
+ * fallback here: the previous behaviour, sending `/approver/login`, is exactly what a
+ * coordinator with mail access but no password could not get past.
+ *
+ * `approverEmail` is the address the directory resolved for this department, so the token
+ * is minted for the person the mail is addressed to. A link forwarded to another
+ * coordinator is refused when they open it, because the token names the one it was issued
+ * for and the decision is verified against the directory again at the moment it is taken.
+ */
+async function stageAction(
+  db: D1Database,
+  env: OdWorkflowEnv,
+  appOrigin: string,
+  request: OdRequestRow,
+  stage: OdStage,
+  approverEmail: string
+): Promise<OdApprovalAction | null> {
+  const dashboardPath = STAGE_DASHBOARD_PATH[stage.key];
+  if (dashboardPath) {
+    return { url: appUrl(appOrigin, dashboardPath), kind: "dashboard" };
+  }
+
+  try {
+    const { token } = await issueApprovalToken(env, {
+      odRequestId: request.od_request_id,
+      stage,
+      approverEmail,
+    });
+    return { url: appUrl(appOrigin, `${OD_EMAIL_APPROVAL_PATH}/${token}`), kind: "email-link" };
+  } catch (error) {
+    /*
+     * The only expected cause is a missing or too-short signing secret. Logged by code
+     * only: the secret itself is never part of an error message, and neither is the
+     * request id being handed on.
+     */
+    console.error(
+      JSON.stringify({
+        event: "od_approval_link_failed",
+        odRequestId: request.od_request_id,
+        stage: stage.key,
+        code: error instanceof OdApprovalTokenError ? error.code : "od-approval-link-unexpected",
+      })
+    );
+    return null;
+  }
 }
+
+/** The link an approver of `stage` should follow, on a given app origin. */
 export async function notifyMentorOfAssignment(
   env: EmailBindings,
   facts: { studentName: string; studentId: string; department: string; year: number; section: string },
@@ -818,7 +955,12 @@ export async function notifyMentorOfAssignment(
   });
 }
 
-/** Tells a mentor a request is waiting on them. Never fails the submission. */
+/**
+ * Tells a mentor a request is waiting on them. Never fails the submission.
+ *
+ * A mentor is staff with their own dashboard, so this is a plain `/staff` link with no
+ * credential in it -- they sign in the way they always do.
+ */
 export async function notifyMentorOfRequest(
   db: D1Database,
   env: EmailBindings,
@@ -827,15 +969,12 @@ export async function notifyMentorOfRequest(
 ): Promise<boolean> {
   const mentor = (request.mentor_email ?? "").trim().toLowerCase();
   if (!mentor) return false;
-  return safeSend(
-    env,
-    mentor,
-    odApprovalRequestEmail(toEmailFacts(request), "Mentor", stageActionUrl(appOrigin, STAGES[0])),
-    {
-      event: "od_submission_email_failed",
-      odRequestId: request.od_request_id,
-    }
-  );
+  const action = await stageAction(db, env, appOrigin, request, STAGES[0], mentor);
+  if (!action) return false;
+  return safeSend(env, mentor, odApprovalRequestEmail(toEmailFacts(request), "Mentor", action), {
+    event: "od_submission_email_failed",
+    odRequestId: request.od_request_id,
+  });
 }
 
 /**

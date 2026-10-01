@@ -1,0 +1,44 @@
+/**
+ * Local development configuration.
+ *
+ * ## Why this file exists
+ *
+ * `wrangler.jsonc` is the production configuration and must never be used to develop
+ * against, because its D1 binding carries `"remote": true`. `wrangler dev` with that file
+ * opens a real session against `campus-flow-db`, and `wrangler d1 migrations apply` without
+ * `--local` would apply to it. Both are the kind of accident that is not obvious until it
+ * has happened.
+ *
+ * This file has no `remote` key at all, so there is no remote binding to pick up and no way
+ * for a forgotten flag to reach production. It is safe to pass `--local`, and safer still
+ * because it does not need to be.
+ *
+ * ## Secrets
+ *
+ * `BREVO_API_KEY` and `OD_APPROVAL_TOKEN_SECRET` come from `.dev.vars`, which is
+ * gitignored. Copy `.dev.vars.example` to `.dev.vars` and fill it in. Without
+ * `OD_APPROVAL_TOKEN_SECRET` the Worker refuses to mint an emailed approval link and logs
+ * `od_approval_link_failed` -- it will not fall back to signing with nothing.
+ *
+ * ## Not for deploying
+ *
+ * There is no deployment target here and this file must never be used for one.
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "campus-flow-local",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-21",
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "campus-flow-local",
+			"database_id": "00000000-0000-0000-0000-000000000003",
+			"migrations_dir": "migrations"
+		}
+	],
+	"vars": {
+		"NODE_ENV": "development",
+		"ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173"
+	}
+}

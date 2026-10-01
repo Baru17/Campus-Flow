@@ -1,0 +1,26 @@
+# Local development secrets. Copy to `.dev.vars` and fill in.
+#
+# `.dev.vars` is gitignored, so nothing here is ever committed. These are read by
+# `wrangler dev` when run against `wrangler.local.jsonc`, never by a deployed Worker --
+# on the deployed Worker they are set with `wrangler secret put`.
+#
+# Neither value belongs in wrangler.jsonc, in any other `vars` block, or in source.
+
+# Brevo transactional email API key. Optional: without it the workflow still runs and
+# every notification is skipped, with `email_not_sent` in the log and `notification_sent:
+# false` in the decision response.
+BREVO_API_KEY=
+
+# Signs the single-use approval links a Contest Coordinator's and an HOD's OD mail carries.
+#
+# At least 32 characters, random, and different for every environment. Generate one with:
+#   node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+#
+# The Worker refuses to mint a link when this is missing or too short rather than signing
+# with a weak key, logging `od_approval_link_failed` instead. So an unset value looks like
+# "coordinators are not getting their approval email", not like a security hole.
+#
+# Rotating it invalidates every approval link that is currently in somebody's inbox. Those
+# requests simply need a fresh link; no decision is lost, because the workflow state lives
+# in D1 and not in the token.
+OD_APPROVAL_TOKEN_SECRET=

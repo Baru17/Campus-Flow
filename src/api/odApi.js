@@ -148,13 +148,35 @@ export function fetchPendingApprovals(stage) {
  * `decision` is a verdict, not a status: the request does not move to
  * `APPROVED` because an approver said so, it moves to whatever that approver's stage
  * hands it to, and the server decides what that is.
+ *
+ * `token` is for an approver arriving from an emailed approval link rather than from a
+ * session. It is passed as a query parameter because that is where the decision route
+ * reads it, and it changes nothing else: the same endpoint, the same two body fields, and
+ * the same server-side authorisation. The browser still never names the approver, the
+ * stage it is really acting at, or the request -- all three come from the token or from
+ * the database.
  */
-export function submitApprovalDecision(requestId, stage, decision, comment) {
+export function submitApprovalDecision(requestId, stage, decision, comment, token) {
   return request(`/api/od/requests/${encodeURIComponent(requestId)}/decision`, {
     method: 'POST',
-    query: { stage },
+    query: { stage, token },
     body: { decision, ...(comment ? { comment } : {}) },
   })
+}
+
+/**
+ * Resolves an emailed approval link into the one request it authorises.
+ *
+ * The counterpart of `submitApprovalDecision` for someone who arrived by mail: it is what
+ * the approval page calls instead of `/api/od/requests`, which needs a session. The token
+ * identifies the request, the stage and the approver, so nothing has to be passed besides
+ * the token itself.
+ *
+ * Returns only what the approval page renders. A bad, expired or already-spent link
+ * throws, and the server says the same thing for all three.
+ */
+export function fetchEmailApproval(token) {
+  return request(`/api/od/email-approval/${encodeURIComponent(token)}`)
 }
 
 /** Whether the signed-in approver may action a request, for showing the buttons. */

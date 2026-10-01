@@ -106,6 +106,7 @@ const OD_DATE_B = futureDate(11);
 
 const STUDENT_ID = "2K36EC001";
 const STUDENT_NAME = "Asha Raman";
+const STUDENT_EMAIL = `${STUDENT_ID.toLowerCase()}@kiot.ac.in`;
 let STUDENT_AUTH = "";
 const STUDENT_TOKEN = "od-student-token";
 
@@ -272,17 +273,29 @@ const asStudent = (path: string, init: RequestInit = {}) => call(STUDENT_TOKEN, 
 const asAdmin = (path: string, init: RequestInit = {}) => call(ADMIN_TOKEN, path, init);
 
 /**
- * Swallows outbound mail so the suite never touches the network.
+ * Swallows outbound mail and records it, so the suite never touches the network.
  *
- * Delivery is deliberately NOT asserted here: Brevo is stubbed, so a test could only
- * ever prove that this file's own stub was called, which is worth nothing. What matters
- * for the workflow is that a decision is *recorded* regardless of what happens to the
- * mail afterwards, and that is asserted directly against the database.
+ * Every call is kept as `{ to, subject, html, text }` so the workflow's *notifications*
+ * can be asserted: who a decision told, in what order, and with what link.
  *
- * So the stub answers 201 to every Brevo call and records nothing. A non-Brevo request
- * is passed through to the real `fetch` rather than refused, so stubbing the mail
+ * The `BREVO_API_KEY` binding has to be non-empty for `sendBrevoEmail` to reach its
+ * `fetch` at all -- it refuses before the request when the key is blank -- which is why
+ * `wrangler.integration.jsonc` carries a placeholder. Nothing leaves the box: a non-Brevo
+ * request is passed through to the real `fetch` rather than refused, so stubbing the mail
  * cannot accidentally interfere with anything else the Worker does.
+ *
+ * `failEmail` is the same stub answering with a rejection, for the one behaviour that has
+ * to be true when the provider is down.
  */
+interface SentMail {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+}
+
+let sentMail: SentMail[] = [];
+
 function stubEmail(): void {
   const originalFetch = globalThis.fetch;
   vi.stubGlobal("fetch", async (input: any, init?: any) => {
@@ -290,11 +303,37 @@ function stubEmail(): void {
     if (!url.includes("api.brevo.com")) {
       return originalFetch(input, init);
     }
-    return new Response(JSON.stringify({ message: "accepted" }), {
+    const payload = JSON.parse(String(init?.body ?? "{}"));
+    sentMail.push({
+      to: payload.to?.[0]?.email ?? "",
+      subject: payload.subject ?? "",
+      html: payload.htmlContent ?? "",
+      text: payload.textContent ?? "",
+    });
+    return new Response(JSON.stringify({ messageId: "<test@brevo>" }), {
       status: 201,
       headers: { "Content-Type": "application/json" },
     });
   });
+}
+
+/** A provider that rejects everything, which is the mail outage these tests describe. */
+function failEmail(): void {
+  const originalFetch = globalThis.fetch;
+  vi.stubGlobal("fetch", async (input: any, init?: any) => {
+    const url = typeof input === "string" ? input : String(input?.url ?? "");
+    if (!url.includes("api.brevo.com")) {
+      return originalFetch(input, init);
+    }
+    return new Response(JSON.stringify({ code: "unauthorized", message: "Key not found" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+}
+
+function mailTo(address: string): SentMail[] {
+  return sentMail.filter((message) => message.to === address);
 }
 
 let actors: Actors;
@@ -447,8 +486,9 @@ describe("student OD and mentor flow", () => {
     stubEmail();
   });
 
-  afterEach(async () => {
+afterEach(async () => {
     vi.unstubAllGlobals();
+    sentMail = [];
 
     /*
      * Clear the student's in-flight requests between tests.
@@ -764,12 +804,15 @@ it("keeps the assignment even though no mentor is notified", async () => {
   /* ========================================================== the chain */
 
   describe("the approval chain", () => {
-    /** Files a fresh request and returns its id. */
-    async function startRequest(): Promise<string> {
+/** Files a fresh request and returns its id. */
+    async function startRequest(
+      dates: string[] = [OD_DATE_A],
+      reason = "Attending an inter-college technical event"
+    ): Promise<string> {
       await giveMentor();
       stubEmail();
-      const { status, body } = await fileOd([OD_DATE_A], 1);
-      expect(status).toBe(200);
+      const { status, body } = await fileOd(dates, dates.length, reason);
+      expect(status, JSON.stringify(body)).toBe(200);
       return body.request.od_request_id;
     }
 
@@ -817,7 +860,7 @@ it("keeps the assignment even though no mentor is notified", async () => {
       expect(body.status).toBe(OD_STATUS.REJECTED);
       expect(await currentStatus(id)).toBe(OD_STATUS.REJECTED);
 
-      const row = await env.DB
+const row = await env.DB
         .prepare("SELECT * FROM od_requests WHERE od_request_id = ?")
         .bind(id)
         .first<any>();
@@ -825,6 +868,30 @@ it("keeps the assignment even though no mentor is notified", async () => {
       expect(row.rejection_reason).toBe("Clash with a scheduled lab");
       expect(row.rejected_at).toBeTruthy();
 
+      /*
+       * The student is the only person who hears, and this is the assertion that was
+       * missing: the suite recorded nothing about mail, so a broken rejection notification
+       * -- the reported bug -- could not fail any test here. The message must name the
+       * stage, carry the reason the approver typed, and describe the request well enough
+       * for the student to recognise it.
+       */
+      const toStudent = mailTo(STUDENT_EMAIL);
+      expect(toStudent).toHaveLength(1);
+      const rejection = toStudent[0];
+      expect(rejection.subject).toContain("OD Request Rejected");
+      expect(rejection.text).toContain("rejected at the Mentor stage");
+      expect(rejection.text).toContain("Clash with a scheduled lab");
+      expect(rejection.text).toContain(STUDENT_NAME);
+      expect(rejection.text).toContain(STUDENT_ID);
+      expect(rejection.text).toContain(OD_DATE_A);
+      expect(rejection.text).toContain(`Department: ${DEPARTMENT}`);
+      expect(rejection.text).toContain(`Batch: ${BATCH}`);
+      expect(rejection.text).toContain("Year: 3");
+      expect(rejection.text).toContain("Section: A");
+      expect(rejection.html).toContain("Clash with a scheduled lab");
+
+      // Nobody downstream was asked to do anything.
+      expect(mailTo(actors.coordinator.email)).toHaveLength(0);
     });
 
     it("stops on a rejection at any later stage too", async () => {
@@ -845,30 +912,102 @@ it("keeps the assignment even though no mentor is notified", async () => {
           await decide(previousToken, previousStage, id, "APPROVED");
         }
 
+        sentMail = [];
         stubEmail();
         const { status } = await decide(token, stage, id, "REJECTED", "Not this time");
         expect(status, stage).toBe(200);
         expect(await currentStatus(id)).toBe(OD_STATUS.REJECTED);
 
-        const row = await env.DB
+const row = await env.DB
           .prepare("SELECT rejected_at_stage FROM od_requests WHERE od_request_id = ?")
           .bind(id)
           .first<{ rejected_at_stage: string }>();
         expect(row?.rejected_at_stage).toBe(stage);
 
+        /*
+         * Every stage, not just the mentor: the student is told, and the stage *after* the
+         * one that refused is never contacted. The coordinator case is the one that was
+         * reported as silently dropping the student, so it is asserted explicitly.
+         */
+        const rejections = mailTo(STUDENT_EMAIL).filter((m) => m.subject.includes("OD Request Rejected"));
+        expect(rejections, stage).toHaveLength(1);
+        expect(rejections[0].text, stage).toContain("Not this time");
+
+        if (stage === "CONTEST_COORDINATOR") {
+          expect(mailTo(actors.advisor.email), stage).toHaveLength(0);
+          expect(mailTo(actors.hod.email), stage).toHaveLength(0);
+        }
+        if (stage === "CLASS_ADVISOR") {
+          expect(mailTo(actors.hod.email), stage).toHaveLength(0);
+        }
+
+        await env.DB.prepare("DELETE FROM od_requests WHERE od_request_id = ?").bind(id).run();
       }
     });
 
-it("records the decision and advances even when nothing is notified", async () => {
+    it("records the decision and advances even when nothing is notified", async () => {
       /*
        * The decision is the record. A mail server being unreachable must not undo an
-       * approval an approver was told was saved, so the status advances regardless.
+       * approval an approver was told was saved, and the failure has to be reported
+       * separately rather than swallowed.
        */
-      stubEmail();
       const id = await startRequest();
-      const { status } = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      sentMail = [];
+      failEmail();
+      const { status, body } = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
       expect(status).toBe(200);
+      expect(body.status).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+      expect(body.notification_sent).toBe(false);
+      expect(body.warning).toContain("could not be sent");
+      // Nothing left the Worker during the decision itself.
+      expect(sentMail).toHaveLength(0);
+    });
+
+    it("emails the final approval exactly once, when the HOD says yes", async () => {
+      const id = await startRequest([OD_DATE_A, OD_DATE_B]);
+      sentMail = [];
+      stubEmail();
+
+      for (const [approver, stage] of [
+        ["od-mentor-1", "MENTOR"],
+        ["od-coord-1", "CONTEST_COORDINATOR"],
+        ["od-advisor-1", "CLASS_ADVISOR"],
+        ["od-hod-1", "HOD"],
+      ] as const) {
+        const { status, body } = await decide(approver, stage, id, "APPROVED");
+        expect(status, stage).toBe(200);
+        // Only the last one finishes it, and only the last one names a next stage.
+        expect(body.next_stage ?? null, stage).toBe(
+          stage === "HOD" ? null : body.next_stage
+        );
+      }
+      expect(await currentStatus(id)).toBe(OD_STATUS.APPROVED);
+
+      /*
+       * One final approval, phrased the way a student will search for it, carrying the
+       * cohort the days were granted against. Before this the final mail was indistinguishable
+       * from the three stage ones, said nothing about batch, and its footer told the student
+       * to sign in and "review and action this request" -- which had already happened.
+       */
+      const finals = mailTo(STUDENT_EMAIL).filter((m) => m.subject.includes("OD Request Approved"));
+      expect(finals).toHaveLength(1);
+      const mail = finals[0];
+      expect(mail.text).toContain(STUDENT_NAME);
+      expect(mail.text).toContain(`Batch: ${BATCH}`);
+      expect(mail.text).toContain(`Department: ${DEPARTMENT}`);
+      expect(mail.text).toContain("Year: 3");
+      expect(mail.text).toContain("Section: A");
+      expect(mail.text).toContain(`${OD_DATE_A}, ${OD_DATE_B}`);
+      expect(mail.text).toContain("Number of OD days: 2");
+      expect(mail.text).toContain("fully approved");
+      expect(mail.text).not.toContain("review and action this request");
+
+      // Four stage notifications, and no request-for-approval after the last one.
+      expect(mailTo(STUDENT_EMAIL)).toHaveLength(4);
+      expect(mailTo(actors.hod.email)).toHaveLength(1);
+      expect(mailTo(actors.advisor.email)).toHaveLength(1);
+      expect(mailTo(actors.coordinator.email)).toHaveLength(1);
     });
 
     it("refuses a mentor who is not this student's mentor", async () => {

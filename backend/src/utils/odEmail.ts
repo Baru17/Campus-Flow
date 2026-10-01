@@ -1,8 +1,8 @@
 /*
  * The OD workflow's messages, rendered and ready for `sendBrevoEmail`.
  *
- * This file builds messages and sends nothing. The transport, the API key, the
- * sender and the error types all live in `utils/email.ts`, which the password reset
+ * This file builds messages and sends nothing. The transport, the API key, the sender
+ * and the error types all live in `utils/email.ts`, which the password reset
  * mail already uses, so there is one email provider in this project and adding the
  * OD mail did not add a second one.
  *
@@ -14,14 +14,22 @@
  *    could notify a student about an approval that was rolled back, so the ordering
  *    is enforced by where these are called rather than by anything inside them.
  *
- * 2. **A message never carries a credential.** No password, no session token, no
- *    `auth_user_id`, no pwd_hash. What goes out is the student's name, ID,
- *    department, year, section, the dates, the count, the reason and the request
- *    id -- enough for an approver to recognise the request and act on it, and
- *    nothing an approver has no business seeing.
+ * 2. **A message never carries a credential** -- with one deliberate, narrow exception.
+ *    No password, no session token, no `auth_user_id`, no pwd_hash. What goes out is
+ *    the student's name, ID, department, batch, year, section, the dates, the count, the
+ *    reason and the request id: enough for an approver to recognise the request and act
+ *    on it, and nothing an approver has no business seeing.
+ *
+ *    The exception is the *email-link* action a Contest Coordinator's and an HOD's mail
+ *    carries, which does put a single-use approval token in the URL. That is the point
+ *    of it: it is the only way those two roles reach the request at all, it expires, it
+ *    is bound to one request and one stage, and it is spent by the first decision. It is
+ *    never a password, a session or a standing credential, and knowing the path is not
+ *    authorisation -- see `utils/odApprovalToken.ts`.
  */
 
 import { escapeHtml } from "./email";
+import { OD_APPROVAL_TOKEN_TTL_HOURS } from "./odApprovalToken";
 
 /** A rendered message, with the recipient left to the caller. */
 export interface OdMessage {
@@ -36,12 +44,18 @@ export interface OdMessage {
  * One shape for all thirteen messages, so the tables in them line up and a student
  * comparing the mail about stage two with the one about stage three sees the same
  * request rather than two different-looking ones.
+ *
+ * `batch` is here because an approver deciding between three years of the same
+ * department cannot do it from department/year/section alone, and because a student
+ * reading their own approval mail should be able to see the cohort the days were
+ * approved against.
  */
 export interface OdRequestFacts {
   odRequestId: string;
   studentName: string;
   studentId: string;
   department: string;
+  batch: string;
   year: number | string;
   section: string;
   odDates: string[];
@@ -54,6 +68,7 @@ function factsRows(facts: OdRequestFacts): { label: string; value: string }[] {
     { label: "Student", value: facts.studentName },
     { label: "Student ID", value: facts.studentId },
     { label: "Department", value: facts.department },
+    { label: "Batch", value: facts.batch },
     { label: "Year", value: String(facts.year) },
     { label: "Section", value: facts.section },
     { label: "OD dates", value: facts.odDates.join(", ") },
@@ -63,17 +78,28 @@ function factsRows(facts: OdRequestFacts): { label: string; value: string }[] {
   ];
 }
 
+/** The closing line for a message that reports something that has already happened. */
+const DECISION_FOOTER =
+  "Sign in to Campus-Flow to see the status of your on-duty requests.";
+
 /**
- * The shared shell: a heading, a paragraph, the facts table, and optionally a button.
+ * The shared shell: a heading, a paragraph, the facts table, an optional action, an
+ * optional note, and a closing line.
  *
- * The button is the only thing that differs between a message with an action and one
- * without, so it is a parameter rather than a second layout.
+ * Every part is a parameter and every part is rendered where it belongs. Nothing is
+ * patched in afterwards: the previous version built the message and then spliced the
+ * approver's note in with `html.replace("</td></tr></table>", ...)`, which put the note
+ * inside the last cell of the facts table and -- because `String.replace` honours `$&`,
+ * `` $` ``, `$'`, `$$` and `$1` in a replacement string, and the note is free text typed by
+ * a human -- destroyed the message entirely whenever an approver's reason contained a
+ * dollar sign. A student rejecting "lab fee is $& tuition" received a mail with the table
+ * cut off mid-value.
  */
 function buildShell(
   heading: string,
   intro: string,
   facts: OdRequestFacts,
-  actionUrl?: string
+  options: { action?: string; actionNote?: string; note?: string; footer?: string } = {}
 ): { html: string; text: string } {
   const rows = factsRows(facts)
     .map(
@@ -86,12 +112,26 @@ function buildShell(
 
   const plainRows = factsRows(facts).map((row) => `${row.label}: ${row.value}`);
 
+  const footer = options.footer ?? DECISION_FOOTER;
+
   // Built only when there is an action, and escaped like every other substituted value.
-  const button = actionUrl
+  const button = options.action
     ? `<p style="margin:24px 0 0;">
-         <a href="${escapeHtml(actionUrl)}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 22px;border-radius:10px;">Review OD Request</a>
+         <a href="${escapeHtml(options.action)}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 22px;border-radius:10px;">Review OD Request</a>
        </p>
-       <p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#64748b;">You will be asked to sign in. The link only takes you to the right dashboard — it cannot approve anything on its own.</p>`
+       ${
+         options.actionNote
+           ? `<p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#64748b;">${escapeHtml(
+               options.actionNote
+             )}</p>`
+           : ""
+       }`
+    : "";
+
+  const note = options.note
+    ? `<p style="margin:18px 0 0;padding:12px 14px;background:#f8fafc;border-left:3px solid #cbd5e1;color:#334155;font-size:14px;line-height:1.6;">${escapeHtml(
+        options.note
+      )}</p>`
     : "";
 
   const html = `<!doctype html>
@@ -104,26 +144,59 @@ function buildShell(
           <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#334155;">${escapeHtml(intro)}</p>
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;">${rows}</table>
           ${button}
-          <p style="margin:20px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Sign in to Campus-Flow to review and action this request.</p>
+          ${note}
+          <p style="margin:20px 0 0;font-size:13px;line-height:1.6;color:#64748b;">${escapeHtml(
+            footer
+          )}</p>
         </td>
       </tr>
     </table>
   </body>
 </html>`;
 
-  const text = [
-    heading,
-    "",
-    intro,
-    "",
-    ...plainRows,
-    "",
-    ...(actionUrl ? ["Review OD Request:", actionUrl, ""] : []),
-    "Sign in to Campus-Flow to review and action this request.",
-  ].join("\n");
+  const textSections = [heading, intro, plainRows.join("\n")];
+  if (options.action) {
+    textSections.push(
+      ["Review OD Request:", options.action, "", options.actionNote ?? ""].join("\n").trimEnd()
+    );
+  }
+  if (options.note) textSections.push(`From your approver:\n${options.note}`);
+  textSections.push(footer);
+  const text = textSections.join("\n\n");
 
   return { html, text };
 }
+
+/**
+ * What the "Review OD Request" button in an approver's mail does.
+ *
+ * Two kinds, and the difference is the whole point of `PART 7` of the OD brief:
+ *
+ *   - `dashboard`: a mentor and a class advisor have somewhere to go. They sign in at the
+ *     link they already know how to reach, and the server checks their session. The link
+ *     carries no credential of any kind.
+ *   - `email-link`: a Contest Coordinator and an HOD have no dashboard anyone reaches from
+ *     the role selection. Their link carries a single-use, expiring approval token and
+ *     opens the approval page directly -- no sign-in form, and nothing in the URL that
+ *     outlives the decision.
+ */
+export interface OdApprovalAction {
+  url: string;
+  kind: "dashboard" | "email-link";
+}
+
+/** The closing copy under each kind of button. */
+const ACTION_NOTES: Record<OdApprovalAction["kind"], string> = {
+  dashboard:
+    "You will be asked to sign in. The link only takes you to the right dashboard — it cannot approve anything on its own.",
+  "email-link": `This link approves this one request only. It expires in ${OD_APPROVAL_TOKEN_TTL_HOURS} hours and stops working the moment you approve or reject it — you will not be asked to sign in.`,
+};
+
+/** The closing line under each kind of button. */
+const ACTION_FOOTERS: Record<OdApprovalAction["kind"], string> = {
+  dashboard: "Sign in to Campus-Flow to review and action this request.",
+  "email-link": "Nothing else is needed — the link above opens the request directly.",
+};
 
 /**
  * An approval *request*, addressed to the approver for one stage.
@@ -132,24 +205,22 @@ function buildShell(
  * a queue of requests can triage it, and the heading names the role so it is obvious
  * why it reached them. The request id is in the facts table, which is what lets an
  * approver find it again after the mail has scrolled away.
- *
- * `actionUrl` is the approver's dashboard. It carries no credential of any kind: a
- * mentor or an advisor has to sign in at the link they already know how to reach, and a
- * coordinator or HOD arrives at the approver sign-in page and authenticates there. A
- * link that could approve on its own would make the whole chain unauthenticated, so the
- * URL is an address to *arrive* at, never a permission.
  */
 export function odApprovalRequestEmail(
   facts: OdRequestFacts,
   stageLabel: string,
-  actionUrl: string
+  action: OdApprovalAction
 ): OdMessage {
   const subject = `CampusFlow — OD approval needed: ${facts.studentName} (${facts.studentId})`;
   const { html, text } = buildShell(
     "OD request awaiting your approval",
     `${facts.studentName} has requested on-duty leave and your approval is needed as the ${stageLabel}.`,
     facts,
-    actionUrl
+    {
+      action: action.url,
+      actionNote: ACTION_NOTES[action.kind],
+      footer: ACTION_FOOTERS[action.kind],
+    }
   );
   return { subject, html, text };
 }
@@ -157,29 +228,33 @@ export function odApprovalRequestEmail(
 /**
  * A decision on the student's request, addressed to the student.
  *
- * `note` carries the approver's own words. It is escaped like everything else,
- * because it is free text typed by whoever holds the stage and is the one part of
- * these messages not derived from the student's own request.
+ * `note` carries the approver's own words. It is escaped like everything else, because it
+ * is free text typed by whoever holds the stage and is the one part of these messages not
+ * derived from the student's own request -- so it is the one part that has to survive
+ * arbitrary characters.
+ *
+ * There is deliberately no string surgery anywhere in this file any more. An earlier
+ * version rendered the shell and then spliced the note in with
+ * `html.replace("</td></tr></table>", block)`, which was wrong twice over: it dropped the
+ * note inside the last cell of the facts table, and because `String.prototype.replace`
+ * interprets `$&`, `` $` ``, `$'`, `$$` and `$1` in a replacement string, an approver who
+ * rejected a request over "exam fee is $& tuition" produced a mail with the facts table cut
+ * off mid-value and the document's closing tags pasted into the middle of the sentence. The
+ * student received something unreadable in the one message they most needed to read. The
+ * note is now a parameter of `buildShell` and is rendered where it belongs.
  */
 export function odDecisionEmail(
   facts: OdRequestFacts,
   headline: string,
   body: string,
-  note?: string
+  options: { note?: string; subject?: string } = {}
 ): OdMessage {
-  const { html, text } = buildShell(headline, body, facts);
-  if (!note) return { subject: headline, html, text };
-
-  const block =
-    `<p style="margin:18px 0 0;padding:12px 14px;background:#f8fafc;border-left:3px solid #cbd5e1;color:#334155;font-size:14px;line-height:1.6;">${escapeHtml(
-      note
-    )}</p></td></tr></table>`;
-
-  return {
-    subject: headline,
-    html: html.replace("</td></tr></table>", block),
-    text: `${text}\n\nFrom your approver:\n${note}`,
-  };
+  const subject = options.subject ?? headline;
+  const { html, text } = buildShell(headline, body, facts, {
+    footer: DECISION_FOOTER,
+    ...(options.note ? { note: options.note } : {}),
+  });
+  return { subject, html, text };
 }
 
 /** The headline each of the four stage approvals produces. */
@@ -193,8 +268,21 @@ export const OD_APPROVED_HEADLINES: Record<string, string> = {
 /** The final, end-of-workflow headline. Deliberately different from the stage ones. */
 export const OD_FULLY_APPROVED_HEADLINE = "Your OD request has been fully approved";
 
+/**
+ * The subject for the final approval.
+ *
+ * Split from the headline on purpose. The headline is what a student reads in the body,
+ * and reads as prose; in a subject line, sitting in their inbox among everything else,
+ * "OD Request Approved" is the phrase they will actually be looking for when they need
+ * to know whether their leave was cleared.
+ */
+export const OD_FULLY_APPROVED_SUBJECT = "CampusFlow — OD Request Approved";
+
 /** The rejection headline. One for every stage, because one thing went wrong. */
 export const OD_REJECTED_HEADLINE = "Your OD request has been rejected";
+
+/** The rejection subject. A rejection is the mail a student is most likely to search for. */
+export const OD_REJECTED_SUBJECT = "CampusFlow — OD Request Rejected";
 
 /** The mentor-assignment headline, as required by the mentor notification. */
 export const OD_MENTOR_ASSIGNED_SUBJECT = "CampusFlow — New Student Mentor Assignment";

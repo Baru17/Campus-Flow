@@ -1,21 +1,29 @@
 import { describe, expect, it } from "vitest";
 
 import { appUrl, resolveAppOrigin } from "../src/utils/appUrl";
+import { escapeHtml } from "../src/utils/email";
 import {
+  OD_APPROVED_HEADLINES,
+  OD_FULLY_APPROVED_HEADLINE,
+  OD_FULLY_APPROVED_SUBJECT,
+  OD_REJECTED_HEADLINE,
+  OD_REJECTED_SUBJECT,
   odApprovalRequestEmail,
   odDecisionEmail,
   odMentorAssignedEmail,
   type OdRequestFacts,
 } from "../src/utils/odEmail";
+import { OD_APPROVAL_TOKEN_TTL_HOURS } from "../src/utils/odApprovalToken";
 
 /**
- * Unit coverage for the two pure pieces of the mail layer: where a link points, and what
- * an approval request says.
+ * Unit coverage for the pure pieces of the mail layer: where a link points, and what a
+ * message says.
  *
- * Both are pure string builders, so nothing is sent and no network is touched. Delivery
- * itself is the integration suite's business, and it deliberately does not assert on mail
- * either -- see `studentOd.integration.spec.ts`. What is worth pinning down here is that
- * the URL is always one of ours, and that the link carries no credential.
+ * Both are pure string builders, so nothing is sent and no network is touched. Delivery is
+ * the integration suite's business. What is pinned here is that the URL is always one of
+ * ours, that a dashboard link carries no credential at all, that the emailed-link copy
+ * tells the truth about what the link can do, and that nothing an approver types can
+ * corrupt the message they receive.
  */
 
 const FACTS: OdRequestFacts = {
@@ -23,11 +31,26 @@ const FACTS: OdRequestFacts = {
   studentName: "Asha Raman",
   studentId: "22CS014",
   department: "CSE",
+  batch: "2022_2026",
   year: 3,
   section: "A",
   odDates: ["2026-11-20", "2026-11-21"],
   odDays: 2,
   reason: "Attending an inter-college technical event",
+};
+
+const DASHBOARD_ACTION = {
+  url: "https://campus-flow-cdl.pages.dev/staff",
+  kind: "dashboard" as const,
+};
+
+/**
+ * A stand-in for a real minted token: the *shape* is what matters here, and whether the
+ * signature is valid is the token module's problem, tested on its own.
+ */
+const EMAIL_LINK_ACTION = {
+  url: "https://campus-flow-cdl.pages.dev/od/approve/eyJ2IjoxfQ.c2lnbmF0dXJl",
+  kind: "email-link" as const,
 };
 
 describe("resolveAppOrigin", () => {
@@ -80,7 +103,7 @@ describe("appUrl", () => {
 
 describe("odApprovalRequestEmail", () => {
   it("names the student in the subject and the role in the body", () => {
-    const message = odApprovalRequestEmail(FACTS, "Contest Coordinator", "https://campus-flow-cdl.pages.dev/approver/login");
+    const message = odApprovalRequestEmail(FACTS, "Contest Coordinator", EMAIL_LINK_ACTION);
 
     expect(message.subject).toContain("Asha Raman");
     expect(message.subject).toContain("22CS014");
@@ -91,26 +114,21 @@ describe("odApprovalRequestEmail", () => {
   });
 
   it("offers the action link in both the HTML and the plain text", () => {
-    const url = "https://campus-flow-cdl.pages.dev/approver/login";
-    const message = odApprovalRequestEmail(FACTS, "HOD", url);
+    const message = odApprovalRequestEmail(FACTS, "HOD", EMAIL_LINK_ACTION);
 
-    expect(message.html).toContain(`href="${url}"`);
+    expect(message.html).toContain(`href="${EMAIL_LINK_ACTION.url}"`);
     expect(message.html).toContain("Review OD Request");
-    expect(message.text).toContain(url);
+    expect(message.text).toContain(EMAIL_LINK_ACTION.url);
   });
 
-  it("carries no credential in the link, in any stage", () => {
+  it("carries no credential in a dashboard link, in any stage", () => {
     /*
-     * The whole reason a link is safe to put in mail is that it is only an address to
-     * arrive at. A token, a session id or an approval in the query string would make the
-     * chain approvable by forwarding, so every stage is checked for the absence of one.
-     *
-     * Matched against the query and fragment only: `/approver/login` contains the letters
-     * of "approve", and a substring test over the whole URL would trip over the very path
-     * these links are supposed to have.
+     * A mentor's and a class advisor's link is only an address to arrive at. A token, a
+     * session id or an approval in the query string would make the chain approvable by
+     * forwarding, so every dashboard link is checked for the absence of one.
      */
-    for (const stage of ["Mentor", "Contest Coordinator", "Class Advisor", "HOD"]) {
-      const message = odApprovalRequestEmail(FACTS, stage, "https://campus-flow-cdl.pages.dev/approver/login");
+    for (const stage of ["Mentor", "Class Advisor"]) {
+      const message = odApprovalRequestEmail(FACTS, stage, DASHBOARD_ACTION);
       const link = message.html.match(/href="([^"]+)"/)?.[1] ?? "";
       const credentials = link.split(/[?#]/).slice(1).join("");
       expect(credentials).not.toMatch(/token|session|approve|decision|sig|auth/i);
@@ -118,10 +136,46 @@ describe("odApprovalRequestEmail", () => {
     }
   });
 
-  it("says the link cannot approve anything on its own", () => {
-    const message = odApprovalRequestEmail(FACTS, "HOD", "https://campus-flow-cdl.pages.dev/approver/login");
+  it("says a dashboard link cannot approve anything on its own", () => {
+    const message = odApprovalRequestEmail(FACTS, "Mentor", DASHBOARD_ACTION);
     expect(message.html).toContain("it cannot approve anything on its own");
     expect(message.text).toContain("Sign in to Campus-Flow");
+  });
+
+  it("tells a coordinator or HOD exactly what their emailed link does", () => {
+    /*
+     * The emailed link is a real credential, so the copy has to be honest about it: it
+     * approves one request, it expires, it stops working after use, and there is no
+     * sign-in step. Anything vaguer would leave an approver unsure whether they can
+     * trust it, and the old copy -- "you will be asked to sign in" -- was actively wrong
+     * for them.
+     */
+    const message = odApprovalRequestEmail(FACTS, "Contest Coordinator", EMAIL_LINK_ACTION);
+
+    expect(message.html).toContain("approves this one request only");
+    expect(message.html).toContain("you will not be asked to sign in");
+    expect(message.html).toContain(`${OD_APPROVAL_TOKEN_TTL_HOURS} hours`);
+    expect(message.text).toContain("stops working the moment you approve or reject it");
+    // And it must not also claim a sign-in step.
+    expect(message.html).not.toContain("it cannot approve anything on its own");
+    expect(message.text).not.toContain("Sign in to Campus-Flow to review and action");
+  });
+
+  it("never tells an emailed approver to sign in", () => {
+    for (const stage of ["Contest Coordinator", "HOD"]) {
+      const message = odApprovalRequestEmail(FACTS, stage, EMAIL_LINK_ACTION);
+      expect(message.text, stage).not.toContain("You will be asked to sign in");
+    }
+  });
+
+  it("never names a password, a session or an API key in either kind of link", () => {
+    for (const action of [DASHBOARD_ACTION, EMAIL_LINK_ACTION]) {
+      for (const stage of ["Mentor", "Class Advisor", "Contest Coordinator", "HOD"]) {
+        const message = odApprovalRequestEmail(FACTS, stage, action);
+        const link = message.html.match(/href="([^"]+)"/)?.[1] ?? "";
+        expect(link.toLowerCase(), `${stage} ${action.kind}`).not.toMatch(/password|pwd|api[-_]?key|session/i);
+      }
+    }
   });
 
   it("renders a hostile reason as text rather than markup", () => {
@@ -138,7 +192,7 @@ describe("odApprovalRequestEmail", () => {
       studentName: '<img src=x onerror="alert(1)">',
       reason: "<script>alert('xss')</script>",
     };
-    const message = odApprovalRequestEmail(hostile, "Mentor", "https://campus-flow-cdl.pages.dev/staff");
+    const message = odApprovalRequestEmail(hostile, "Mentor", DASHBOARD_ACTION);
 
     expect(message.html).toContain("&lt;script&gt;");
     expect(message.html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
@@ -152,7 +206,7 @@ describe("odApprovalRequestEmail", () => {
     const message = odApprovalRequestEmail(
       FACTS,
       "Mentor",
-      'https://campus-flow-cdl.pages.dev/staff?a=1&b=2'
+      { ...DASHBOARD_ACTION, url: "https://campus-flow-cdl.pages.dev/staff?a=1&b=2" }
     );
     expect(message.html).toContain("&amp;b=2");
     expect(message.html).not.toMatch(/href="[^"]*[^;]&b=2/);
@@ -171,15 +225,114 @@ describe("messages with no action", () => {
      * A decision is a report of what has already happened, so there is nothing to click.
      * A link here would invite an approver to try to decide a settled request.
      */
-    const message = odDecisionEmail(
-      FACTS,
-      "OD request rejected by the Mentor",
-      "Your on-duty request was rejected at the Mentor stage.",
-      "Reason given: Lab clash"
-    );
+    const message = odDecisionEmail(FACTS, OD_REJECTED_HEADLINE, "Your on-duty request was rejected.", {
+      note: "Reason given: Lab clash",
+    });
 
     expect(message.html).not.toContain("Review OD Request");
     expect(message.html).not.toContain("<a ");
     expect(message.text).toContain("Lab clash");
+  });
+});
+
+describe("odDecisionEmail", () => {
+  it("puts the batch in the facts table, not just the department", () => {
+    /*
+     * Three years of one department are indistinguishable from department + year + section
+     * alone in some cohorts, and the student reading their own approval mail should be
+     * able to see the cohort the days were granted against.
+     */
+    const message = odDecisionEmail(FACTS, OD_FULLY_APPROVED_HEADLINE, "Every stage has approved it.");
+    expect(message.html).toContain("Batch");
+    expect(message.html).toContain(FACTS.batch);
+    expect(message.text).toContain(`Batch: ${FACTS.batch}`);
+  });
+
+  it("defaults its subject to the headline when none is given", () => {
+    const message = odDecisionEmail(FACTS, "Some headline", "Body.");
+    expect(message.subject).toBe("Some headline");
+  });
+
+  it("uses the search-friendly subject when one is given", () => {
+    const rejected = odDecisionEmail(FACTS, OD_REJECTED_HEADLINE, "Body.", { subject: OD_REJECTED_SUBJECT });
+    const approved = odDecisionEmail(FACTS, OD_FULLY_APPROVED_HEADLINE, "Body.", {
+      subject: OD_FULLY_APPROVED_SUBJECT,
+    });
+
+    // This is what a student greps their inbox for, so the exact phrase has to be in it.
+    expect(approved.subject).toContain("OD Request Approved");
+    expect(rejected.subject).toContain("OD Request Rejected");
+    // ...while the body still reads as a sentence rather than as a status name.
+    expect(approved.html).toContain(OD_FULLY_APPROVED_HEADLINE);
+    expect(rejected.html).toContain(OD_REJECTED_HEADLINE);
+  });
+
+  it("does not tell a student to sign in to review a request that has already been decided", () => {
+    /*
+     * This used to be the footer on every message built by the shared shell, so a student
+     * whose leave had been fully approved was invited to go and action it. There is nothing
+     * to action, and the mail is a report.
+     */
+    const message = odDecisionEmail(FACTS, OD_FULLY_APPROVED_HEADLINE, "Every stage has approved it.");
+    expect(message.html).not.toContain("review and action this request");
+    expect(message.text).not.toContain("review and action this request");
+    expect(message.html).toContain("status of your on-duty requests");
+  });
+
+  it("renders an approver's note verbatim, whatever substitution patterns it contains", () => {
+    /*
+     * The bug this pins is real and was shipping. `String.replace` treats `$&`, `` $` ``,
+     * `$'`, `$$` and `$1` in a *replacement string* as substitution patterns, and the
+     * note is the one field in this module a human types freely -- so an approver who
+     * rejected a request over "lab fee is $& the registration fee" produced a mail whose
+     * facts table was cut off mid-value and whose closing tags were pasted into the middle
+     * of the sentence. The student then received something unreadable, in the one message
+     * they most needed to be able to read.
+     */
+    const hostileNotes = [
+      "$&",
+      "exam fee is $& tuition",
+      "$$",
+      "cost was $1 out of the budget",
+      "$` and $' both",
+      "100$ and 50$",
+    ];
+
+    for (const note of hostileNotes) {
+      const message = odDecisionEmail(FACTS, OD_REJECTED_HEADLINE, "Rejected.", { note });
+
+      // The whole facts table survives, so the message is still readable.
+      expect(message.html, note).toContain(`>${FACTS.odRequestId}</td>`);
+      // Exactly one closing sequence per tag level: the note is inserted, not spliced in.
+      expect((message.html.match(/<\/table>/g) ?? []).length, note).toBe(2);
+      expect((message.html.match(/<\/body>/g) ?? []).length, note).toBe(1);
+      // The note appears in both renderings, escaped in the HTML and plain in the text.
+      // `escapeHtml` is imported rather than reimplemented so this cannot quietly agree
+      // with a bug in the escaping itself.
+      expect(message.html, note).toContain(escapeHtml(note));
+      expect(message.text, note).toContain(note);
+      // No leftover substitution artefacts spliced in from the search string.
+      expect(message.html, note).not.toContain("</td></tr></table>amp;");
+      expect(message.html, note).not.toContain("#39; tick");
+    }
+  });
+
+  it("escapes markup in an approver's note rather than rendering it", () => {
+    const message = odDecisionEmail(FACTS, OD_REJECTED_HEADLINE, "Rejected.", {
+      note: "<img src=x onerror=\"alert(1)\">",
+    });
+
+    expect(message.html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+    expect(message.html).not.toMatch(/<img\b/i);
+    // The plain-text rendering is not markup, so the raw characters are correct there.
+    expect(message.text).toContain("<img src=x");
+  });
+
+  it("omits the note block entirely when there is no note", () => {
+    const message = odDecisionEmail(FACTS, OD_APPROVED_HEADLINES.MENTOR, "Approved.");
+    expect(message.html).not.toContain("From your approver");
+    expect(message.text).not.toContain("From your approver");
+    // And the table is still well formed.
+    expect((message.html.match(/<\/table>/g) ?? []).length).toBe(2);
   });
 });
