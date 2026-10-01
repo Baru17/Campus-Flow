@@ -55,6 +55,7 @@ import { selectInChunks } from "../utils/sqlChunking";
 import {
   hashDefaultPassword,
   planAccounts,
+  emailUserName,
   staffUserName,
   studentUserName,
   DEFAULT_INITIAL_PASSWORD,
@@ -62,6 +63,8 @@ import {
   type ExistingAccount,
 } from "../utils/accountProvisioning";
 import {
+  validateContestCoordinatorRow,
+  validateHodRow,
   validateStaffId,
   validateStaffRow,
   validateStudentId,
@@ -70,6 +73,7 @@ import {
   type StaffInput,
   type StudentInput,
   type SubjectInput,
+  type RowResult,
 } from "../utils/adminValidation";
 
 const app = new Hono<{ Bindings: { DB: D1Database } }>();
@@ -1697,5 +1701,596 @@ app.patch("/subjects/:subjectId", requireAuth, requireAdmin, async (c) => {
     return serverError(c, error, "Could not update that subject", "subject-update-failed");
   }
 });
+
+/* ------------------------------------------ hods and contest coordinators */
+
+/**
+ * A directory entry: a person, an address, and the department they belong to.
+ *
+ * `hods` and `contest_coordinators` are the same record under two names, so they
+ * share one validator, one import contract and one set of responses. Only the
+ * column names differ, and those live in the spec rather than in the request.
+ */
+interface DirectoryInput {
+  name: string;
+  email: string;
+  department: string;
+}
+
+interface DirectorySpec {
+  /** Route prefix under `/api/admin`. */
+  path: string;
+  /** Literal table name. Never derived from anything the client sent. */
+  table: string;
+  /** Literal primary key column. Assigned by the database, never by the client. */
+  idColumn: string;
+  /** Literal name column, and the id echoed by the list and read-back responses. */
+  nameColumn: string;
+  /** Name of the path parameter, so the route and the read agree. */
+  idParam: string;
+  /** The role this directory's accounts are created with. */
+  role: ProvisionedRole;
+  /** Singular noun for messages, e.g. "HOD". */
+  label: string;
+  /** Key the list is returned under, and the id-validation error code. */
+  listKey: string;
+  /** Error-code stem, e.g. `hod` in `hod-not-found`. */
+  codeStem: string;
+  /**
+   * The row validator, in its own column vocabulary.
+   *
+   * Typed against only the two fields both directories share, so each concrete
+   * validator's richer result -- `HodInput`, `ContestCoordinatorInput` -- is
+   * assignable to it, and `directoryValidator` does the narrowing to the three
+   * fields the routes actually use.
+   */
+  validateRow: (row: unknown) => RowResult<{ email: string; department: string }>;
+}
+
+/**
+ * Adapts a row validator that speaks in column names into one that speaks in the
+ * three directory fields.
+ *
+ * The column names are read back out of the validated value using the spec's own
+ * `nameColumn`, so `hod_name` and `coordinator_name` survive validation and the
+ * error objects the caller sees still name the field the dashboard has an input
+ * for.
+ */
+function directoryValidator<T extends { email: string; department: string }>(
+  spec: DirectorySpec,
+  validate: (row: unknown) => RowResult<T>
+): (row: unknown) => RowResult<DirectoryInput> {
+  return (row: unknown) => {
+    const result = validate(row);
+    if (!result.ok) return { ok: false, errors: result.errors };
+    // `nameColumn` is a literal from the spec and the validator it is paired with
+    // is written against that same spec, so the lookup is guaranteed to exist. The
+    // assertion is here only because TypeScript cannot see that pairing.
+    const value = result.value as T & Record<string, string>;
+    return {
+      ok: true,
+      value: {
+        name: value[spec.nameColumn],
+        email: value.email,
+        department: value.department,
+      },
+    };
+  };
+}
+
+/**
+ * An `INTEGER PRIMARY KEY` addressed by the path.
+ *
+ * Validated as a positive integer for the same reason `subject_id` is: the
+ * column is a database-generated autoincrement, so a non-numeric value in the
+ * path is a client mistake rather than a record that does not exist, and saying
+ * so is more useful than an empty result.
+ *
+ * The parameter is optional because Hono types `req.param()` from the route
+ * pattern, and these routes are registered from a template literal so the name is
+ * not statically known. A missing parameter reaches `Number(undefined)`, which is
+ * `NaN`, and is therefore refused by the same check.
+ */
+function validateDirectoryId(value: string | undefined): number | null {
+  const id = Number(value);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return id;
+}
+
+/**
+ * Registers the list, create and edit routes for one directory.
+ *
+ * The three routes are generated from a literal spec rather than written out per
+ * table, and every SQL identifier in them comes from that spec. Nothing here is
+ * interpolated from the request body or the URL: the table name, the id column and
+ * the name column are compile-time strings in this file, and the one value that
+ * does come from the client -- the id -- is bound as a parameter.
+ */
+function registerDirectoryRoutes(spec: DirectorySpec): void {
+  const validateDirectoryRow = directoryValidator(spec, spec.validateRow);
+  const { table, idColumn, nameColumn } = spec;
+
+  /* ------------------------------------------------------------------- list */
+
+  /*
+   * Every entry, with no department filter.
+   *
+   * `staff` is department-scoped only because the staff page asks for one
+   * department before showing a list. A head of department or a contest
+   * coordinator is one person per department, so the whole directory fits on one
+   * screen and filtering it would mean an admin could not see that a department
+   * already has one. `?department=` is still accepted as an optional narrowing
+   * for a caller that wants it, and is refused when the value is not one of the
+   * supported departments, so the filter can never silently match nothing.
+   *
+   * The projection names four columns. That is also the reason this response
+   * cannot grow a password hash: the list is built from an explicit column list,
+   * not `SELECT *`.
+   */
+  app.get(spec.path, requireAuth, requireAdmin, async (c) => {
+    try {
+      const requested = c.req.query("department");
+      const department = requested === undefined ? null : normalizeDepartment(requested);
+      if (requested !== undefined && !department) {
+        return fail(c, 400, "Choose a supported department", "invalid-department");
+      }
+
+      const rows = department
+        ? await c.env.DB
+            .prepare(
+              `SELECT ${idColumn}, ${nameColumn}, email, department, created_at
+               FROM ${table}
+               WHERE department = ?
+               ORDER BY ${nameColumn}`
+            )
+            .bind(department)
+            .all()
+        : await c.env.DB
+            .prepare(
+              `SELECT ${idColumn}, ${nameColumn}, email, department, created_at
+               FROM ${table}
+               ORDER BY ${nameColumn}`
+            )
+            .all();
+
+      return c.json({
+        success: true,
+        ...(department ? { department } : {}),
+        [spec.listKey]: rows?.results ?? [],
+      });
+    } catch (error) {
+      return serverError(c, error, `Could not load ${spec.label.toLowerCase()}s`, `${spec.codeStem}s-list-failed`);
+    }
+  });
+
+  /* ----------------------------------------------------------------- create */
+
+  /*
+   * Creates directory entries and their login accounts.
+   *
+   * Shaped exactly like the staff import, because it solves the same problem in the
+   * same table shape:
+   *
+   *   - `email` is UNIQUE in the directory table, so an address already present is
+   *     reported as skipped rather than inserted. Re-uploading the same file is
+   *     therefore a no-op instead of a UNIQUE-constraint failure.
+   *   - an account that already exists for the address is reused, so no second
+   *     `auth_users` row is created and no existing password is reset.
+   *   - an account that exists with a *different* role is a conflict, not a reuse:
+   *     `user_name` is UNIQUE and both accounts would be the address, so the row is
+   *     excluded and reported rather than leaving an entry nobody can sign in as.
+   *   - the directory rows and the accounts are written in one `DB.batch()`, which
+   *     is a transaction, so an entry is never created without its account.
+   *
+   * The id is absent from every INSERT. `hod_id` and `coordinator_id` are
+   * `INTEGER PRIMARY KEY AUTOINCREMENT`, so the database assigns them; a client
+   * that supplies one is not trusted with it because the value would have to be
+   * interpolated into the column list to be honoured at all.
+   */
+  app.post(spec.path, requireAuth, requireAdmin, async (c) => {
+    try {
+      const rawRows = await readRows(c);
+      if (rawRows instanceof Response) return rawRows;
+
+      const validated: { row: number; value: DirectoryInput }[] = [];
+      const invalid: { row: number; errors: { field: string; message: string }[] }[] = [];
+      rawRows.forEach((raw, index) => {
+        const result = validateDirectoryRow(raw);
+        if (result.ok) {
+          validated.push({ row: index + 1, value: result.value });
+        } else {
+          invalid.push({ row: index + 1, errors: result.errors });
+        }
+      });
+
+      if (validated.length === 0) {
+        return fail(c, 400, "No valid rows to import", "import-validation-failed", { invalid });
+      }
+
+      // In-file duplicates: the same address twice is a data error, not a second
+      // person. The first occurrence wins.
+      const seenEmails = new Set<string>();
+      const deduped: typeof validated = [];
+      const inFileDuplicates: { row: number; reason: string }[] = [];
+      for (const entry of validated) {
+        const key = entry.value.email.toLowerCase();
+        if (seenEmails.has(key)) {
+          inFileDuplicates.push({ row: entry.row, reason: `Duplicate email ${entry.value.email}` });
+          continue;
+        }
+        seenEmails.add(key);
+        deduped.push(entry);
+      }
+
+      // One parameter per row, chunked so a large file stays under D1's cap.
+      const existingRows = await selectInChunks<{ email: string }>(
+        c.env.DB,
+        {
+          parametersPerRow: 1,
+          buildSql: (part) =>
+            `SELECT email FROM ${table} WHERE LOWER(email) IN (${part.map(() => "?").join(",")})`,
+          bindValues: (part) => part.map((row) => row.email.toLowerCase()),
+        },
+        deduped.map((entry) => ({ email: entry.value.email }))
+      );
+      const existingEmails = new Set(existingRows.map((row) => row.email.toLowerCase()));
+
+      const toInsert = deduped.filter((entry) => !existingEmails.has(entry.value.email));
+      const skipped = deduped.length - toInsert.length;
+
+      if (toInsert.length === 0) {
+        // Every row was already present or duplicated. Nothing is written, and the
+        // reason is reported per row rather than as a failure, because re-uploading
+        // an unchanged file is a legitimate thing to do.
+        return c.json({
+          success: true,
+          created: 0,
+          authAccountsCreated: 0,
+          skipped,
+          invalid,
+          duplicates: inFileDuplicates,
+          roleMismatches: [],
+          defaultPassword: DEFAULT_INITIAL_PASSWORD,
+        });
+      }
+
+      const accountLookups = toInsert.map((entry) => ({
+        key: emailUserName(entry.value.email),
+        email: entry.value.email,
+      }));
+      const accounts = await selectInChunks<
+        { key: string; email: string },
+        ExistingAccount
+      >(
+        c.env.DB,
+        {
+          parametersPerRow: 2,
+          buildSql: (part) => {
+            const placeholders = part.map(() => "?").join(",");
+            return `SELECT auth_user_id, user_name, role, email FROM auth_users
+              WHERE LOWER(user_name) IN (${placeholders}) OR LOWER(email) IN (${placeholders})`;
+          },
+          bindValues: (part) => [
+            ...part.map((row) => row.key),
+            ...part.map((row) => row.email),
+          ],
+        },
+        accountLookups
+      );
+
+      const byKey = new Map<string, ExistingAccount>();
+      const byEmail = new Map<string, ExistingAccount>();
+      for (const account of accounts) {
+        byKey.set(account.user_name.toLowerCase(), account);
+        if (account.email) byEmail.set(account.email.toLowerCase(), account);
+      }
+
+      /*
+       * One hash is shared by every new account: bcrypt is deliberately slow, so
+       * hashing per row would make a 128-row import take minutes. It is only
+       * computed when there is a new account to create, so an import that reuses
+       * every account does not pay for a hash it discards.
+       */
+      const roleMismatches: { row: number; reason: string }[] = [];
+      const linkable: typeof toInsert = [];
+      toInsert.forEach((entry) => {
+        const found =
+          byKey.get(emailUserName(entry.value.email).toLowerCase()) ??
+          byEmail.get(entry.value.email.toLowerCase());
+        if (found && found.role !== spec.role) {
+          roleMismatches.push({
+            row: entry.row,
+            reason: `${entry.value.email} already has a "${found.role}" account, so it cannot also be a ${spec.label.toLowerCase()} login`,
+          });
+          return;
+        }
+        linkable.push(entry);
+      });
+
+      const pwdHash = await hashDefaultPassword();
+      const { plans } = planAccounts(
+        linkable.map((entry) => ({
+          key: emailUserName(entry.value.email),
+          email: entry.value.email,
+          role: spec.role,
+        })),
+        { byKey, byEmail },
+        pwdHash
+      );
+
+      const statements: D1PreparedStatement[] = [];
+      linkable.forEach((entry, index) => {
+        const plan = plans[index];
+        statements.push(
+          c.env.DB
+            .prepare(
+              `INSERT INTO ${table} (${nameColumn}, email, department) VALUES (?, ?, ?)`
+            )
+            .bind(entry.value.name, entry.value.email, entry.value.department)
+        );
+      });
+
+      let accountsCreated = 0;
+      for (const plan of plans) {
+        // An empty hash marks a reused account: nothing to insert for it, so no
+        // duplicate `auth_users` row is created and no password is reset.
+        if (!plan.pwdHash) continue;
+        accountsCreated += 1;
+        statements.push(
+          c.env.DB
+            .prepare(
+              `INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email)
+               VALUES (?, ?, ?, ?, ?)`
+            )
+            .bind(plan.auth_user_id, plan.user_name, plan.pwdHash, plan.role, plan.email)
+        );
+      }
+
+      if (statements.length > 0) {
+        await c.env.DB.batch(statements);
+      }
+
+      return c.json({
+        success: true,
+        created: linkable.length,
+        authAccountsCreated: accountsCreated,
+        skipped,
+        invalid,
+        duplicates: inFileDuplicates,
+        roleMismatches,
+        // Stated once, in aggregate. The per-row password is never returned.
+        defaultPassword: DEFAULT_INITIAL_PASSWORD,
+      });
+    } catch (error) {
+      return serverError(
+        c,
+        error,
+        `Could not provision ${spec.label.toLowerCase()}s`,
+        `${spec.codeStem}s-import-failed`
+      );
+    }
+  });
+
+  /* ------------------------------------------------------------------- edit */
+
+  /*
+   * Edits one directory entry.
+   *
+   * Three fields are editable -- the name, the email and the department -- and the
+   * id is not, for the same reason `subject_id` is not: it is the key the path
+   * addresses and it is the table's autoincrement primary key. A body naming a
+   * *different* id is refused rather than ignored, so a caller is never told an
+   * edit succeeded when it moved another row.
+   *
+   * Unlike a student or a staff member, these rows carry no `auth_user_id`, so the
+   * linked account is found by address instead. That is the same handle the login
+   * route uses, which makes it the right one: an account whose `user_name` is the
+   * address can be found by nothing else.
+   *
+   * When the address moves, the account moves with it and the password is not
+   * touched. The same `auth_user_id` and the same `pwd_hash` are kept, so the
+   * person still signs in with the password they already had and no second row is
+   * left claiming the old address. `user_name` is only rewritten when it currently
+   * *is* the old address; an account signed into by some other handle keeps that
+   * handle, exactly as the staff edit does.
+   */
+  app.patch(`${spec.path}/:${spec.idParam}`, requireAuth, requireAdmin, async (c) => {
+    try {
+      const body = await readObjectBody(c);
+      if (body instanceof Response) return body;
+
+      const id = validateDirectoryId(c.req.param(spec.idParam));
+      if (id === null) {
+        return fail(c, 400, `Invalid ${spec.label} ID`, `invalid-${spec.codeStem}-id`);
+      }
+
+      if (body[idColumn] !== undefined && body[idColumn] !== null) {
+        if (Number(body[idColumn]) !== id) {
+          return fail(
+            c,
+            400,
+            `${spec.label} ID cannot be changed`,
+            `${spec.codeStem}-id-immutable`
+          );
+        }
+      }
+
+      const existing = await c.env.DB
+        .prepare(`SELECT ${idColumn}, ${nameColumn}, email, department FROM ${table} WHERE ${idColumn} = ?`)
+        .bind(id)
+        .first<Record<string, string>>();
+      if (!existing) {
+        return fail(c, 404, `${spec.label} not found`, `${spec.codeStem}-not-found`);
+      }
+
+      // A field that was not sent keeps its stored value, then the whole record is
+      // validated through the same validator the import uses, so the edit form and
+      // the import form hold an entry to one standard.
+      const validated = validateDirectoryRow({
+        [nameColumn]: body[nameColumn] ?? existing[nameColumn],
+        email: body.email ?? existing.email,
+        department: body.department ?? existing.department,
+      });
+      if (!validated.ok) {
+        return fail(c, 400, validated.errors[0].message, `${spec.codeStem}-validation-failed`, {
+          errors: validated.errors,
+        });
+      }
+      const value = validated.value;
+
+      // UNIQUE on the email, checked against the current entry excluded so that
+      // re-saving unchanged values is not a conflict with itself.
+      const emailClash = await c.env.DB
+        .prepare(`SELECT ${idColumn} FROM ${table} WHERE LOWER(email) = ? AND ${idColumn} <> ? LIMIT 1`)
+        .bind(value.email, id)
+        .first<Record<string, number>>();
+      if (emailClash) {
+        return fail(
+          c,
+          409,
+          `Email ${value.email} already belongs to another ${spec.label.toLowerCase()}`,
+          "duplicate-email"
+        );
+      }
+
+      const previousEmail = (existing.email ?? "").toLowerCase();
+      const emailChanged = value.email.toLowerCase() !== previousEmail;
+
+      const account = emailChanged
+        ? await c.env.DB
+            .prepare(
+              `SELECT auth_user_id, user_name, role, email FROM auth_users
+               WHERE LOWER(user_name) = ? OR LOWER(email) = ? LIMIT 1`
+            )
+            .bind(previousEmail, previousEmail)
+            .first<{ auth_user_id: string; user_name: string; role: string; email: string | null }>()
+        : null;
+
+      /*
+       * Sign-in is by address, so an address that moves must not already belong to
+       * some other account or the same address would match two rows at login.
+       */
+      if (account) {
+        const clash = await c.env.DB
+          .prepare(
+            `SELECT auth_user_id FROM auth_users
+             WHERE auth_user_id <> ? AND (LOWER(user_name) = ? OR LOWER(email) = ?)
+             LIMIT 1`
+          )
+          .bind(account.auth_user_id, value.email.toLowerCase(), value.email.toLowerCase())
+          .first<{ auth_user_id: string }>();
+        if (clash) {
+          return fail(
+            c,
+            409,
+            `Email ${value.email} already belongs to another login account`,
+            "auth-email-conflict"
+          );
+        }
+      }
+
+      const nameChanged = value.name !== existing[nameColumn];
+      const departmentChanged = value.department !== existing.department;
+
+      const statements: D1PreparedStatement[] = [];
+
+      /*
+       * Neither the row nor the account is written when nothing changed. An edit
+       * that saves the values it was given is a no-op rather than a write, so it
+       * cannot churn `updated_at`-style bookkeeping or race another admin's edit.
+       */
+      if (nameChanged || departmentChanged || emailChanged) {
+        statements.push(
+          c.env.DB
+            .prepare(`UPDATE ${table} SET ${nameColumn} = ?, email = ?, department = ? WHERE ${idColumn} = ?`)
+            .bind(value.name, value.email, value.department, id)
+        );
+      }
+
+      if (account) {
+        const nextUserName =
+          account.user_name.toLowerCase() === previousEmail
+            ? emailUserName(value.email)
+            : account.user_name;
+        const nextEmail = value.email;
+        if (nextUserName !== account.user_name || nextEmail !== (account.email ?? "")) {
+          // `pwd_hash` is absent from the SET list on purpose: importing or editing
+          // a directory never resets an existing account's password.
+          statements.push(
+            c.env.DB
+              .prepare("UPDATE auth_users SET user_name = ?, email = ? WHERE auth_user_id = ?")
+              .bind(nextUserName, nextEmail, account.auth_user_id)
+          );
+        }
+      }
+
+      if (statements.length > 0) {
+        await c.env.DB.batch(statements);
+      }
+
+      // Read back rather than echoing the request, so the response is what D1 holds.
+      // The projection matches the list route exactly.
+      const updated = await c.env.DB
+        .prepare(`SELECT ${idColumn}, ${nameColumn}, email, department, created_at FROM ${table} WHERE ${idColumn} = ?`)
+        .bind(id)
+        .first();
+
+      return c.json({
+        success: true,
+        [spec.listKey.slice(0, -1)]: updated ?? null,
+        authAccountUpdated: statements.length > 1,
+      });
+    } catch (error) {
+      return serverError(
+        c,
+        error,
+        `Could not update that ${spec.label.toLowerCase()}`,
+        `${spec.codeStem}-update-failed`
+      );
+    }
+  });
+}
+
+/*
+ * Both directories are registered from the same implementation, because they are
+ * the same feature: a person, an address and a department, in a single
+ * department-keyed table, with an account created alongside. Everything that
+ * differs between them -- the table name, the primary key column, the name column
+ * and the account role -- is a literal in the spec below, never anything a request
+ * supplied.
+ *
+ * `spec.listKey.slice(0, -1)` turns the plural list key into the singular response
+ * key for an edit, so `hods` -> `hod` and `contest-coordinators` ->
+ * `contest-coordinator`, matching how the dashboard reads a saved record.
+ */
+registerDirectoryRoutes(
+  {
+    path: "/hods",
+    table: "hods",
+    idColumn: "hod_id",
+    nameColumn: "hod_name",
+    idParam: "hodId",
+    role: "hod",
+    label: "HOD",
+    listKey: "hods",
+    codeStem: "hod",
+    validateRow: validateHodRow,
+  }
+);
+
+registerDirectoryRoutes(
+  {
+    path: "/contest-coordinators",
+    table: "contest_coordinators",
+    idColumn: "coordinator_id",
+    nameColumn: "coordinator_name",
+    idParam: "coordinatorId",
+    role: "contest_coordinator",
+    label: "Coordinator",
+    listKey: "contest_coordinators",
+    codeStem: "coordinator",
+    validateRow: validateContestCoordinatorRow,
+  }
+);
 
 export default app;

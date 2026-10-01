@@ -13,6 +13,8 @@ import AdminDashboard from './pages/AdminDashboard'
 import AdminStudentManagement from './pages/AdminStudentManagement'
 import AdminStaffManagement from './pages/AdminStaffManagement'
 import AdminSubjectManagement from './pages/AdminSubjectManagement'
+import AdminHodManagement from './pages/AdminHodManagement'
+import AdminContestCoordinatorManagement from './pages/AdminContestCoordinatorManagement'
 import AdminRoute from './components/AdminRoute'
 import NotFound from './pages/NotFound'
 
@@ -55,6 +57,15 @@ export default function App() {
                 }
               />
               <Route path="/admin/subjects" element={<AdminRoute><AdminSubjectManagement /></AdminRoute>} />
+              <Route path="/admin/hods" element={<AdminRoute><AdminHodManagement /></AdminRoute>} />
+              <Route
+                path="/admin/contest-coordinators"
+                element={
+                  <AdminRoute>
+                    <AdminContestCoordinatorManagement />
+                  </AdminRoute>
+                }
+              />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
