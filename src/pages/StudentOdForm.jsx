@@ -225,8 +225,10 @@ export default function StudentOdForm() {
           </StatusMessage>
         )}
 
-        <div className="page-enter mt-4 grid grid-cols-12 justify-center">
-          <div className="col-span-12 lg:col-span-8 xl:col-span-7">
+        {/* Centred the same way as the mentor page: `justify-items` centres the card within
+            the twelve columns, where `justify-content` had no free space to move it. */}
+        <div className="page-enter mt-4 grid grid-cols-12 justify-items-center">
+          <div className="col-span-12 lg:col-span-8 xl:col-span-7 w-full">
             {!loading && student && (
               <form
                 className="cf-card cf-card-hover p-3 md:p-4"

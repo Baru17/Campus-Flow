@@ -153,8 +153,20 @@ export default function StudentMentorAllocation() {
           </StatusMessage>
         )}
 
-        <div className="page-enter mt-4 grid grid-cols-12 justify-center">
-          <div className="col-span-12 lg:col-span-8 xl:col-span-7">
+        {/*
+          `justify-items-center`, not `justify-center`.
+
+          The card is `col-span-8` (or 7 at xl) inside a `grid-cols-12`, so it occupies
+          the first N columns and sits hard against the left. `justify-content` only
+          distributes the *tracks* -- and twelve equal tracks already fill the row, so
+          there is no free space for it to distribute. `justify-items` aligns the item
+          within the row it was given, which is what actually centres it.
+
+          Below `lg` the card is `col-span-12`, so it fills the row and padding does the
+          work, giving the full-width mobile layout without a second rule.
+        */}
+        <div className="page-enter mt-4 grid grid-cols-12 justify-items-center">
+          <div className="col-span-12 lg:col-span-8 xl:col-span-7 w-full">
             <div className="cf-card cf-card-hover p-3 md:p-4">
               <div className="cf-card-header">
                 <div>
