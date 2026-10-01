@@ -6,6 +6,7 @@ import StatChip from '../components/StatChip'
 import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
+import OdApprovalPanel from '../components/od/OdApprovalPanel'
 import {
   getAdvisorAssignment,
   getClassStudents,
@@ -610,6 +611,23 @@ export default function AdvisorDashboard() {
                   </div>
                 </div>
               )}
+
+              {/*
+                OD approvals for this advisor's own class.
+
+                An advisor already has a dashboard for their class, so their approval queue
+                is one more thing on it rather than a separate page and a separate sign-in.
+                The cohort -- department, batch, year, section -- is read from the advisor
+                columns on the advisor's own staff row on the server, so the queue cannot be
+                widened by anything sent from the browser.
+              */}
+              <div className="lg:col-span-12">
+                <OdApprovalPanel
+                  stage="CLASS_ADVISOR"
+                  title="OD requests from your class"
+                  emptyText="No OD requests are waiting on you. A request arrives once the student's mentor and the contest coordinator have approved it."
+                />
+              </div>
             </div>
           </>
         )}

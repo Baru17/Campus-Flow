@@ -181,3 +181,27 @@ export function approverLogin(email, password) {
     body: { email, password },
   })
 }
+
+/**
+ * The signed-in approver's own role, name and department.
+ *
+ * A mentor and a class advisor already get these from the staff context, but a Contest
+ * Coordinator and an HOD have no staff record and no other screen that would tell the
+ * browser who they are. Their dashboard header needs it.
+ *
+ * Read from the session, so it always describes the caller.
+ */
+export function fetchApproverMe() {
+  return request('/api/od/approver/me')
+}
+
+/**
+ * Signs out of the approver session.
+ *
+ * The role-neutral `/auth/logout` rather than `/auth/staff/logout`, which refuses
+ * anything that is not staff or a class advisor -- and a coordinator or HOD signing out
+ * of their own dashboard is exactly the case that endpoint turns away.
+ */
+export function approverLogout() {
+  return request('/api/auth/logout', { method: 'POST' })
+}

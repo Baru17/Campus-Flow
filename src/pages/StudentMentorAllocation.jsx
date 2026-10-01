@@ -154,153 +154,163 @@ export default function StudentMentorAllocation() {
         )}
 
         {/*
-          `justify-items-center`, not `justify-center`.
+          Centred by the wrapper itself, not by a grid.
 
-          The card is `col-span-8` (or 7 at xl) inside a `grid-cols-12`, so it occupies
-          the first N columns and sits hard against the left. `justify-content` only
-          distributes the *tracks* -- and twelve equal tracks already fill the row, so
-          there is no free space for it to distribute. `justify-items` aligns the item
-          within the row it was given, which is what actually centres it.
+          This was `grid grid-cols-12` + `col-span-8` + `justify-items-center`, on the
+          reasoning that `justify-items` would centre the card "within the twelve columns".
+          Measured in a browser at 1440x1000, it did not: the card's centre sat at 483px
+          against a container centre of 720px, a 237px offset, with 16px of space on the
+          left and 489px on the right.
 
-          Below `lg` the card is `col-span-12`, so it fills the row and padding does the
-          work, giving the full-width mobile layout without a second rule.
+          The cause is that `justify-items` aligns an item within *its own grid area*, and
+          the grid area of a `col-span-8` item is columns 1-8. Twelve equal tracks already
+          fill the row, so `justify-content` had no free space to distribute either. Either
+          way the card is anchored to the left of the container, and neither property can
+          move it, because both act on the tracks or the area rather than on the container.
+
+          It only looked right on a narrow screen because below `lg` the card is
+          `col-span-12`, fills the row, and padding makes the edges look even. The
+          measurement is what caught it; the mobile layout hid it.
+
+          So the centring is the wrapper's own job: a `max-w` and `mx-auto` constrain the
+          card and centre it in the container, with no grid and no column count to keep in
+          step with it. `max-w-2xl` is also very close to the ~631px the card used to
+          occupy, so the layout reads the same and is now actually centred.
         */}
-        <div className="page-enter mt-4 grid grid-cols-12 justify-items-center">
-          <div className="col-span-12 lg:col-span-8 xl:col-span-7 w-full">
-            <div className="cf-card cf-card-hover p-3 md:p-4">
-              <div className="cf-card-header">
-                <div>
-                  <h2 className="section-title">Your mentor</h2>
-                  <p className="text-muted-2 text-sm mb-0">
-                    {loading
-                      ? 'Loading your options…'
-                      : 'Choose from the staff in your own department.'}
-                  </p>
-                </div>
-                <span className="cf-icon-badge violet">
-                  <UsersIcon size={22} />
-                </span>
-              </div>
-
-              {currentMentor && (
-                <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-                  <div className="flex items-center gap-2 font-bold">
-                    <CheckIcon size={16} />
-                    Current mentor
-                  </div>
-                  <p className="mt-1">
-                    {currentMentor.staff_name} · {currentMentor.email}
-                  </p>
-                </div>
-              )}
-
-              {!loading && !currentMentor && (
-                <div
-                  role="status"
-                  className="mt-3 flex items-start gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-900"
-                >
-                  <InfoIcon size={16} className="mt-0.5 shrink-0" />
-                  You have not allocated a mentor yet. Pick one below.
-                </div>
-              )}
-
-              <div className="mt-4">
-                <SearchableSelect
-                  label="Search mentors"
-                  name="mentor"
-                  value={selectedStaffId}
-                  options={options}
-                  onChange={(option) => {
-                    setSelectedStaffId(option.value)
-                    setSaveError(null)
-                  }}
-                  placeholder={loading ? 'Loading mentors…' : 'Select a mentor'}
-                  loading={loading}
-                  searchPlaceholder="Search by name or email…"
-                  emptyText="No mentors match your search."
-                  icon={<UsersIcon size={14} />}
-                />
-              </div>
-
-              {chosen && (
-                <p className="mt-3 text-xs text-slate-500">
-                  {isChanging
-                    ? `This will replace ${currentMentor?.staff_name || 'your current mentor'}.`
-                    : 'Confirm to allocate this mentor.'}
+        <div className="page-enter mt-4 mx-auto w-full max-w-2xl">
+          <div className="cf-card cf-card-hover p-3 md:p-4">
+            <div className="cf-card-header">
+              <div>
+                <h2 className="section-title">Your mentor</h2>
+                <p className="text-muted-2 text-sm mb-0">
+                  {loading
+                    ? 'Loading your options…'
+                    : 'Choose from the staff in your own department.'}
                 </p>
-              )}
+              </div>
+              <span className="cf-icon-badge violet">
+                <UsersIcon size={22} />
+              </span>
+            </div>
 
-              {saveError && (
-                <div className="mt-3">
-                  <StatusMessage variant="danger">{saveError.message}</StatusMessage>
+            {currentMentor && (
+              <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+                <div className="flex items-center gap-2 font-bold">
+                  <CheckIcon size={16} />
+                  Current mentor
                 </div>
-              )}
+                <p className="mt-1">
+                  {currentMentor.staff_name} · {currentMentor.email}
+                </p>
+              </div>
+            )}
 
-              <div className="mt-4">
+            {!loading && !currentMentor && (
+              <div
+                role="status"
+                className="mt-3 flex items-start gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-900"
+              >
+                <InfoIcon size={16} className="mt-0.5 shrink-0" />
+                You have not allocated a mentor yet. Pick one below.
+              </div>
+            )}
+
+            <div className="mt-4">
+              <SearchableSelect
+                label="Search mentors"
+                name="mentor"
+                value={selectedStaffId}
+                options={options}
+                onChange={(option) => {
+                  setSelectedStaffId(option.value)
+                  setSaveError(null)
+                }}
+                placeholder={loading ? 'Loading mentors…' : 'Select a mentor'}
+                loading={loading}
+                searchPlaceholder="Search by name or email…"
+                emptyText="No mentors match your search."
+                icon={<UsersIcon size={14} />}
+              />
+            </div>
+
+            {chosen && (
+              <p className="mt-3 text-xs text-slate-500">
+                {isChanging
+                  ? `This will replace ${currentMentor?.staff_name || 'your current mentor'}.`
+                  : 'Confirm to allocate this mentor.'}
+              </p>
+            )}
+
+            {saveError && (
+              <div className="mt-3">
+                <StatusMessage variant="danger">{saveError.message}</StatusMessage>
+              </div>
+            )}
+
+            <div className="mt-4">
+              <button
+                type="button"
+                /*
+                 * Replacing a mentor opens the confirmation panel rather than saving
+                 * straight away. `handleConfirm(false)` would be refused by the
+                 * server anyway -- that is the point of it being refused -- so the
+                 * question is asked here rather than answered with an error.
+                 */
+                onClick={() => (isChanging ? setPendingConfirmation(true) : handleConfirm(false))}
+                disabled={!chosen || saving}
+                className="btn-cf-primary inline-flex w-full items-center justify-center gap-2 px-4 py-2 text-sm"
+              >
+                {saving && <span className="cf-spinner" role="status" aria-hidden="true" />}
+                {saving
+                  ? 'Saving…'
+                  : isChanging
+                    ? 'Change mentor'
+                    : currentMentorEmail
+                      ? 'Keep this mentor'
+                      : 'Allocate mentor'}
+              </button>
+            </div>
+          </div>
+
+          {/*
+            The confirmation is a real gate rather than a `window.confirm`, because
+            a native dialog gives no room to say who is being replaced and why that
+            matters: an OD request already filed keeps pointing at the old mentor, so
+            this is not a retraction of anything they have approved.
+          */}
+          {pendingConfirmation && chosen && (
+            <div
+              className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+              role="alert"
+            >
+              <div className="flex items-start gap-2 font-bold">
+                <AlertIcon size={16} className="mt-0.5 shrink-0" />
+                Change your mentor to {chosen.staff_name}?
+              </div>
+              <p className="mt-1">
+                Requests you have already submitted keep their original mentor. Only future
+                requests will go to {chosen.staff_name}.
+              </p>
+              <div className="mt-3 flex flex-wrap justify-end gap-2">
                 <button
                   type="button"
-                  /*
-                   * Replacing a mentor opens the confirmation panel rather than saving
-                   * straight away. `handleConfirm(false)` would be refused by the
-                   * server anyway -- that is the point of it being refused -- so the
-                   * question is asked here rather than answered with an error.
-                   */
-                  onClick={() => (isChanging ? setPendingConfirmation(true) : handleConfirm(false))}
-                  disabled={!chosen || saving}
-                  className="btn-cf-primary inline-flex w-full items-center justify-center gap-2 px-4 py-2 text-sm"
+                  onClick={() => setPendingConfirmation(false)}
+                  className="btn-cf-outline px-3 py-1.5 text-sm"
                 >
-                  {saving && <span className="cf-spinner" role="status" aria-hidden="true" />}
-                  {saving
-                    ? 'Saving…'
-                    : isChanging
-                      ? 'Change mentor'
-                      : currentMentorEmail
-                        ? 'Keep this mentor'
-                        : 'Allocate mentor'}
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleConfirm(true)}
+                  disabled={saving}
+                  className="btn-cf-primary px-3 py-1.5 text-sm"
+                >
+                  Yes, change mentor
                 </button>
               </div>
             </div>
-
-            {/*
-              The confirmation is a real gate rather than a `window.confirm`, because
-              a native dialog gives no room to say who is being replaced and why that
-              matters: an OD request already filed keeps pointing at the old mentor, so
-              this is not a retraction of anything they have approved.
-            */}
-            {pendingConfirmation && chosen && (
-              <div
-                className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-                role="alert"
-              >
-                <div className="flex items-start gap-2 font-bold">
-                  <AlertIcon size={16} className="mt-0.5 shrink-0" />
-                  Change your mentor to {chosen.staff_name}?
-                </div>
-                <p className="mt-1">
-                  Requests you have already submitted keep their original mentor. Only future
-                  requests will go to {chosen.staff_name}.
-                </p>
-                <div className="mt-3 flex flex-wrap justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setPendingConfirmation(false)}
-                    className="btn-cf-outline px-3 py-1.5 text-sm"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleConfirm(true)}
-                    disabled={saving}
-                    className="btn-cf-primary px-3 py-1.5 text-sm"
-                  >
-                    Yes, change mentor
-                  </button>
-                </div>
-              </div>
-            )}
+          )}
           </div>
-        </div>
       </main>
     </div>
   )

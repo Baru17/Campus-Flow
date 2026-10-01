@@ -20,6 +20,8 @@ import StudentMentorAllocation from './pages/StudentMentorAllocation'
 import StudentOdForm from './pages/StudentOdForm'
 import ApproverLogin from './pages/ApproverLogin'
 import ApproverOdInbox from './pages/ApproverOdInbox'
+import CoordinatorDashboard from './pages/CoordinatorDashboard'
+import HodDashboard from './pages/HodDashboard'
 import AdminRoute from './components/AdminRoute'
 import NotFound from './pages/NotFound'
 
@@ -65,9 +67,18 @@ export default function App() {
               <Route path="/student/entry" element={<StudentEntry />} />
               <Route path="/student/mentor" element={<StudentMentorAllocation />} />
               <Route path="/student/od" element={<StudentOdForm />} />
-              {/* Approvers. The stage is in the path and is re-checked server-side. */}
+{/* Approvers. The stage is in the path and is re-checked server-side. */}
               <Route path="/approver/login" element={<ApproverLogin />} />
               <Route path="/approver/od/:stage" element={<ApproverOdInboxRoute />} />
+              {/*
+                The two dedicated approver dashboards. Contest coordinators and heads of
+                department are not staff, so they are not on the role-selection screen and
+                have no dashboard anyone reaches from it -- these two are their whole reason
+                for existing, and they render the same approval panel the Staff and Class
+                Advisor dashboards use.
+              */}
+              <Route path="/coordinator" element={<CoordinatorDashboard />} />
+              <Route path="/hod" element={<HodDashboard />} />
               <Route path="/admin" element={<AdminLoginPage />} />
               <Route
                 path="/admin/dashboard"

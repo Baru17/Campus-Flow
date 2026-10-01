@@ -16,6 +16,7 @@
 import { Hono } from "hono";
 import { requireAuth, requireStudent, type AuthUser } from "../middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "../utils/databaseErrors";
+import { resolveAppOrigin } from "../utils/appUrl";
 import { resolveAuthenticatedStudent, type AuthenticatedStudent } from "../utils/studentIdentity";
 import {
   OdConflictError,
@@ -296,7 +297,7 @@ app.post("/od", requireAuth, requireStudent, async (c) => {
     }
 
     try {
-      const created = await createOdRequest(c.env.DB, c.env, student, {
+            const created = await createOdRequest(c.env.DB, c.env, student, resolveAppOrigin(c.req.header("Origin")), {
         ...validated.value,
         submittedDate,
       });

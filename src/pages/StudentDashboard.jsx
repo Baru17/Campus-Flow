@@ -160,148 +160,146 @@ export default function StudentDashboard() {
           centres it within the row. `justify-content` had no free space to move it,
           because twelve equal tracks already fill the row.
         */}
-        <div className="grid grid-cols-12 justify-items-center">
-          <div className="col-span-12 lg:col-span-8 xl:col-span-7 w-full">
-            {result ? (
-              <div className="cf-card p-4 md:p-5 text-center mt-4 page-enter">
-                <div className="success-wrap">
-                  <span className="success-ring" aria-hidden="true" />
-                  <div className="success-check" aria-hidden="true">
-                    <CheckIcon size={42} />
-                  </div>
-                </div>
-                <div className="success-badge mb-2">Attendance Marked</div>
-                <h3 className="text-2xl font-bold mb-1">You&rsquo;re marked PRESENT</h3>
-                <p className="text-muted-2 mb-4">Your attendance has been recorded successfully.</p>
-
-                <div className="result-grid text-left mb-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2">
-                    <div className="result-cell">
-                      <div className="label">Student</div>
-                      <div className="value">{result.student?.student_name}</div>
-                    </div>
-                    <div className="result-cell">
-                      <div className="label">Department</div>
-                      <div className="value">{resolveDepartment(result.student)}</div>
-                    </div>
-                    <div className="result-cell">
-                      <div className="label">
-                        <CalendarIcon size={13} className="me-1" />
-                        Date
-                      </div>
-                      <div className="value">{formatDate(result.attendance?.attendance_date)}</div>
-                    </div>
-                    <div className="result-cell">
-                      <div className="label">Status</div>
-                      <div className="value text-success">PRESENT</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-2 justify-center">
-                  <LoadingButton variant="primary" onClick={() => navigate('/role-selection')}>
-                    Done
-                  </LoadingButton>
+          <div className="mx-auto w-full max-w-2xl">
+          {result ? (
+            <div className="cf-card p-4 md:p-5 text-center mt-4 page-enter">
+              <div className="success-wrap">
+                <span className="success-ring" aria-hidden="true" />
+                <div className="success-check" aria-hidden="true">
+                  <CheckIcon size={42} />
                 </div>
               </div>
-            ) : (
-              <div className="cf-card p-3 md:p-4 page-enter reveal reveal-1">
-                <div className="class-badge mb-3">
-                  <FingerprintIcon size={15} />
-                  {selectedClass}
-                </div>
+              <div className="success-badge mb-2">Attendance Marked</div>
+              <h3 className="text-2xl font-bold mb-1">You&rsquo;re marked PRESENT</h3>
+              <p className="text-muted-2 mb-4">Your attendance has been recorded successfully.</p>
 
-                <h2 className="section-title mb-1">Mark Attendance</h2>
-                <p className="text-muted-2 text-sm mb-4">
-                  Enter the 6-digit OTP your staff shared for this period.
-                </p>
-
-                {/*
-                  No student ID field.
-
-                  `verifyOtp` posts `{ otp }` and nothing else, so the value this input
-                  used to collect was discarded in the API client and never reached the
-                  Worker. The Worker identifies the student from the session cookie and
-                  matches their own year and section against the attendance session's, so
-                  there was never a security value here -- only a field that asked a
-                  signed-in student to retype something the request already carried.
-                */}
-                <div className="mb-2">
-                  <label className="cf-form-label">OTP</label>
-                  <OTPInput
-                    value={otp}
-                    onChange={(value) => {
-                      setOtp(value)
-                      setFormError(null)
-                      setVerifyError(null)
-                    }}
-                    disabled={inputDisabled}
-                  />
-                </div>
-
-                {formError && (
-                  <div className="mt-3">
-                    <StatusMessage variant="danger">{formError}</StatusMessage>
+              <div className="result-grid text-left mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2">
+                  <div className="result-cell">
+                    <div className="label">Student</div>
+                    <div className="value">{result.student?.student_name}</div>
                   </div>
-                )}
-                {verifyError && (
-                  <div className="mt-3">
-                    <StatusMessage variant={verifyError.variant}>{verifyError.text}</StatusMessage>
+                  <div className="result-cell">
+                    <div className="label">Department</div>
+                    <div className="value">{resolveDepartment(result.student)}</div>
                   </div>
-                )}
-
-                <div className="mt-4">
-                  <LoadingButton
-                    variant="primary"
-                    onClick={handleSubmit}
-                    loading={verifying}
-                    loadingText="Verifying…"
-                    disabled={inputDisabled}
-                    className="w-full inline-flex items-center justify-center gap-2"
-                  >
-                    <CheckIcon size={17} />
-                    Submit OTP
-                  </LoadingButton>
+                  <div className="result-cell">
+                    <div className="label">
+                      <CalendarIcon size={13} className="me-1" />
+                      Date
+                    </div>
+                    <div className="value">{formatDate(result.attendance?.attendance_date)}</div>
+                  </div>
+                  <div className="result-cell">
+                    <div className="label">Status</div>
+                    <div className="value text-success">PRESENT</div>
+                  </div>
                 </div>
               </div>
-            )}
 
-            {marks.length > 0 && (
-              <div className="cf-list-card mt-4 reveal reveal-2">
-                <div className="cf-card-header px-3 pt-3 pb-2 mb-0">
-                  <div>
-                    <h3 className="section-title">Marks recorded today</h3>
-                    <p className="text-muted-2 text-sm mb-0">Your verified attendance entries</p>
-                  </div>
-                  <span className="cf-status-pill active">
-                    <span className="dot" aria-hidden="true" /> {marks.length}
-                  </span>
+              <div className="flex flex-col sm:flex-row gap-2 justify-center">
+                <LoadingButton variant="primary" onClick={() => navigate('/role-selection')}>
+                  Done
+                </LoadingButton>
+              </div>
+            </div>
+          ) : (
+            <div className="cf-card p-3 md:p-4 page-enter reveal reveal-1">
+              <div className="class-badge mb-3">
+                <FingerprintIcon size={15} />
+                {selectedClass}
+              </div>
+
+              <h2 className="section-title mb-1">Mark Attendance</h2>
+              <p className="text-muted-2 text-sm mb-4">
+                Enter the 6-digit OTP your staff shared for this period.
+              </p>
+
+              {/*
+                No student ID field.
+
+                `verifyOtp` posts `{ otp }` and nothing else, so the value this input
+                used to collect was discarded in the API client and never reached the
+                Worker. The Worker identifies the student from the session cookie and
+                matches their own year and section against the attendance session's, so
+                there was never a security value here -- only a field that asked a
+                signed-in student to retype something the request already carried.
+              */}
+              <div className="mb-2">
+                <label className="cf-form-label">OTP</label>
+                <OTPInput
+                  value={otp}
+                  onChange={(value) => {
+                    setOtp(value)
+                    setFormError(null)
+                    setVerifyError(null)
+                  }}
+                  disabled={inputDisabled}
+                />
+              </div>
+
+              {formError && (
+                <div className="mt-3">
+                  <StatusMessage variant="danger">{formError}</StatusMessage>
                 </div>
+              )}
+              {verifyError && (
+                <div className="mt-3">
+                  <StatusMessage variant={verifyError.variant}>{verifyError.text}</StatusMessage>
+                </div>
+              )}
+
+              <div className="mt-4">
+                <LoadingButton
+                  variant="primary"
+                  onClick={handleSubmit}
+                  loading={verifying}
+                  loadingText="Verifying…"
+                  disabled={inputDisabled}
+                  className="w-full inline-flex items-center justify-center gap-2"
+                >
+                  <CheckIcon size={17} />
+                  Submit OTP
+                </LoadingButton>
+              </div>
+            </div>
+          )}
+
+          {marks.length > 0 && (
+            <div className="cf-list-card mt-4 reveal reveal-2">
+              <div className="cf-card-header px-3 pt-3 pb-2 mb-0">
                 <div>
-                  {marks.map((item, index) => (
-                    <div className="cf-list-item" key={`${item.attendance?.attendance_id ?? index}`}>
-                      <span className="cf-list-icon green">
-                        <CheckIcon size={17} />
-                      </span>
-                      <div className="cf-list-meta">
-                        <div className="title">{item.student?.student_name}</div>
-                        <div className="sub">
-                          {item.student?.register_no} · {resolveDepartment(item.student)} ·{' '}
-                          {formatDate(item.attendance?.attendance_date)}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-bold text-success uppercase text-sm">Present</div>
-                        <div className="text-muted-2 text-sm">Period {item.attendance?.period}</div>
-                      </div>
-                      <ClockIcon size={15} className="text-muted-2" />
-                    </div>
-                  ))}
+                  <h3 className="section-title">Marks recorded today</h3>
+                  <p className="text-muted-2 text-sm mb-0">Your verified attendance entries</p>
                 </div>
+                <span className="cf-status-pill active">
+                  <span className="dot" aria-hidden="true" /> {marks.length}
+                </span>
               </div>
-            )}
+              <div>
+                {marks.map((item, index) => (
+                  <div className="cf-list-item" key={`${item.attendance?.attendance_id ?? index}`}>
+                    <span className="cf-list-icon green">
+                      <CheckIcon size={17} />
+                    </span>
+                    <div className="cf-list-meta">
+                      <div className="title">{item.student?.student_name}</div>
+                      <div className="sub">
+                        {item.student?.register_no} · {resolveDepartment(item.student)} ·{' '}
+                        {formatDate(item.attendance?.attendance_date)}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-bold text-success uppercase text-sm">Present</div>
+                      <div className="text-muted-2 text-sm">Period {item.attendance?.period}</div>
+                    </div>
+                    <ClockIcon size={15} className="text-muted-2" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           </div>
-        </div>
       </main>
     </div>
   )

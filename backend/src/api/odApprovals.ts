@@ -17,7 +17,7 @@
 import { Hono, type Context } from "hono";
 import { requireAuth, type AuthUser } from "../middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "../utils/databaseErrors";
-import { resolveAuthenticatedStudent, type AuthenticatedStudent } from "../utils/studentIdentity";
+import { resolveAppOrigin } from "../utils/appUrl";
 import {
   applyDecision,
   listRequestsForStage,
@@ -74,7 +74,7 @@ function approverEmail(c: any): string {
 async function advisorCohort(
   db: D1Database,
   authUserId: string
-): Promise<AuthenticatedStudent["student"] & { department: string; batch: string } | null> {
+): Promise<{ department: string; batch: string; year: number; section: string } | null> {
   const row = await db
     .prepare(
       `SELECT department, advisor_batch, advisor_year, advisor_section
@@ -87,20 +87,12 @@ async function advisorCohort(
     .first<{ department: string; advisor_batch: string; advisor_year: number; advisor_section: string }>();
   if (!row) return null;
 
-  // Shaped like an AuthenticatedStudent so the shared listing helper can scope by it
-  // without knowing it is being given an advisor rather than a student.
   return {
-    student_id: "",
-    register_no: "",
-    student_name: "",
+    department: row.department,
+    batch: row.advisor_batch,
     year: row.advisor_year,
     section: row.advisor_section,
-    email: "",
-    mentor_email: null,
-    department: row.department as AuthenticatedStudent["department"],
-    batch: row.advisor_batch,
-    studentTable: "",
-  } as AuthenticatedStudent["student"] & { department: string; batch: string };
+  };
 }
 
 /* --------------------------------------------------------------- inbox */
@@ -127,10 +119,19 @@ app.get("/requests", requireAuth, withApproverEmail, async (c) => {
     const isAdvisor = stage.key === "CLASS_ADVISOR";
 
     /*
-     * A class advisor is scoped by their cohort, which is a property of their staff
-     * row. Everyone else is scoped by the directory check inside the listing itself.
+     * A class advisor is scoped by their cohort, which is a property of their own staff
+     * row. Everyone else is scoped by the directory check inside the listing itself --
+     * a mentor by the address on the request, a coordinator or an HOD by the department
+     * on their directory row.
      */
-    let scope: AuthenticatedStudent | null = null;
+    // Named `cohortScope` rather than `advisorCohort`, which would shadow the function
+    // of the same name and make the call below unresolvable.
+    let cohortScope: {
+      department: string;
+      batch: string;
+      year: number;
+      section: string;
+    } | null = null;
     if (isAdvisor) {
       const cohort = await advisorCohort(c.env.DB, authUser.auth_user_id);
       if (!cohort) {
@@ -143,16 +144,10 @@ app.get("/requests", requireAuth, withApproverEmail, async (c) => {
           403
         );
       }
-      scope = {
-        authUserId: authUser.auth_user_id,
-        department: cohort.department as AuthenticatedStudent["department"],
-        batch: cohort.batch,
-        studentTable: "",
-        student: cohort,
-      };
+      cohortScope = cohort;
     }
 
-    const requests = await listRequestsForStage(c.env.DB, stage, email, scope);
+    const requests = await listRequestsForStage(c.env.DB, stage, email, cohortScope);
     return c.json({ success: true, stage: stage.key, stage_label: stage.label, requests });
   } catch (error) {
     console.error("od_inbox_failed", getErrorMessageForLog(error));
@@ -219,7 +214,10 @@ app.post("/requests/:requestId/decision", requireAuth, withApproverEmail, async 
       stage,
       decision as OdDecision,
       approverEmail(c),
-      body.comment
+      body.comment,
+      // Resolved through the shared allow-list, never from the browser, so the link in
+      // the next approver's mail can only ever point at this application.
+      resolveAppOrigin(c.req.header("Origin"))
     );
 
     if (!result.ok) {
@@ -310,6 +308,80 @@ app.get("/requests/:requestId/permission", requireAuth, withApproverEmail, async
     console.error("od_permission_failed", getErrorMessageForLog(error));
     return c.json(
       { success: false, error: "Could not check your permission", code: "od-permission-failed" },
+      500
+    );
+  }
+});
+
+/**
+ * Who the signed-in approver is, for the dashboard header.
+ *
+ * A mentor and a class advisor already have `/auth/staff/resolve` and the staff context,
+ * so this exists for the two roles that do not: a Contest Coordinator and an HOD have no
+ * staff record and no other screen that would tell the browser their name or department.
+ * Their dashboard needs both to render anything like a header.
+ *
+ * Everything is read from the session's own account and the directory row that role is
+ * defined by. Nothing is accepted from the client, so this cannot be used to ask about
+ * somebody else's queue -- it only ever describes the caller.
+ *
+ * Declining to include a coordinator or HOD whose directory row is missing is deliberate:
+ * the role is on the account but there is no record, so there is no department to scope
+ * to, and their queue would be empty anyway. Saying so plainly beats a dashboard that
+ * loads and silently shows nothing.
+ */
+const APPROVER_ROLE_DIRECTORY: Record<string, { table: string; nameColumn: string }> = {
+  staff: { table: "staff", nameColumn: "staff_name" },
+  class_advisor: { table: "staff", nameColumn: "staff_name" },
+  contest_coordinator: { table: "contest_coordinators", nameColumn: "coordinator_name" },
+  hod: { table: "hods", nameColumn: "hod_name" },
+};
+
+app.get("/approver/me", requireAuth, withApproverEmail, async (c) => {
+  try {
+    const authUser = (c as any).get("authUser") as AuthUser;
+    const role = String(authUser.role ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[ -]+/g, "_");
+
+    const directory = APPROVER_ROLE_DIRECTORY[role];
+    if (!directory) {
+      return c.json(
+        { success: false, error: "This account is not an OD approver", code: "od-not-an-approver" },
+        403
+      );
+    }
+
+    // `table` and `nameColumn` are literals from the map above, keyed by the session's
+    // own role -- never anything a request supplied.
+    const row = await c.env.DB
+      .prepare(
+        `SELECT ${directory.nameColumn} AS name, department FROM ${directory.table} WHERE auth_user_id = ? LIMIT 1`
+      )
+      .bind(authUser.auth_user_id)
+      .first<{ name: string; department: string }>();
+
+    if (!row) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Your account is not linked to an approver record. Contact the administrator.",
+          code: "unlinked-approver",
+        },
+        403
+      );
+    }
+
+    return c.json({
+      success: true,
+      approver: { role, name: row.name, department: row.department, email: approverEmail(c) },
+    });
+  } catch (error) {
+    console.error("od_approver_me_failed", getErrorMessageForLog(error));
+    return c.json(
+      { success: false, error: "Could not load your approver profile", code: "od-approver-me-failed" },
       500
     );
   }

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { approverLogin } from '../api/odApi'
+import { useStaffAuth } from '../hooks/useStaffAuth'
 import {
   AlertIcon,
   ChevronRightIcon,
@@ -16,7 +17,7 @@ import {
  *
  * This is its own page rather than another option on the role-selection screen,
  * because none of these roles sign in anywhere else. A mentor and a class advisor are
- * staff and already have `/staff`, but a Contest Coordinator and an HOD are not staff
+ * staff and already have `/staff/login`, but a Contest Coordinator and an HOD are not staff
  * and have no account at `/staff/login` -- so one door for all four keeps the
  * coordinators and HODs reachable without changing how anybody else signs in.
  *
@@ -25,15 +26,30 @@ import {
  * and then checking it anyway; signing in first means the role comes from the database
  * and the screen it opens is the one that role is actually allowed to see.
  */
-const STAGE_BY_ROLE = {
-  staff: 'MENTOR',
-  class_advisor: 'CLASS_ADVISOR',
-  contest_coordinator: 'CONTEST_COORDINATOR',
-  hod: 'HOD',
+
+/**
+ * Where each role lands once signed in.
+ *
+ * Nobody lands on a generic inbox. A mentor and a class advisor already have a dashboard,
+ * so their approval queue is a section of it -- the same one they get by signing in the way
+ * they always have, which is the point: approving an OD request is not a separate job that
+ * needs a separate door. A Contest Coordinator and an HOD have no dashboard anyone reaches
+ * from the role-selection screen, deliberately, so they get the two dedicated ones.
+ *
+ * The value is a path, not a stage. Sending a role to a stage would mean a mentor's whole
+ * approval journey lived under `/approver/od/MENTOR` while the same mentor, signing in at
+ * `/staff/login`, saw nothing -- two homes for one queue.
+ */
+const HOME_BY_ROLE = {
+  staff: '/staff',
+  class_advisor: '/advisor',
+  contest_coordinator: '/coordinator',
+  hod: '/hod',
 }
 
 export default function ApproverLogin() {
   const navigate = useNavigate()
+  const { refresh } = useStaffAuth()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -51,14 +67,27 @@ export default function ApproverLogin() {
     setLoading(true)
     try {
       const result = await approverLogin(email.trim(), password)
+
       /*
-       * The stage comes from the account's own role. A staff member who is also mapped
-       * as a class advisor acts as a mentor here -- the class advisor queue needs a
-       * cohort, which is looked up from their staff row on the server, and picking it
-       * in the browser would be letting them choose which requests they see.
+       * The role comes from the account, not from anything chosen on this page.
+       *
+       * A mentor or a class advisor goes to the dashboard they already use. That provider
+       * mounted before this page did and has already settled on "signed out", so it is
+       * asked to re-read the session first -- `od-approver/login` issues the same session
+       * and the same cookie as every other role, and without this refresh they would land
+       * on a dashboard that immediately signs them back out.
+       *
+       * A coordinator or an HOD has no staff context to refresh; their dashboard reads
+       * the approver session itself.
        */
-      const stage = STAGE_BY_ROLE[result.approver?.role] || 'MENTOR'
-      navigate(`/approver/od/${stage}`, { replace: true })
+      const role = result.approver?.role
+      const home = HOME_BY_ROLE[role]
+
+      if (role === 'staff' || role === 'class_advisor') {
+        await refresh()
+      }
+
+      navigate(home || '/role-selection', { replace: true })
     } catch (err) {
       setError(err.message)
     } finally {

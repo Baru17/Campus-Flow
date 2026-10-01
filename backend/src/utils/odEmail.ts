@@ -63,11 +63,17 @@ function factsRows(facts: OdRequestFacts): { label: string; value: string }[] {
   ];
 }
 
-/** The shared shell: a heading, a paragraph, and the facts table. */
+/**
+ * The shared shell: a heading, a paragraph, the facts table, and optionally a button.
+ *
+ * The button is the only thing that differs between a message with an action and one
+ * without, so it is a parameter rather than a second layout.
+ */
 function buildShell(
   heading: string,
   intro: string,
-  facts: OdRequestFacts
+  facts: OdRequestFacts,
+  actionUrl?: string
 ): { html: string; text: string } {
   const rows = factsRows(facts)
     .map(
@@ -80,6 +86,14 @@ function buildShell(
 
   const plainRows = factsRows(facts).map((row) => `${row.label}: ${row.value}`);
 
+  // Built only when there is an action, and escaped like every other substituted value.
+  const button = actionUrl
+    ? `<p style="margin:24px 0 0;">
+         <a href="${escapeHtml(actionUrl)}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;padding:12px 22px;border-radius:10px;">Review OD Request</a>
+       </p>
+       <p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#64748b;">You will be asked to sign in. The link only takes you to the right dashboard — it cannot approve anything on its own.</p>`
+    : "";
+
   const html = `<!doctype html>
 <html lang="en">
   <body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
@@ -89,6 +103,7 @@ function buildShell(
           <h1 style="margin:0 0 12px;font-size:21px;line-height:1.3;">${escapeHtml(heading)}</h1>
           <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#334155;">${escapeHtml(intro)}</p>
           <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;">${rows}</table>
+          ${button}
           <p style="margin:20px 0 0;font-size:13px;line-height:1.6;color:#64748b;">Sign in to Campus-Flow to review and action this request.</p>
         </td>
       </tr>
@@ -103,6 +118,7 @@ function buildShell(
     "",
     ...plainRows,
     "",
+    ...(actionUrl ? ["Review OD Request:", actionUrl, ""] : []),
     "Sign in to Campus-Flow to review and action this request.",
   ].join("\n");
 
@@ -116,13 +132,24 @@ function buildShell(
  * a queue of requests can triage it, and the heading names the role so it is obvious
  * why it reached them. The request id is in the facts table, which is what lets an
  * approver find it again after the mail has scrolled away.
+ *
+ * `actionUrl` is the approver's dashboard. It carries no credential of any kind: a
+ * mentor or an advisor has to sign in at the link they already know how to reach, and a
+ * coordinator or HOD arrives at the approver sign-in page and authenticates there. A
+ * link that could approve on its own would make the whole chain unauthenticated, so the
+ * URL is an address to *arrive* at, never a permission.
  */
-export function odApprovalRequestEmail(facts: OdRequestFacts, stageLabel: string): OdMessage {
+export function odApprovalRequestEmail(
+  facts: OdRequestFacts,
+  stageLabel: string,
+  actionUrl: string
+): OdMessage {
   const subject = `CampusFlow — OD approval needed: ${facts.studentName} (${facts.studentId})`;
   const { html, text } = buildShell(
     "OD request awaiting your approval",
     `${facts.studentName} has requested on-duty leave and your approval is needed as the ${stageLabel}.`,
-    facts
+    facts,
+    actionUrl
   );
   return { subject, html, text };
 }

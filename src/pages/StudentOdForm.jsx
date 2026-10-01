@@ -225,316 +225,315 @@ export default function StudentOdForm() {
           </StatusMessage>
         )}
 
-        {/* Centred the same way as the mentor page: `justify-items` centres the card within
-            the twelve columns, where `justify-content` had no free space to move it. */}
-        <div className="page-enter mt-4 grid grid-cols-12 justify-items-center">
-          <div className="col-span-12 lg:col-span-8 xl:col-span-7 w-full">
-            {!loading && student && (
-              <form
-                className="cf-card cf-card-hover p-3 md:p-4"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  handleSubmit()
-                }}
-              >
-                <div className="cf-card-header">
-                  <div>
-                    <h2 className="section-title">Your request</h2>
-                    <p className="text-muted-2 text-sm mb-0">
-                      The shaded fields are filled in for you and cannot be changed here.
-                    </p>
-                  </div>
-                  <span className="cf-icon-badge violet">
-                    <CalendarIcon size={22} />
-                  </span>
-                </div>
-
-                {/* ---------------------------------------------------- read-only */}
-                <div className="mt-4">
-                  <p className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Filled in for you
+        {/* Centred the same way as the mentor page, and for the same reason: `justify-items` acts
+            within the grid area of a `col-span-8` item, which is columns 1-8, so the card
+            sat against the left edge. The wrapper centres itself with `mx-auto`. */}
+        <div className="page-enter mt-4 mx-auto w-full max-w-2xl">
+          {!loading && student && (
+            <form
+              className="cf-card cf-card-hover p-3 md:p-4"
+              onSubmit={(event) => {
+                event.preventDefault()
+                handleSubmit()
+              }}
+            >
+              <div className="cf-card-header">
+                <div>
+                  <h2 className="section-title">Your request</h2>
+                  <p className="text-muted-2 text-sm mb-0">
+                    The shaded fields are filled in for you and cannot be changed here.
                   </p>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {[
-                      { label: 'Date', value: submissionDate },
-                      { label: 'Name', value: student.student_name },
-                      { label: 'Department', value: student.department },
-                      { label: 'Year', value: String(student.year) },
-                      { label: 'Section', value: student.section },
-                      {
-                        label: 'Number of OD already gained',
-                        value: String(me.od_days_gained || 0),
-                      },
-                    ].map((field) => (
-                      <div key={field.label}>
-                        <label className="cf-form-label">{field.label}</label>
-                        {/* Read-only rather than disabled: a disabled control is not
-                            focusable, so a screen reader user could not read the value
-                            at all. */}
-                        <input
-                          className="cf-input bg-slate-100 text-slate-500"
-                          value={field.value}
-                          readOnly
-                          tabIndex={0}
-                          aria-label={`${field.label}, filled in for you`}
-                        />
-                      </div>
-                    ))}
-                  </div>
                 </div>
+                <span className="cf-icon-badge violet">
+                  <CalendarIcon size={22} />
+                </span>
+              </div>
 
-                {!hasMentor && (
-                  <div
-                    role="alert"
-                    className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800"
-                  >
-                    <InfoIcon size={16} className="mt-0.5 shrink-0" />
-                    <div>
-                      <p className="font-bold">You need a mentor first.</p>
-                      <p className="mt-1">
-                        An OD request is reviewed by your mentor before anything else, so
-                        allocate one before submitting.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => navigate('/student/mentor')}
-                        className="btn-cf-outline mt-2 px-3 py-1.5 text-sm"
-                      >
-                        Allocate a mentor
-                      </button>
+              {/* ---------------------------------------------------- read-only */}
+              <div className="mt-4">
+                <p className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Filled in for you
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {[
+                    { label: 'Date', value: submissionDate },
+                    { label: 'Name', value: student.student_name },
+                    { label: 'Department', value: student.department },
+                    { label: 'Year', value: String(student.year) },
+                    { label: 'Section', value: student.section },
+                    {
+                      label: 'Number of OD already gained',
+                      value: String(me.od_days_gained || 0),
+                    },
+                  ].map((field) => (
+                    <div key={field.label}>
+                      <label className="cf-form-label">{field.label}</label>
+                      {/* Read-only rather than disabled: a disabled control is not
+                          focusable, so a screen reader user could not read the value
+                          at all. */}
+                      <input
+                        className="cf-input bg-slate-100 text-slate-500"
+                        value={field.value}
+                        readOnly
+                        tabIndex={0}
+                        aria-label={`${field.label}, filled in for you`}
+                      />
                     </div>
-                  </div>
-                )}
+                  ))}
+                </div>
+              </div>
 
-                {/* ------------------------------------------------------ inputs */}
-                <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {!hasMentor && (
+                <div
+                  role="alert"
+                  className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800"
+                >
+                  <InfoIcon size={16} className="mt-0.5 shrink-0" />
                   <div>
-                    <label htmlFor="odDays" className="cf-form-label">
-                      Number of OD days required{' '}
-                      <span className="text-red-500" aria-hidden="true">
-                        *
-                      </span>
-                    </label>
-                    <input
-                      id="odDays"
-                      className="cf-input"
-                      type="number"
-                      inputMode="numeric"
-                      min="1"
-                      max={MAX_OD_DAYS}
-                      step="1"
-                      value={days}
-                      onChange={(e) => {
-                        setDays(e.target.value)
-                        setFieldErrors((current) => ({ ...current, od_days_requested: undefined }))
-                      }}
-                      placeholder="e.g. 2"
-                      disabled={!hasMentor}
-                      aria-describedby="odDaysHelp"
-                    />
-                    <p id="odDaysHelp" className="mt-1 text-xs text-slate-500">
-                      A whole number from 1 to {MAX_OD_DAYS}.
+                    <p className="font-bold">You need a mentor first.</p>
+                    <p className="mt-1">
+                      An OD request is reviewed by your mentor before anything else, so
+                      allocate one before submitting.
                     </p>
-                    {validation.errors.od_days_requested && (
-                      <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
-                        {validation.errors.od_days_requested}
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label htmlFor="odReason" className="cf-form-label">
-                      Reason for OD{' '}
-                      <span className="text-red-500" aria-hidden="true">
-                        *
-                      </span>
-                    </label>
-                    <textarea
-                      id="odReason"
-                      className="cf-input"
-                      rows={3}
-                      value={reason}
-                      onChange={(e) => {
-                        setReason(e.target.value)
-                        setFieldErrors((current) => ({ ...current, reason: undefined }))
-                      }}
-                      placeholder="Attending an inter-college technical event…"
-                      disabled={!hasMentor}
-                      aria-describedby="odReasonHelp"
-                    />
-                    <p id="odReasonHelp" className="mt-1 text-xs text-slate-500">
-                      At least {MIN_REASON_LENGTH} characters. This is what your approvers read
-                      first.
-                    </p>
-                    {validation.errors.reason && (
-                      <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
-                        {validation.errors.reason}
-                      </p>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => navigate('/student/mentor')}
+                      className="btn-cf-outline mt-2 px-3 py-1.5 text-sm"
+                    >
+                      Allocate a mentor
+                    </button>
                   </div>
                 </div>
+              )}
 
-                {/* --------------------------------------------------- OD dates */}
-                <div className="mt-5">
-                  <label htmlFor="odDate" className="cf-form-label">
-                    OD date{dates.length === 1 ? '' : 's'}{' '}
+              {/* ------------------------------------------------------ inputs */}
+              <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor="odDays" className="cf-form-label">
+                    Number of OD days required{' '}
                     <span className="text-red-500" aria-hidden="true">
                       *
                     </span>
                   </label>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      id="odDate"
-                      type="date"
-                      className="cf-input w-full max-w-[200px]"
-                      min={submissionDate}
-                      value=""
-                      onChange={(e) => {
-                        addDate(e.target.value)
-                        setFieldErrors((current) => ({ ...current, od_dates: undefined }))
-                      }}
-                      disabled={!hasMentor}
-                      aria-describedby="odDatesHelp"
-                    />
-                    <span className="text-xs text-slate-400">
-                      Add one date per day requested.
-                    </span>
-                  </div>
-
-                  {dates.length > 0 && (
-                    <ul className="mt-3 flex flex-wrap gap-2">
-                      {dates.map((value) => (
-                        <li
-                          key={value}
-                          className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700"
-                        >
-                          {value}
-                          <button
-                            type="button"
-                            onClick={() => removeDate(value)}
-                            disabled={!hasMentor}
-                            className="text-slate-400 transition-colors hover:text-red-600"
-                            aria-label={`Remove ${value}`}
-                          >
-                            ×
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-
-                  <p id="odDatesHelp" className="mt-1 text-xs text-slate-500">
-                    {Number.isFinite(daysNumber) && daysNumber > 0
-                      ? `You have selected ${dates.length} of ${daysNumber} requested ${
-                          daysNumber === 1 ? 'day' : 'days'
-                        }.`
-                      : 'Enter how many days you need, then add that many dates.'}
+                  <input
+                    id="odDays"
+                    className="cf-input"
+                    type="number"
+                    inputMode="numeric"
+                    min="1"
+                    max={MAX_OD_DAYS}
+                    step="1"
+                    value={days}
+                    onChange={(e) => {
+                      setDays(e.target.value)
+                      setFieldErrors((current) => ({ ...current, od_days_requested: undefined }))
+                    }}
+                    placeholder="e.g. 2"
+                    disabled={!hasMentor}
+                    aria-describedby="odDaysHelp"
+                  />
+                  <p id="odDaysHelp" className="mt-1 text-xs text-slate-500">
+                    A whole number from 1 to {MAX_OD_DAYS}.
                   </p>
-                  {validation.errors.od_dates && (
+                  {validation.errors.od_days_requested && (
                     <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
-                      {validation.errors.od_dates}
+                      {validation.errors.od_days_requested}
                     </p>
                   )}
                 </div>
 
-                {fieldErrors.reason && (
-                  <p role="alert" className="mt-2 text-xs font-semibold text-red-600">
-                    {fieldErrors.reason}
-                  </p>
-                )}
-
-                {submitError && (
-                  <div className="mt-4">
-                    <StatusMessage variant="danger">{submitError.message}</StatusMessage>
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={!validation.valid || submitting}
-                  className="btn-cf-primary mt-5 inline-flex w-full items-center justify-center gap-2 px-4 py-2 text-sm"
-                >
-                  {submitting && <span className="cf-spinner" role="status" aria-hidden="true" />}
-                  {submitting ? 'Submitting…' : 'Submit OD request'}
-                </button>
-                {!validation.valid && hasMentor && (
-                  <p className="mt-2 text-center text-xs text-slate-400">
-                    Complete every required field to enable Submit.
-                  </p>
-                )}
-              </form>
-            )}
-
-            {/* ------------------------------------------------------- history */}
-            <div className="cf-list-card mt-4">
-              <div className="cf-card-header px-3 pt-3 pb-2 mb-0">
                 <div>
-                  <h3 className="section-title">My OD requests</h3>
-                  <p className="text-muted-2 text-sm mb-0">
-                    Every request you have submitted, and where it has got to
+                  <label htmlFor="odReason" className="cf-form-label">
+                    Reason for OD{' '}
+                    <span className="text-red-500" aria-hidden="true">
+                      *
+                    </span>
+                  </label>
+                  <textarea
+                    id="odReason"
+                    className="cf-input"
+                    rows={3}
+                    value={reason}
+                    onChange={(e) => {
+                      setReason(e.target.value)
+                      setFieldErrors((current) => ({ ...current, reason: undefined }))
+                    }}
+                    placeholder="Attending an inter-college technical event…"
+                    disabled={!hasMentor}
+                    aria-describedby="odReasonHelp"
+                  />
+                  <p id="odReasonHelp" className="mt-1 text-xs text-slate-500">
+                    At least {MIN_REASON_LENGTH} characters. This is what your approvers read
+                    first.
                   </p>
+                  {validation.errors.reason && (
+                    <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
+                      {validation.errors.reason}
+                    </p>
+                  )}
                 </div>
-                <span className="cf-status-pill active">
-                  <span className="dot" aria-hidden="true" /> {me?.od_days_gained || 0} gained
-                </span>
               </div>
 
-              {requests.length === 0 ? (
-                <p className="px-4 pb-4 text-sm text-slate-500">
-                  You have not submitted an OD request yet.
-                </p>
-              ) : (
-                <div>
-                  {requests.map((request) => (
-                    <div className="cf-list-item" key={request.od_request_id}>
-                      <span
-                        className={`cf-list-icon ${
-                          request.status === 'APPROVED'
-                            ? 'green'
-                            : request.status === 'REJECTED'
-                              ? 'red'
-                              : 'blue'
-                        }`}
+              {/* --------------------------------------------------- OD dates */}
+              <div className="mt-5">
+                <label htmlFor="odDate" className="cf-form-label">
+                  OD date{dates.length === 1 ? '' : 's'}{' '}
+                  <span className="text-red-500" aria-hidden="true">
+                    *
+                  </span>
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    id="odDate"
+                    type="date"
+                    className="cf-input w-full max-w-[200px]"
+                    min={submissionDate}
+                    value=""
+                    onChange={(e) => {
+                      addDate(e.target.value)
+                      setFieldErrors((current) => ({ ...current, od_dates: undefined }))
+                    }}
+                    disabled={!hasMentor}
+                    aria-describedby="odDatesHelp"
+                  />
+                  <span className="text-xs text-slate-400">
+                    Add one date per day requested.
+                  </span>
+                </div>
+
+                {dates.length > 0 && (
+                  <ul className="mt-3 flex flex-wrap gap-2">
+                    {dates.map((value) => (
+                      <li
+                        key={value}
+                        className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700"
                       >
-                        {request.status === 'APPROVED' ? (
-                          <CheckIcon size={17} />
-                        ) : (
-                          <ClockIcon size={17} />
-                        )}
-                      </span>
-                      <div className="cf-list-meta">
-                        <div className="title">{request.od_dates.join(', ')}</div>
-                        <div className="sub">
-                          {request.od_days_requested} day
-                          {request.od_days_requested === 1 ? '' : 's'} · submitted{' '}
-                          {request.submitted_date} · {request.od_request_id}
-                        </div>
-                        {request.status === 'REJECTED' && request.rejection_reason && (
-                          <div className="sub">
-                            Rejected at {request.rejected_at_stage}: {request.rejection_reason}
-                          </div>
-                        )}
-                      </div>
-                      <div className="text-right">
-                        <div
-                          className={`text-sm font-bold uppercase ${
-                            request.status === 'APPROVED'
-                              ? 'text-success'
-                              : request.status === 'REJECTED'
-                                ? 'text-red-600'
-                                : 'text-slate-600'
-                          }`}
+                        {value}
+                        <button
+                          type="button"
+                          onClick={() => removeDate(value)}
+                          disabled={!hasMentor}
+                          className="text-slate-400 transition-colors hover:text-red-600"
+                          aria-label={`Remove ${value}`}
                         >
-                          {STATUS_COPY[request.status] || request.status}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <p id="odDatesHelp" className="mt-1 text-xs text-slate-500">
+                  {Number.isFinite(daysNumber) && daysNumber > 0
+                    ? `You have selected ${dates.length} of ${daysNumber} requested ${
+                        daysNumber === 1 ? 'day' : 'days'
+                      }.`
+                    : 'Enter how many days you need, then add that many dates.'}
+                </p>
+                {validation.errors.od_dates && (
+                  <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
+                    {validation.errors.od_dates}
+                  </p>
+                )}
+              </div>
+
+              {fieldErrors.reason && (
+                <p role="alert" className="mt-2 text-xs font-semibold text-red-600">
+                  {fieldErrors.reason}
+                </p>
+              )}
+
+              {submitError && (
+                <div className="mt-4">
+                  <StatusMessage variant="danger">{submitError.message}</StatusMessage>
                 </div>
               )}
+
+              <button
+                type="submit"
+                disabled={!validation.valid || submitting}
+                className="btn-cf-primary mt-5 inline-flex w-full items-center justify-center gap-2 px-4 py-2 text-sm"
+              >
+                {submitting && <span className="cf-spinner" role="status" aria-hidden="true" />}
+                {submitting ? 'Submitting…' : 'Submit OD request'}
+              </button>
+              {!validation.valid && hasMentor && (
+                <p className="mt-2 text-center text-xs text-slate-400">
+                  Complete every required field to enable Submit.
+                </p>
+              )}
+            </form>
+          )}
+
+          {/* ------------------------------------------------------- history */}
+          <div className="cf-list-card mt-4">
+            <div className="cf-card-header px-3 pt-3 pb-2 mb-0">
+              <div>
+                <h3 className="section-title">My OD requests</h3>
+                <p className="text-muted-2 text-sm mb-0">
+                  Every request you have submitted, and where it has got to
+                </p>
+              </div>
+              <span className="cf-status-pill active">
+                <span className="dot" aria-hidden="true" /> {me?.od_days_gained || 0} gained
+              </span>
             </div>
+
+            {requests.length === 0 ? (
+              <p className="px-4 pb-4 text-sm text-slate-500">
+                You have not submitted an OD request yet.
+              </p>
+            ) : (
+              <div>
+                {requests.map((request) => (
+                  <div className="cf-list-item" key={request.od_request_id}>
+                    <span
+                      className={`cf-list-icon ${
+                        request.status === 'APPROVED'
+                          ? 'green'
+                          : request.status === 'REJECTED'
+                            ? 'red'
+                            : 'blue'
+                      }`}
+                    >
+                      {request.status === 'APPROVED' ? (
+                        <CheckIcon size={17} />
+                      ) : (
+                        <ClockIcon size={17} />
+                      )}
+                    </span>
+                    <div className="cf-list-meta">
+                      <div className="title">{request.od_dates.join(', ')}</div>
+                      <div className="sub">
+                        {request.od_days_requested} day
+                        {request.od_days_requested === 1 ? '' : 's'} · submitted{' '}
+                        {request.submitted_date} · {request.od_request_id}
+                      </div>
+                      {request.status === 'REJECTED' && request.rejection_reason && (
+                        <div className="sub">
+                          Rejected at {request.rejected_at_stage}: {request.rejection_reason}
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <div
+                        className={`text-sm font-bold uppercase ${
+                          request.status === 'APPROVED'
+                            ? 'text-success'
+                            : request.status === 'REJECTED'
+                              ? 'text-red-600'
+                              : 'text-slate-600'
+                        }`}
+                      >
+                        {STATUS_COPY[request.status] || request.status}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        </div>
+          </div>
       </main>
     </div>
   )

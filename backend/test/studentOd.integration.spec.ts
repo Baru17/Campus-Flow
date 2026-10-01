@@ -215,6 +215,29 @@ async function makeDirectoryRole(
   return { auth: authUserId, email: email.toLowerCase() };
 }
 
+/*
+ * An account holding an approver role with *no* directory row behind it, signed in.
+ *
+ * The role and the record are separate writes, so this state is reachable in production:
+ * an admin sets the role and the directory row is never created. It is also the state
+ * `od-approver/login` already refuses, which is why this is built by hand rather than by
+ * signing in -- the point is to exercise what the listing and the identity route do when
+ * handed such a session anyway.
+ *
+ * Deliberately a throwaway rather than the deletion of a shared fixture. The suites in this
+ * file share one database and run in order, so a test that removed `coordinator_id = 1`
+ * silently invalidated every later test that signed that coordinator in.
+ */
+async function makeOrphanApprover(role: string, token: string): Promise<string> {
+  const authUserId = `c5e5f000-0000-4000-8000-00000eorphan${token.slice(-4)}`;
+  await env.DB
+    .prepare("INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email) VALUES (?, ?, ?, ?, ?)")
+    .bind(authUserId, `orphan.${token}@kiot.ac.in`, await hashDefaultPassword(), role, `orphan.${token}@kiot.ac.in`)
+    .run();
+  await signIn(authUserId, token);
+  return authUserId;
+}
+
 /* ------------------------------------------------------------- http helper */
 
 interface ApiResult {
@@ -1085,13 +1108,144 @@ const second = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
       expect(theirs.body.requests.some((request: any) => request.od_request_id === id)).toBe(false);
     });
 
-    it("reports whether the signed-in approver may act", async () => {
+it("reports whether the signed-in approver may act", async () => {
       const { body } = await fileOd([futureDate(40)], 1);
       const id = body.request.od_request_id;
 
       expect((await call("od-mentor-1", `/api/od/requests/${id}/permission?stage=MENTOR`)).body.can_act).toBe(true);
       expect((await call("od-mentor-2", `/api/od/requests/${id}/permission?stage=MENTOR`)).body.can_act).toBe(false);
       expect((await call(STUDENT_TOKEN, `/api/od/requests/${id}/permission?stage=MENTOR`)).body.can_act).toBe(false);
+    });
+
+    /*
+     * The queue tests below are for the coordinator and HOD stages specifically.
+     *
+     * These two used to come back empty for everybody, forever, because the listing
+     * scoped them by a *student's* department and neither role has a student. Nothing
+     * caught it: the refusal tests above only ever exercised the decision endpoint,
+     * which resolves the approver from their directory, so the queue stayed wrong while
+     * every authority check stayed correct. A coordinator would sign in, see nothing, and
+     * have no way to tell that apart from having no requests.
+     *
+     * So each of these asserts the positive case -- the request *is* in the queue of the
+     * right department -- and not merely that some request came back.
+     */
+
+    it("puts a request waiting on the coordinator in that coordinator's queue", async () => {
+      const { body } = await fileOd([futureDate(60)], 1);
+      const id = body.request.od_request_id;
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+
+      const mine = await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR");
+      expect(mine.status).toBe(200);
+      expect(mine.body.requests.some((request: any) => request.od_request_id === id)).toBe(true);
+
+      // The coordinator of another department does not see it.
+      const theirs = await call("od-coord-2", "/api/od/requests?stage=CONTEST_COORDINATOR");
+      expect(theirs.body.requests.some((request: any) => request.od_request_id === id)).toBe(false);
+    });
+
+    it("puts a request waiting on the HOD in that HOD's queue", async () => {
+      const { body } = await fileOd([futureDate(70)], 1);
+      const id = body.request.od_request_id;
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
+      await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+
+      const mine = await call("od-hod-1", "/api/od/requests?stage=HOD");
+      expect(mine.status).toBe(200);
+      expect(mine.body.requests.some((request: any) => request.od_request_id === id)).toBe(true);
+
+      const theirs = await call("od-hod-2", "/api/od/requests?stage=HOD");
+      expect(theirs.body.requests.some((request: any) => request.od_request_id === id)).toBe(false);
+    });
+
+    it("scopes an advisor's queue to their own cohort", async () => {
+      const { body } = await fileOd([futureDate(80)], 1);
+      const id = body.request.od_request_id;
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
+
+      const mine = await call("od-advisor-1", "/api/od/requests?stage=CLASS_ADVISOR");
+      expect(mine.body.requests.some((request: any) => request.od_request_id === id)).toBe(true);
+
+      const theirs = await call("od-advisor-2", "/api/od/requests?stage=CLASS_ADVISOR");
+      expect(theirs.body.requests.some((request: any) => request.od_request_id === id)).toBe(false);
+    });
+
+    it("does not put a request in a queue for a stage it has already passed", async () => {
+      const { body } = await fileOd([futureDate(90)], 1);
+      const id = body.request.od_request_id;
+
+      // Still PENDING_MENTOR: the coordinator has not had it yet.
+      expect(
+        (await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR")).body.requests.some(
+          (request: any) => request.od_request_id === id
+        )
+      ).toBe(false);
+
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      // Now it has.
+      expect(
+        (await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR")).body.requests.some(
+          (request: any) => request.od_request_id === id
+        )
+      ).toBe(true);
+      // And it is no longer the mentor's business.
+      expect(
+        (await call("od-mentor-1", "/api/od/requests?stage=MENTOR")).body.requests.some(
+          (request: any) => request.od_request_id === id
+        )
+      ).toBe(false);
+    });
+
+    it("gives an approver with no directory row an empty queue rather than an error", async () => {
+      /*
+       * An account can hold an approver role without a record behind it. There is no
+       * department to scope to, so the honest answer is an empty queue -- not a 500, and
+       * not somebody else's rows.
+       */
+      await makeOrphanApprover("contest_coordinator", "od-orphan-coord-1");
+
+      const { status, body } = await call("od-orphan-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR");
+      expect(status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(body.requests).toEqual([]);
+    });
+
+    /* ================================================ approver identity */
+
+    describe("approver identity", () => {
+      it("reports the role, name and department from the session", async () => {
+        const coordinator = await call("od-coord-1", "/api/od/approver/me");
+        expect(coordinator.status).toBe(200);
+        expect(coordinator.body.approver.role).toBe("contest_coordinator");
+        expect(coordinator.body.approver.name).toBe("Coordinator One");
+        expect(coordinator.body.approver.department).toBe(DEPARTMENT);
+
+        const hod = await call("od-hod-1", "/api/od/approver/me");
+        expect(hod.body.approver.role).toBe("hod");
+        expect(hod.body.approver.name).toBe("Hod One");
+      });
+
+      it("never reports anybody else's identity", async () => {
+        // A student session is refused outright rather than answered with an empty record.
+        const student = await asStudent("/api/od/approver/me");
+        expect(student.status).toBe(403);
+        expect(student.body.code).toBe("od-not-an-approver");
+
+        // Unauthenticated likewise.
+        const anonymous = await call(null, "/api/od/approver/me");
+        expect(anonymous.status).toBe(401);
+      });
+
+      it("refuses an approver role that has no directory row behind it", async () => {
+        await makeOrphanApprover("hod", "od-orphan-hod-1");
+
+        const { status, body } = await call("od-orphan-hod-1", "/api/od/approver/me");
+        expect(status).toBe(403);
+        expect(body.code).toBe("unlinked-approver");
+      });
     });
   });
 

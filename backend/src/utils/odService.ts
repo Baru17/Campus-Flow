@@ -26,6 +26,7 @@
  */
 
 import { sendBrevoEmail, type EmailBindings } from "./email";
+import { appUrl } from "./appUrl";
 import {
   odApprovalRequestEmail,
   odDecisionEmail,
@@ -332,6 +333,7 @@ export async function createOdRequest(
   db: D1Database,
   env: EmailBindings,
   student: AuthenticatedStudent,
+  appOrigin: string,
   input: { od_days_requested: number; od_dates: string[]; reason: string; submittedDate: string }
 ): Promise<CreateOdResult> {
   const odRequestId = crypto.randomUUID();
@@ -386,7 +388,7 @@ export async function createOdRequest(
   const row = await loadRequest(db, odRequestId);
   if (!row) throw new OdConflictError("The OD request could not be read back.", "od-request-unreadable");
 
-  const notified = await notifyMentorOfRequest(db, env, row);
+  const notified = await notifyMentorOfRequest(db, env, row, appOrigin);
   return { request: toRequestView(row), notified };
 }
 
@@ -624,7 +626,8 @@ export async function applyDecision(
   stage: OdStage,
   decision: OdDecision,
   approverEmail: string,
-  commentInput: unknown
+  commentInput: unknown,
+  appOrigin: string
 ): Promise<DecisionResult> {
   const request = await loadRequest(db, requestId);
   if (!request) {
@@ -729,7 +732,7 @@ export async function applyDecision(
       nextStageName = nextStage.label;
       const approver = await findNextApprover(db, updated, nextStage);
       if (approver) {
-        notified = (await safeSend(env, approver.email, odApprovalRequestEmail(facts, nextStage.label), {
+        notified = (await safeSend(env, approver.email, odApprovalRequestEmail(facts, nextStage.label, stageActionUrl(appOrigin, nextStage)), {
           event: "od_next_stage_email_failed",
           odRequestId: requestId,
           stage: nextStage.key,
@@ -782,7 +785,29 @@ async function safeSend(
   }
 }
 
-/** Tells a newly assigned mentor who they have picked up. */
+/**
+ * Where each stage's approver reviews its requests.
+ *
+ * A mentor is staff and already has a dashboard; a class advisor already has another.
+ * Neither has to be told where to go, so the link goes straight to the thing they use.
+ *
+ * A Contest Coordinator and an HOD have no dashboard anyone reaches from the normal role
+ * selection -- deliberately, since they exist only to action OD requests -- so their link
+ * goes to the approver sign-in page. Arriving there requires signing in, and the
+ * backend then checks the role, the department and the stage before anything can be
+ * decided.
+ */
+const STAGE_DASHBOARD_PATH: Record<string, string> = {
+  MENTOR: "/staff",
+  CLASS_ADVISOR: "/advisor",
+  CONTEST_COORDINATOR: "/approver/login",
+  HOD: "/approver/login",
+};
+
+/** The link an approver of `stage` should follow, on a given app origin. */
+function stageActionUrl(appOrigin: string, stage: OdStage): string {
+  return appUrl(appOrigin, STAGE_DASHBOARD_PATH[stage.key] ?? "/approver/login");
+}
 export async function notifyMentorOfAssignment(
   env: EmailBindings,
   facts: { studentName: string; studentId: string; department: string; year: number; section: string },
@@ -797,32 +822,70 @@ export async function notifyMentorOfAssignment(
 export async function notifyMentorOfRequest(
   db: D1Database,
   env: EmailBindings,
-  request: OdRequestRow
+  request: OdRequestRow,
+  appOrigin: string
 ): Promise<boolean> {
   const mentor = (request.mentor_email ?? "").trim().toLowerCase();
   if (!mentor) return false;
-  return safeSend(env, mentor, odApprovalRequestEmail(toEmailFacts(request), "Mentor"), {
-    event: "od_submission_email_failed",
-    odRequestId: request.od_request_id,
-  });
+  return safeSend(
+    env,
+    mentor,
+    odApprovalRequestEmail(toEmailFacts(request), "Mentor", stageActionUrl(appOrigin, STAGES[0])),
+    {
+      event: "od_submission_email_failed",
+      odRequestId: request.od_request_id,
+    }
+  );
 }
 
-/** Requests waiting on one approver, for their inbox. */
+/**
+ * The requests waiting on one approver, for their queue.
+ *
+ * Each role is scoped differently, and all three scopes come from the database rather
+ * than from anything the caller sent:
+ *
+ *   - **mentor**: the address snapshotted onto the request. Nobody else can see these,
+ *     which is why this needs no department at all.
+ *   - **class advisor**: the advisor's own cohort, all four parts, taken from their
+ *     `staff` row by the route.
+ *   - **contest coordinator / HOD**: their own row in their own directory table.
+ *
+ * That last one used to be read from a *student* scope, which a coordinator or an HOD
+ * never has, so the department bound was the empty string and these two queues were
+ * permanently empty -- an approver signed in, saw nothing, and had no way to tell that
+ * from having no requests. It now resolves the approver's department from the row that
+ * makes them that approver.
+ *
+ * A coordinator or HOD with no directory row gets an empty queue rather than an error:
+ * there is nobody for the requests to belong to.
+ */
 export async function listRequestsForStage(
   db: D1Database,
   stage: OdStage,
   approverEmail: string,
-  student: AuthenticatedStudent | null
+  advisorCohort: {
+    department: string;
+    batch: string;
+    year: number;
+    section: string;
+  } | null
 ): Promise<OdRequestView[]> {
   const email = approverEmail.trim().toLowerCase();
 
   let rows: OdRequestRow[];
+
   if (stage.key === "MENTOR") {
     ({ results: rows = [] } = await db
-      .prepare("SELECT * FROM od_requests WHERE status = ? AND LOWER(mentor_email) = ? ORDER BY created_at DESC")
+      .prepare(
+        "SELECT * FROM od_requests WHERE status = ? AND LOWER(mentor_email) = ? ORDER BY created_at DESC"
+      )
       .bind(stage.status, email)
       .all<OdRequestRow>());
-  } else if (stage.key === "CLASS_ADVISOR") {
+    return (rows ?? []).map(toRequestView);
+  }
+
+  if (stage.key === "CLASS_ADVISOR") {
+    if (!advisorCohort) return [];
     ({ results: rows = [] } = await db
       .prepare(
         `SELECT * FROM od_requests
@@ -830,14 +893,42 @@ export async function listRequestsForStage(
            AND department = ? AND batch = ? AND year = ? AND section = ?
          ORDER BY created_at DESC`
       )
-      .bind(stage.status, student?.department ?? "", student?.batch ?? "", student?.student.year ?? 0, student?.student.section ?? "")
+      .bind(stage.status, advisorCohort.department, advisorCohort.batch, advisorCohort.year, advisorCohort.section)
       .all<OdRequestRow>());
-  } else {
-    ({ results: rows = [] } = await db
-      .prepare("SELECT * FROM od_requests WHERE status = ? AND department = ? ORDER BY created_at DESC")
-      .bind(stage.status, student?.department ?? "")
-      .all<OdRequestRow>());
+    return (rows ?? []).map(toRequestView);
   }
 
+  const approver = await findDirectoryApprover(db, stage, email);
+  if (!approver) return [];
+
+  ({ results: rows = [] } = await db
+    .prepare(
+      "SELECT * FROM od_requests WHERE status = ? AND department = ? ORDER BY created_at DESC"
+    )
+    .bind(stage.status, approver.department)
+    .all<OdRequestRow>());
   return (rows ?? []).map(toRequestView);
+}
+
+/**
+ * The department an approver holds a role in, read from the directory that defines it.
+ *
+ * Returns null for the mentor, who is scoped by the request rather than by a directory,
+ * and for a role with no directory row -- an account whose role was set but whose record
+ * was never created holds nothing.
+ */
+async function findDirectoryApprover(
+  db: D1Database,
+  stage: OdStage,
+  approverEmail: string
+): Promise<{ department: string } | null> {
+  if (!stage.table || stage.emailColumn !== "email") return null;
+
+  // `table` and `email` are literals from `STAGES`, never from a request, so neither
+  // is a value a client can influence.
+  const row = await db
+    .prepare(`SELECT department FROM ${stage.table} WHERE LOWER(email) = ? LIMIT 1`)
+    .bind(approverEmail)
+    .first<{ department: string }>();
+  return row ? { department: row.department } : null;
 }
