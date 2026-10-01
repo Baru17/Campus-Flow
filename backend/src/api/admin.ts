@@ -19,14 +19,30 @@
  * Nothing in phase 3 interpolates a client-supplied string into SQL. Department
  * comes from a fixed list, batch from a strict format check, and table names from
  * `buildTableNames`.
+ *
+ * ## Updates
+ *
+ * The `PATCH` routes are the edit half of the same contract, and they are held to
+ * one extra rule: the primary key of a row is never something the client gets to
+ * change. A student is addressed by `student_id`, staff by `staff_id` and a
+ * subject by `subject_id` in the path, and a body that names a *different* one is
+ * refused rather than quietly ignored, so a caller is never told an edit succeeded
+ * when it moved some other row.
+ *
+ * Identity also decides which table a student lives in, and the department and
+ * batch on such a request are a hint, not an authority: the table name still comes
+ * from the registry and the row still has to be found in it, so a wrong cohort
+ * answers 404 rather than editing a different student.
  */
 
 import { Hono } from "hono";
 import { requireAuth, requireAdmin, type AuthUser } from "../middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "../utils/databaseErrors";
 import {
+  assertAllowedStudentTable,
   ensureBatchRegistry,
   invalidateBatchRegistry,
+  listAllowedStudentTables,
   listBatchesForDepartment,
   normalizeDepartment,
   resolveTables,
@@ -46,7 +62,9 @@ import {
   type ExistingAccount,
 } from "../utils/accountProvisioning";
 import {
+  validateStaffId,
   validateStaffRow,
+  validateStudentId,
   validateStudentRow,
   validateSubjectRow,
   type StaffInput,
@@ -127,6 +145,26 @@ async function readRows(c: any): Promise<unknown[] | Response> {
 }
 
 /**
+ * Reads a single JSON object body, for the edit routes.
+ *
+ * Separate from `readRows` because an update is one record rather than a batch:
+ * it is not size-capped the way a 2000-row import is, and a body that is an array
+ * or a scalar is refused here rather than read as a record with no fields.
+ */
+async function readObjectBody(c: any): Promise<Record<string, unknown> | Response> {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, "Invalid JSON body", "invalid-json");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return fail(c, 400, "Expected a JSON object", "invalid-body");
+  }
+  return body as Record<string, unknown>;
+}
+
+/**
  * Resolves the department and batch a request is about, and ensures the pair is
  * resolvable.
  *
@@ -166,6 +204,93 @@ function resolveTarget(
   };
 
   return { department, batch: batchCheck.batch, ...names };
+}
+
+/** The columns an edit of a student may touch. Everything else is the identity. */
+const STUDENT_COLUMNS =
+  "student_id, register_no, student_name, year, section, email, auth_user_id";
+
+type StudentRow = {
+  student_id: string;
+  register_no: string;
+  student_name: string;
+  year: number;
+  section: string;
+  email: string;
+  auth_user_id: string | null;
+};
+
+type StudentCohort = {
+  department: Department;
+  batch: string;
+  studentTable: string;
+  student: StudentRow;
+};
+
+/**
+ * Finds the cohort a student row lives in, and reads the row.
+ *
+ * Students are stored in a separate table per (department, batch), so a student is
+ * only addressable once the table is known. Two properties make this safe:
+ *
+ *   1. The table name is never taken from the request. A caller that names a
+ *      cohort gets it through `resolveTables`, which only vouches for a pair the
+ *      registry knows and whose tables exist; a caller that names none gets the
+ *      registry's own list. Either way `assertAllowedStudentTable` is the last
+ *      gate before the name reaches SQL.
+ *   2. The row still has to be found *in* that table. A department and batch that
+ *      point at the wrong cohort therefore answer "not found" instead of editing a
+ *      different student.
+ *
+ * The three ways it can come back empty are kept apart, because the admin needs a
+ * different message for each: a cohort that was never provisioned is a setup
+ * problem, a cohort that is fine but holds no such student is not, and an id that
+ * exists in two cohorts at once has to be disambiguated rather than resolved by
+ * taking the first hit.
+ */
+type CohortLookup =
+  | { ok: true; cohort: StudentCohort }
+  | { ok: false; reason: "ambiguous" | "not-provisioned" | "not-found" };
+
+async function findStudentCohort(
+  db: D1Database,
+  studentId: string,
+  hint: { department?: string; batch?: string } | null
+): Promise<CohortLookup> {
+  let candidates: { department: Department; batch: string; studentTable: string }[];
+
+  if (hint) {
+    const tables = resolveTables(hint.department, hint.batch);
+    if (!tables) return { ok: false, reason: "not-provisioned" };
+    candidates = [
+      { department: tables.department, batch: tables.batch, studentTable: tables.studentTable },
+    ];
+  } else {
+    candidates = listAllowedStudentTables().map((tables) => ({
+      department: tables.department,
+      batch: tables.batch,
+      studentTable: tables.studentTable,
+    }));
+  }
+
+  const matches: StudentCohort[] = [];
+  for (const candidate of candidates) {
+    const row = await db
+      .prepare(
+        `SELECT ${STUDENT_COLUMNS} FROM ${assertAllowedStudentTable(candidate.studentTable)}
+         WHERE UPPER(student_id) = ? LIMIT 1`
+      )
+      .bind(studentId)
+      .first<StudentRow>();
+    if (row) {
+      matches.push({ ...candidate, student: row as StudentRow });
+      if (hint) break;
+    }
+  }
+
+  if (matches.length === 0) return { ok: false, reason: "not-found" };
+  if (matches.length > 1) return { ok: false, reason: "ambiguous" };
+  return { ok: true, cohort: matches[0] };
 }
 
 /* ------------------------------------------------------------------ batches */
@@ -650,6 +775,252 @@ app.post("/students", requireAuth, requireAdmin, async (c) => {
   }
 });
 
+/**
+ * Edits one student.
+ *
+ * Exactly four fields are editable: `student_name`, `year`, `section` and `email`.
+ * Everything else on the row is fixed, and each exclusion has a reason:
+ *
+ *   - `student_id` is the identity the path addresses, and it is also the login
+ *     name the account was created under, so a new one would need a new account.
+ *   - `register_no` is the key attendance is recorded against. Every mark in the
+ *     cohort's attendance table, and every class-advisor report built from it, is
+ *     filed under it, so a number that moved would strand that history under a
+ *     value the roster no longer has. Changing a register number is therefore a
+ *     deliberate re-enrolment, not a correction, and it is not something this
+ *     route will do -- which also means this route can never orphan a mark.
+ *   - department and batch are not columns on the row at all. They decide which
+ *     table the row is in, and the table is resolved here from the registry.
+ *     `body.department` and `body.batch` are therefore read as nothing more than
+ *     the hint described on `findStudentCohort`, and never as a destination.
+ *
+ * The email is the one editable field with a consequence outside the roster, so it
+ * is worth stating: `/api/auth/login` looks an account up by `user_name` *or*
+ * `email`, and a student's `user_name` is their student ID. A student signing in
+ * with the new address would therefore find nothing unless the linked account's
+ * `email` moved with the roster. That is the only auth column written here. The
+ * password hash and the account's identifier are untouched, so the student keeps
+ * the password they already had, and no second account is created for the address
+ * that is being freed.
+ */
+app.patch("/students/:studentId", requireAuth, requireAdmin, async (c) => {
+  try {
+    const body = await readObjectBody(c);
+    if (body instanceof Response) return body;
+
+    const idCheck = validateStudentId(c.req.param("studentId"));
+    if (!idCheck.ok) {
+      return fail(c, 400, idCheck.errors[0].message, "invalid-student-id");
+    }
+    const studentId = idCheck.value;
+
+    /*
+     * A body may repeat the id it is editing, but it may not name a different one.
+     * Refusing beats ignoring: a client that believed it renamed a student would
+     * otherwise get a success for a record it did not change.
+     */
+    if (body.student_id !== undefined && body.student_id !== null) {
+      const submitted = validateStudentId(body.student_id);
+      if (!submitted.ok) {
+        return fail(c, 400, submitted.errors[0].message, "invalid-student-id");
+      }
+      if (submitted.value !== studentId) {
+        return fail(c, 400, "Student ID cannot be changed", "student-id-immutable");
+      }
+    }
+
+    await ensureBatchRegistry(c.env.DB);
+
+    // The cohort is a hint, so an unusable one is the admin's mistake to see.
+    const hintDepartment = c.req.query("department");
+    const hintBatch = c.req.query("batch");
+    let hint: { department?: string; batch?: string } | null = null;
+    if (hintDepartment !== undefined || hintBatch !== undefined) {
+      const department = normalizeDepartment(hintDepartment ?? "");
+      if (!department) {
+        return fail(c, 400, "Choose a supported department", "invalid-department");
+      }
+      const batchCheck = validateBatchInput(hintBatch);
+      if (!batchCheck.valid) {
+        return fail(c, 400, batchCheck.message, batchCheck.code);
+      }
+      hint = { department, batch: batchCheck.batch };
+    }
+
+    const lookup = await findStudentCohort(c.env.DB, studentId, hint);
+    if (!lookup.ok) {
+      if (lookup.reason === "ambiguous") {
+        return fail(
+          c,
+          409,
+          "That student ID exists in more than one cohort. Name the department and batch to edit.",
+          "student-ambiguous"
+        );
+      }
+      if (lookup.reason === "not-provisioned") {
+        // Reported as a setup problem rather than a missing student, because it is
+        // one: the cohort is well-formed but the registry does not vouch for it, so
+        // there is no table to edit. The same wording the list and import routes use.
+        return fail(
+          c,
+          400,
+          `That batch is not provisioned for ${hint?.department}. Create it first.`,
+          "batch-not-provisioned"
+        );
+      }
+      return fail(c, 404, "Student not found", "student-not-found");
+    }
+    const cohort = lookup.cohort;
+
+    /*
+     * A field that was not sent keeps its stored value, so the whole submitted
+     * record is validated as one unit through the same validator the import uses.
+     * That is what makes the edit form and the import form hold a student to one
+     * standard: a missing name here is as fatal as a missing name in a spreadsheet.
+     *
+     * `register_no` is the one field whose value is taken from the row rather than
+     * from the request, because it is not writable here at all. Echoing it back is
+     * allowed, because a form that submits the whole record should not be punished
+     * for including it; anything else is refused, so a client is never told it
+     * re-registered a student whose attendance is filed under the old number. The
+     * comparison is case-insensitive, matching how the roster treats a register
+     * number elsewhere, so a differently-cased echo is recognised as the same value
+     * and the stored one is kept.
+     */
+    if (body.register_no !== undefined && body.register_no !== null) {
+      const echoed = String(body.register_no).trim().toLowerCase();
+      if (echoed !== cohort.student.register_no.toLowerCase()) {
+        return fail(c, 400, "Register number cannot be changed", "register-no-immutable");
+      }
+    }
+
+    const merged = {
+      student_id: studentId,
+      register_no: cohort.student.register_no,
+      student_name: body.student_name ?? cohort.student.student_name,
+      year: body.year ?? cohort.student.year,
+      section: body.section ?? cohort.student.section,
+      email: body.email ?? cohort.student.email,
+    };
+    const validated = validateStudentRow(merged);
+    if (!validated.ok) {
+      return fail(c, 400, validated.errors[0].message, "student-validation-failed", {
+        errors: validated.errors,
+      });
+    }
+    const value = validated.value;
+
+    const studentTable = assertAllowedStudentTable(cohort.studentTable);
+
+    /*
+     * The email is the only column an edit can newly collide on, since the register
+     * number cannot move. It is UNIQUE, so checking it here is the difference
+     * between a specific message and a 500 from a failed UPDATE, and the student
+     * being edited is excluded so re-saving their own address is not a conflict
+     * with themselves.
+     */
+    const emailClash = await c.env.DB
+      .prepare(
+        `SELECT student_id FROM ${studentTable}
+         WHERE LOWER(email) = ? AND UPPER(student_id) <> ? LIMIT 1`
+      )
+      .bind(value.email, studentId)
+      .first<{ student_id: string }>();
+    if (emailClash) {
+      return fail(
+        c,
+        409,
+        `Email ${value.email} already belongs to another student`,
+        "duplicate-email"
+      );
+    }
+
+    const emailChanged = value.email !== (cohort.student.email ?? "").toLowerCase();
+    const authUserId = cohort.student.auth_user_id;
+
+    if (emailChanged && authUserId) {
+      /*
+       * Login matches on `user_name OR email`, and a student account's `user_name`
+       * is the student ID, so the address is the only handle that moves. If some
+       * other account already holds it, writing it would make that address
+       * ambiguous at sign-in, so the edit is refused instead.
+       */
+      const accountClash = await c.env.DB
+        .prepare(
+          "SELECT auth_user_id FROM auth_users WHERE LOWER(email) = ? AND auth_user_id <> ? LIMIT 1"
+        )
+        .bind(value.email, authUserId)
+        .first<{ auth_user_id: string }>();
+      if (accountClash) {
+        return fail(
+          c,
+          409,
+          `Email ${value.email} already belongs to another login account`,
+          "auth-email-conflict"
+        );
+      }
+    }
+
+    /*
+     * Roster and account in one batch, so the student's sign-in address can never
+     * disagree with the address on their record.
+     *
+     * `register_no` is absent from the SET list, and not merely equal to its old
+     * value: leaving the column out is what makes it unwritable, so a future edit
+     * to this statement cannot reintroduce the change by accident.
+     */
+    const statements: D1PreparedStatement[] = [
+      c.env.DB
+        .prepare(
+          `UPDATE ${studentTable}
+             SET student_name = ?, year = ?, section = ?, email = ?
+           WHERE student_id = ?`
+        )
+        .bind(
+          value.student_name,
+          value.year,
+          value.section,
+          value.email,
+          cohort.student.student_id
+        ),
+    ];
+
+    if (emailChanged && authUserId) {
+      statements.push(
+        c.env.DB
+          .prepare("UPDATE auth_users SET email = ? WHERE auth_user_id = ?")
+          .bind(value.email, authUserId)
+      );
+    }
+
+    await c.env.DB.batch(statements);
+
+    // Read back rather than echoing the request, so the response is what D1 holds.
+    const updated = await c.env.DB
+      .prepare(`SELECT ${STUDENT_COLUMNS} FROM ${studentTable} WHERE student_id = ?`)
+      .bind(cohort.student.student_id)
+      .first<StudentRow>();
+
+    return c.json({
+      success: true,
+      department: cohort.department,
+      batch: cohort.batch,
+      student: {
+        student_id: updated?.student_id,
+        register_no: updated?.register_no,
+        student_name: updated?.student_name,
+        year: updated?.year,
+        section: updated?.section,
+        email: updated?.email,
+      },
+      // Stated so the dashboard can say whether sign-in details moved with it.
+      authEmailUpdated: Boolean(emailChanged && authUserId),
+    });
+  } catch (error) {
+    return serverError(c, error, "Could not update that student", "student-update-failed");
+  }
+});
+
 /* --------------------------------------------------------------------- staff */
 
 app.get("/staff", requireAuth, requireAdmin, async (c) => {
@@ -895,6 +1266,250 @@ app.post("/staff", requireAuth, requireAdmin, async (c) => {
   }
 });
 
+/**
+ * Edits one staff member.
+ *
+ * `staff_id` is fixed: it is the key the path addresses, it is UNIQUE with no
+ * default, and `/api/auth/staff/login` accepts it as an alternative to an email.
+ * A body naming a different one is refused rather than ignored.
+ *
+ * Department *is* editable, unlike a student's, because `staff` is one table keyed
+ * by a department column rather than a table per cohort -- so moving someone is a
+ * single column write rather than a move between files. The advisor columns follow
+ * the same rules as the import, applied by `validateStaffRow`: a non-advisor has no
+ * advisor values at all (they are cleared, not left behind), and an advisor needs a
+ * cohort, a year and a section together, with the cohort resolved against the
+ * *new* department so a move cannot leave an advisor pointing at another
+ * department's tables.
+ */
+app.patch("/staff/:staffId", requireAuth, requireAdmin, async (c) => {
+  try {
+    const body = await readObjectBody(c);
+    if (body instanceof Response) return body;
+
+    const idCheck = validateStaffId(c.req.param("staffId"));
+    if (!idCheck.ok) {
+      return fail(c, 400, idCheck.errors[0].message, "invalid-staff-id");
+    }
+    const staffId = idCheck.value;
+
+    if (body.staff_id !== undefined && body.staff_id !== null) {
+      const submitted = validateStaffId(body.staff_id);
+      if (!submitted.ok) {
+        return fail(c, 400, submitted.errors[0].message, "invalid-staff-id");
+      }
+      if (submitted.value !== staffId) {
+        return fail(c, 400, "Staff ID cannot be changed", "staff-id-immutable");
+      }
+    }
+
+    const existing = await c.env.DB
+      .prepare(
+        `SELECT staff_id, staff_name, email, department, class_advisor,
+                advisor_year, advisor_section, advisor_batch, auth_user_id
+         FROM staff
+         WHERE staff_id = ?
+         LIMIT 1`
+      )
+      .bind(staffId)
+      .first<{
+        staff_id: string;
+        staff_name: string;
+        email: string;
+        department: string;
+        class_advisor: string | null;
+        advisor_year: number | null;
+        advisor_section: string | null;
+        advisor_batch: string | null;
+        auth_user_id: string | null;
+      }>();
+    if (!existing) {
+      return fail(c, 404, "Staff member not found", "staff-not-found");
+    }
+
+    const department = normalizeDepartment(body.department ?? existing.department);
+    if (!department) {
+      return fail(c, 400, "Choose a supported department", "invalid-department");
+    }
+
+    /*
+     * A field that was not sent keeps its stored value, then the whole record is
+     * validated through the same validator the import uses.
+     *
+     * An explicit `null` counts as "not sent" for the advisor columns, which is
+     * harmless: `validateStaffRow` derives what is stored from the flag rather than
+     * from what arrived, so a non-advisor's three columns are cleared whether the
+     * request omitted them, nulled them or sent their old values. Sending a cohort
+     * for someone who does not advise one cannot survive this line.
+     */
+    const validated = validateStaffRow({
+      staff_name: body.staff_name ?? existing.staff_name,
+      email: body.email ?? existing.email,
+      class_advisor: body.class_advisor ?? existing.class_advisor,
+      advisor_year: body.advisor_year ?? existing.advisor_year,
+      advisor_section: body.advisor_section ?? existing.advisor_section ?? "",
+      advisor_batch: body.advisor_batch ?? existing.advisor_batch ?? "",
+    });
+    if (!validated.ok) {
+      return fail(c, 400, validated.errors[0].message, "staff-validation-failed", {
+        errors: validated.errors,
+      });
+    }
+    const value = validated.value;
+
+    /*
+     * The advisor cohort has to be one this department can actually serve.
+     *
+     * Checked after validation and against the department being written, so a
+     * move from IT to CSE cannot carry a CSE-only cohort across with it, and so a
+     * non-advisor is never subjected to the check at all -- `validateStaffRow` has
+     * already cleared its cohort, so there is nothing left to resolve.
+     */
+    if (value.class_advisor === "Y" && value.advisor_batch) {
+      await ensureBatchRegistry(c.env.DB, { force: true });
+      if (!resolveTables(department, value.advisor_batch)) {
+        return fail(
+          c,
+          400,
+          `Advisor batch ${value.advisor_batch} is not provisioned for ${department}. Create it first.`,
+          "batch-not-provisioned"
+        );
+      }
+    }
+
+    const emailClash = await c.env.DB
+      .prepare("SELECT staff_id FROM staff WHERE LOWER(email) = ? AND staff_id <> ? LIMIT 1")
+      .bind(value.email, existing.staff_id)
+      .first<{ staff_id: string }>();
+    if (emailClash) {
+      return fail(
+        c,
+        409,
+        `Email ${value.email} already belongs to another staff member`,
+        "duplicate-email"
+      );
+    }
+
+    const authUserId = existing.auth_user_id;
+    const emailChanged = value.email !== (existing.email ?? "").toLowerCase();
+    const account = authUserId
+      ? await c.env.DB
+          .prepare("SELECT auth_user_id, user_name, role, email FROM auth_users WHERE auth_user_id = ?")
+          .bind(authUserId)
+          .first<{ auth_user_id: string; user_name: string; role: string; email: string | null }>()
+      : null;
+
+    /*
+     * A staff account signs in by address: `/api/auth/staff/login` looks up
+     * `user_name` or `email` with the address typed in, and provisioning creates
+     * `user_name` as the lower-cased address. So when the address moves, the
+     * account has to move with it or the person is locked out.
+     *
+     * The account is *updated*, never re-created: the same `auth_user_id` and the
+     * same `pwd_hash` are kept, so the password the person already had still
+     * works and no second row is left claiming their old address. `user_name` is
+     * only rewritten when it currently *is* the old address, because a staff
+     * account whose `user_name` is something else (an employee number, say) is
+     * deliberately signed into with that, and clobbering it would break the other
+     * way round. The `email` column is corrected either way.
+     */
+    if (emailChanged && account) {
+      const clash = await c.env.DB
+        .prepare(
+          `SELECT auth_user_id FROM auth_users
+            WHERE auth_user_id <> ? AND (LOWER(user_name) = ? OR LOWER(email) = ?)
+            LIMIT 1`
+        )
+        .bind(account.auth_user_id, value.email, value.email)
+        .first<{ auth_user_id: string }>();
+      if (clash) {
+        return fail(
+          c,
+          409,
+          `Email ${value.email} already belongs to another login account`,
+          "auth-email-conflict"
+        );
+      }
+    }
+
+    /*
+     * The class-advisor routes authorise on the *account* role, not on
+     * `staff.class_advisor`, so the two have to agree. Toggling the flag without
+     * moving the role would either lock a new advisor out of the routes they now
+     * need, or leave a demoted one with access they no longer have. Only a role
+     * this application issues for staff is rewritten, so an account that is
+     * something else entirely is left alone.
+     */
+    const desiredRole = value.class_advisor === "Y" ? "class_advisor" : "staff";
+    const nextRole =
+      account && (account.role === "staff" || account.role === "class_advisor")
+        ? desiredRole
+        : account?.role;
+
+    const statements: D1PreparedStatement[] = [
+      c.env.DB
+        .prepare(
+          `UPDATE staff
+              SET staff_name = ?, email = ?, department = ?, class_advisor = ?,
+                  advisor_year = ?, advisor_section = ?, advisor_batch = ?
+            WHERE staff_id = ?`
+        )
+        .bind(
+          value.staff_name,
+          value.email,
+          department,
+          value.class_advisor,
+          value.advisor_year,
+          value.advisor_section || null,
+          value.advisor_batch || null,
+          existing.staff_id
+        ),
+    ];
+
+    if (account) {
+      const nextUserName =
+        emailChanged && account.user_name.toLowerCase() === (existing.email ?? "").toLowerCase()
+          ? staffUserName(value.email)
+          : account.user_name;
+      const nextEmail = value.email;
+      if (
+        nextUserName !== account.user_name ||
+        nextEmail !== (account.email ?? "") ||
+        nextRole !== account.role
+      ) {
+        statements.push(
+          c.env.DB
+            .prepare("UPDATE auth_users SET user_name = ?, email = ?, role = ? WHERE auth_user_id = ?")
+            .bind(nextUserName, nextEmail, nextRole, account.auth_user_id)
+        );
+      }
+    }
+
+    await c.env.DB.batch(statements);
+
+    // Read back rather than echoing the request, so the response is what D1 holds.
+    // The projection matches the list route exactly, which also means it cannot
+    // grow a password hash by accident.
+    const updated = await c.env.DB
+      .prepare(
+        `SELECT staff_id, staff_name, email, department, class_advisor,
+                advisor_year, advisor_section, advisor_batch
+         FROM staff
+         WHERE staff_id = ?`
+      )
+      .bind(existing.staff_id)
+      .first();
+
+    return c.json({
+      success: true,
+      staff: updated ?? null,
+      authAccountUpdated: statements.length > 1,
+    });
+  } catch (error) {
+    return serverError(c, error, "Could not update that staff member", "staff-update-failed");
+  }
+});
+
 /* ----------------------------------------------------------------- subjects */
 
 app.get("/subjects", requireAuth, requireAdmin, async (c) => {
@@ -989,6 +1604,97 @@ app.post("/subjects", requireAuth, requireAdmin, async (c) => {
     });
   } catch (error) {
     return serverError(c, error, "Could not add subjects", "subjects-import-failed");
+  }
+});
+
+/**
+ * Edits one catalog subject.
+ *
+ * Two columns, `subject_code` and `subject_name`, and no others. This is the
+ * global catalog: a subject carries no department, no year and no section, because
+ * it must never decide which attendance table a mark lands in. Reintroducing any of
+ * those here would couple one subject row to a cohort, which is the thing migration
+ * 0015 removed.
+ *
+ * `subject_id` is fixed. It is the key the path addresses, it is the primary key,
+ * and historical attendance rows record the code and name rather than the id, so
+ * nothing points at it -- but reissuing it would still break any client that
+ * cached one, which is why a body naming a different id is refused.
+ *
+ * Note what is *not* written: `attendance_session` snapshots the code and name at
+ * the moment a session is generated, so renaming a subject leaves past sessions
+ * readable as they were taken. Rewriting history would be a data change, not an
+ * edit, and the task is not to do one.
+ */
+app.patch("/subjects/:subjectId", requireAuth, requireAdmin, async (c) => {
+  try {
+    const body = await readObjectBody(c);
+    if (body instanceof Response) return body;
+
+    // `subject_id` is an INTEGER PRIMARY KEY, so it is validated as a positive
+    // integer rather than as free text: a non-numeric id is a client mistake, and
+    // saying so is more useful than an empty result.
+    const subjectId = Number(c.req.param("subjectId"));
+    if (!Number.isInteger(subjectId) || subjectId <= 0) {
+      return fail(c, 400, "Invalid subject ID", "invalid-subject-id");
+    }
+
+    if (body.subject_id !== undefined && body.subject_id !== null) {
+      if (Number(body.subject_id) !== subjectId) {
+        return fail(c, 400, "Subject ID cannot be changed", "subject-id-immutable");
+      }
+    }
+
+    const existing = await c.env.DB
+      .prepare("SELECT subject_id, subject_code, subject_name FROM subjects WHERE subject_id = ?")
+      .bind(subjectId)
+      .first<{ subject_id: number; subject_code: string; subject_name: string }>();
+    if (!existing) {
+      return fail(c, 404, "Subject not found", "subject-not-found");
+    }
+
+    // Same rule as the students: an unsent field keeps its stored value, and the
+    // merged record goes through the import's own validator.
+    const validated = validateSubjectRow({
+      subject_code: body.subject_code ?? existing.subject_code,
+      subject_name: body.subject_name ?? existing.subject_name,
+    });
+    if (!validated.ok) {
+      return fail(c, 400, validated.errors[0].message, "subject-validation-failed", {
+        errors: validated.errors,
+      });
+    }
+    const value = validated.value;
+
+    // UNIQUE on the code, checked against the current subject excluded so that
+    // re-saving unchanged values is not a conflict with itself.
+    const clash = await c.env.DB
+      .prepare("SELECT subject_id FROM subjects WHERE UPPER(subject_code) = ? AND subject_id <> ? LIMIT 1")
+      .bind(value.subject_code, subjectId)
+      .first<{ subject_id: number }>();
+    if (clash) {
+      return fail(
+        c,
+        409,
+        `Subject code ${value.subject_code} already belongs to another subject`,
+        "duplicate-subject-code"
+      );
+    }
+
+    await c.env.DB
+      .prepare("UPDATE subjects SET subject_code = ?, subject_name = ? WHERE subject_id = ?")
+      .bind(value.subject_code, value.subject_name, subjectId)
+      .run();
+
+    // Read back rather than echoing the request, so the response is what D1 holds.
+    const updated = await c.env.DB
+      .prepare("SELECT subject_id, subject_code, subject_name FROM subjects WHERE subject_id = ?")
+      .bind(subjectId)
+      .first();
+
+    return c.json({ success: true, subject: updated ?? null });
+  } catch (error) {
+    return serverError(c, error, "Could not update that subject", "subject-update-failed");
   }
 });
 

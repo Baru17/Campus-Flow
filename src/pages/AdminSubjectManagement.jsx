@@ -5,10 +5,20 @@ import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
 import ImportPreviewTable from '../components/admin/ImportPreviewTable'
 import ManualRowEditor from '../components/admin/ManualRowEditor'
+import EditSubjectModal from '../components/admin/EditSubjectModal'
 import { createAdminSubjects, fetchAdminSubjects } from '../api/adminApi'
 import { parseImportFile, validateSubjectRows } from '../utils/adminImport'
 import { useAdminAuth } from '../hooks/useAdminAuth'
-import { AlertIcon, BookIcon, CheckIcon, ChevronLeftIcon, PlusIcon, UploadIcon, XIcon } from '../components/Icons'
+import {
+  AlertIcon,
+  BookIcon,
+  CheckIcon,
+  ChevronLeftIcon,
+  EditIcon,
+  PlusIcon,
+  UploadIcon,
+  XIcon,
+} from '../components/Icons'
 
 /*
  * Subjects are a global catalog: a code and a name, shared by every department and
@@ -52,6 +62,8 @@ export default function AdminSubjectManagement() {
   const [submitError, setSubmitError] = useState(null)
   const [result, setResult] = useState(null)
   const [dragOver, setDragOver] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [notice, setNotice] = useState(null)
   const fileInputRef = useRef(null)
 
   const load = useCallback(async () => {
@@ -380,6 +392,12 @@ export default function AdminSubjectManagement() {
 
         {error && <StatusMessage variant="danger">{error}</StatusMessage>}
 
+        {notice && (
+          <StatusMessage variant="success" dismissible onDismiss={() => setNotice(null)}>
+            {notice}
+          </StatusMessage>
+        )}
+
         <section className="cf-card mt-4 p-4">
           <div className="cf-card-header">
             <div>
@@ -419,37 +437,65 @@ export default function AdminSubjectManagement() {
               <thead>
                 <tr>
                   <th className="advisor-table-num">#</th>
-                  <th>Subject code</th>
-                  <th>Subject name</th>
+                <th>Subject code</th>
+                <th>Subject name</th>
+                <th>
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td className="advisor-table-empty" colSpan="4">
+                    <span className="cf-spinner" role="status" aria-hidden="true" />
+                    Loading subjects…
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td className="advisor-table-empty" colSpan="3">
-                      <span className="cf-spinner" role="status" aria-hidden="true" />
-                      Loading subjects…
+              ) : filtered.length ? (
+                filtered.map((subject, index) => (
+                  <tr key={subject.subject_id ?? subject.subject_code}>
+                    <td className="advisor-table-num">{index + 1}</td>
+                    <td className="advisor-table-reg">{subject.subject_code}</td>
+                    <td>{subject.subject_name}</td>
+                    <td className="advisor-table-num">
+                      <button
+                        type="button"
+                        onClick={() => setEditing(subject)}
+                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
+                        aria-label={`Edit ${subject.subject_code}`}
+                      >
+                        <EditIcon size={14} />
+                        Edit
+                      </button>
                     </td>
                   </tr>
-                ) : filtered.length ? (
-                  filtered.map((subject, index) => (
-                    <tr key={subject.subject_id ?? subject.subject_code}>
-                      <td className="advisor-table-num">{index + 1}</td>
-                      <td className="advisor-table-reg">{subject.subject_code}</td>
-                      <td>{subject.subject_name}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td className="advisor-table-empty" colSpan="3">
-                      {search ? 'No subjects match your search.' : 'No subjects yet.'}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
+                ))
+              ) : (
+                <tr>
+                  <td className="advisor-table-empty" colSpan="4">
+                    {search ? 'No subjects match your search.' : 'No subjects yet.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
             </table>
           </div>
         </section>
+
+        {editing && (
+          <EditSubjectModal
+            subject={editing}
+            onClose={() => setEditing(null)}
+            onSaved={(saved) => {
+              setEditing(null)
+              // `load` is the same fetch the page uses on mount, so the row that
+              // replaces the edited one is a fresh read of D1.
+              load()
+              setNotice(`Updated ${saved?.subject_code || editing.subject_code}.`)
+            }}
+          />
+        )}
       </main>
     </div>
   )

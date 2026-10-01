@@ -4,6 +4,7 @@ import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
 import AddStudentsModal from '../components/admin/AddStudentsModal'
+import EditStudentModal from '../components/admin/EditStudentModal'
 import { fetchAdminBatches, fetchAdminStudents } from '../api/adminApi'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
@@ -13,6 +14,7 @@ import {
   StudentIcon,
   UsersIcon,
   PlusIcon,
+  EditIcon,
 } from '../components/Icons'
 import { formatYearLabel } from '../utils/format'
 
@@ -47,6 +49,20 @@ export default function AdminStudentManagement() {
   const [sortDir, setSortDir] = useState('asc')
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [notice, setNotice] = useState(null)
+
+  /*
+   * Bumped after a write so the roster is fetched again.
+   *
+   * The table is refetched rather than patched in place, because the row on screen
+   * has to be what D1 actually holds: the server normalises what it stores (a
+   * section is upper-cased, an email is lower-cased) and resolves duplicates and
+   * immutability itself, so a locally edited value could differ from the stored
+   * one. A reload is also the only way a student who moved out of the current
+   * search or sort leaves the list.
+   */
+  const [reloadToken, setReloadToken] = useState(0)
 
   /*
    * Departments and their cohorts, from `GET /api/admin/batches`.
@@ -121,7 +137,7 @@ export default function AdminStudentManagement() {
     return () => {
       cancelled = true
     }
-  }, [studentsReady, department, batch])
+  }, [studentsReady, department, batch, reloadToken])
 
   const handleLogout = async () => {
     await logout()
@@ -374,12 +390,15 @@ export default function AdminStudentManagement() {
                     </th>
                   ))}
                   <th>Email</th>
+                  <th>
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {studentsLoading && (
                   <tr>
-                    <td colSpan={SORTABLE_COLUMNS.length + 2} className="advisor-table-empty">
+                    <td colSpan={SORTABLE_COLUMNS.length + 3} className="advisor-table-empty">
                       <span className="cf-spinner" role="status" aria-hidden="true" />
                       Loading students…
                     </td>
@@ -387,7 +406,7 @@ export default function AdminStudentManagement() {
                 )}
                 {!studentsLoading && !studentsError && paged.length === 0 && (
                   <tr>
-                    <td colSpan={SORTABLE_COLUMNS.length + 2} className="advisor-table-empty">
+                    <td colSpan={SORTABLE_COLUMNS.length + 3} className="advisor-table-empty">
                       {search ? 'No students match your search.' : 'No students found in this batch yet.'}
                     </td>
                   </tr>
@@ -406,6 +425,17 @@ export default function AdminStudentManagement() {
                         </span>
                       </td>
                       <td className="advisor-table-reg">{student.email || '—'}</td>
+                      <td className="advisor-table-num">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(student)}
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
+                          aria-label={`Edit ${student.student_id}`}
+                        >
+                          <EditIcon size={14} />
+                          Edit
+                        </button>
+                      </td>
                     </tr>
                   ))}
               </tbody>
@@ -452,6 +482,12 @@ export default function AdminStudentManagement() {
           subtitle="Browse students by department and batch, or import new records."
         />
 
+        {notice && (
+          <StatusMessage variant="success" dismissible onDismiss={() => setNotice(null)}>
+            {notice}
+          </StatusMessage>
+        )}
+
         {metaLoading && (
           <div className="cf-empty">
             <span className="cf-spinner" role="status" aria-hidden="true" />
@@ -482,6 +518,23 @@ export default function AdminStudentManagement() {
                 setSearch('')
                 setPage(1)
               }
+            }}
+          />
+        )}
+        {editing && (
+          <EditStudentModal
+            student={editing}
+            department={department}
+            batch={batch}
+            onClose={() => setEditing(null)}
+            onSaved={(saved) => {
+              setEditing(null)
+              // Reload rather than patch the row, so what is shown next is a fresh
+              // read of D1 and not the values this form happened to submit.
+              setReloadToken((token) => token + 1)
+              setNotice(
+                `Updated ${saved?.student_name || editing.student_name} (${saved?.student_id || editing.student_id}).`
+              )
             }}
           />
         )}

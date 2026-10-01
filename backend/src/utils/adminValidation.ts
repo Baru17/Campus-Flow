@@ -212,6 +212,41 @@ export function validateStudentRow(row: unknown): RowResult<StudentInput> {
 
 /* -------------------------------------------------------------------- staff */
 
+/**
+ * The `staff.staff_id` key.
+ *
+ * Deliberately not upper-cased, unlike `validateStudentId`. This column is the
+ * primary identifier an administrator edits a staff member by, and the values in
+ * the database are a mix of generated integers (`101`) and imported codes
+ * (`SBSTF001`). Normalising the case would mean a lookup for a key that no
+ * longer matches the stored one, so the value is only trimmed and shape-checked
+ * here; the route binds it and the row decides.
+ */
+export function validateStaffId(value: unknown): RowResult<string> {
+  const staffId = text(value);
+  if (!staffId) {
+    return { ok: false, errors: [{ field: "staff_id", message: "Staff ID is required" }] };
+  }
+  if (staffId.length > 32) {
+    return {
+      ok: false,
+      errors: [{ field: "staff_id", message: "Staff ID must be 32 characters or fewer" }],
+    };
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(staffId)) {
+    return {
+      ok: false,
+      errors: [
+        {
+          field: "staff_id",
+          message: "Staff ID may contain letters, digits, dots, dashes and underscores only",
+        },
+      ],
+    };
+  }
+  return { ok: true, value: staffId };
+}
+
 export interface StaffInput {
   staff_name: string;
   email: string;

@@ -130,6 +130,24 @@ export function createAdminStudents(department, batch, rows) {
   })
 }
 
+/**
+ * Edits one student.
+ *
+ * Only the four editable fields are sent: `student_name`, `year`, `section` and
+ * `email`. `student_id` is not among them and `register_no` is not either -- the
+ * department and batch here are query parameters that tell the backend *where* the
+ * student is, and the physical table is resolved from the registry on the server
+ * either way. The id being edited is the last path segment, so there is nothing in
+ * this call for the server to take the student's identity from, and no way to
+ * express a change to the register number attendance is recorded against.
+ */
+export function updateAdminStudent(studentId, { department, batch, ...fields }) {
+  return request(withTarget(`/api/admin/students/${encodeURIComponent(studentId)}`, department, batch), {
+    method: 'PATCH',
+    body: fields,
+  })
+}
+
 /* --------------------------------------------------------------------- staff */
 
 /**
@@ -157,6 +175,22 @@ export function createAdminStaff(department, rows) {
   })
 }
 
+/**
+ * Edits one staff member.
+ *
+ * `staff_id` is the last path segment and is deliberately absent from the body:
+ * it is the key, the UNIQUE column, and the alternative handle `/api/auth/staff/login`
+ * accepts, so it is not something an edit form gets to set. Everything else,
+ * including the department and the three advisor fields, travels in the body and
+ * is validated server-side.
+ */
+export function updateAdminStaff(staffId, fields) {
+  return request(`/api/admin/staff/${encodeURIComponent(staffId)}`, {
+    method: 'PATCH',
+    body: fields,
+  })
+}
+
 /* ----------------------------------------------------------------- subjects */
 
 export function fetchAdminSubjects() {
@@ -165,4 +199,18 @@ export function fetchAdminSubjects() {
 
 export function createAdminSubjects(rows) {
   return request('/api/admin/subjects', { method: 'POST', body: { rows } })
+}
+
+/**
+ * Edits one catalog subject.
+ *
+ * `subject_code` and `subject_name` only. A subject is a global catalog entry
+ * with no department, year or section, so there is nothing else to send and no
+ * table to resolve: unlike a student, a subject is not in a per-cohort table.
+ */
+export function updateAdminSubject(subjectId, fields) {
+  return request(`/api/admin/subjects/${encodeURIComponent(subjectId)}`, {
+    method: 'PATCH',
+    body: fields,
+  })
 }
