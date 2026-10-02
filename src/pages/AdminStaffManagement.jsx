@@ -177,7 +177,7 @@ export default function AdminStaffManagement() {
           Back to dashboard
         </button>
       </div>
-      <div className="cf-card p-4 md:p-6">
+      <div className="cf-card admin-directory-card p-4 md:p-6">
         <div className="cf-card-header">
           <div>
             <h2 className="section-title">Select a department</h2>
@@ -236,7 +236,7 @@ export default function AdminStaffManagement() {
         </button>
       </div>
 
-      <div className="cf-card p-3 md:p-4">
+      <div className="cf-card admin-directory-card p-3 md:p-4">
         <div className="cf-card-header">
           <div>
             <h2 className="section-title">{department} — Staff</h2>
@@ -246,7 +246,7 @@ export default function AdminStaffManagement() {
                 : `${filtered.length} staff member${filtered.length === 1 ? '' : 's'} found`}
             </p>
           </div>
-          <div className="cf-input-group-custom w-full max-w-[260px]">
+          <div className="cf-input-group-custom w-full sm:max-w-[260px]">
             <span className="cf-input-icon" aria-hidden="true">
               <SearchIcon size={16} />
             </span>

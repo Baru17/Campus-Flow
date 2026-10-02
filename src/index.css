@@ -2828,6 +2828,43 @@ input[type="date"].cf-select {
   border-radius: 16px;
 }
 
+/*
+ * The title-and-badge row inside an option card.
+ *
+ * This row carries a heading and a pill side by side, and it is the one place on the
+ * dashboard where a fixed pair of strings is wider than a card. `CONTEST COORDINATORS`
+ * plus `Manage Coordinators` has a min-content width of 274px, so on a non-wrapping row
+ * the pill was pushed past the card's right edge -- visible at 320, 360, 390 and, because
+ * the grid goes two-up from `sm`, again at 640 and 768, where each card is only ~292px.
+ * At 320 and 360 the overflow also widened the document, which is the same class of bug
+ * the `advisor-table` rule above fixes.
+ *
+ * `flex-wrap` lets the pill drop onto its own line rather than escape, and `min-width: 0`
+ * plus `overflow-wrap` on the heading stop a long title setting the row's minimum width.
+ * Neither bites once the row fits, so the desktop and wide-tablet card is unchanged.
+ */
+.admin-option-card-heading {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.admin-option-card-heading h2 {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.admin-directory-card {
+  width: 100%;
+  min-width: 0;
+}
+
+.admin-directory-card .overflow-x-auto {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+
 .admin-option-icon {
   flex-shrink: 0;
   width: 56px;

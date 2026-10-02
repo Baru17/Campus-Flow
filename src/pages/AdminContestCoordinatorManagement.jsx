@@ -3,14 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
-import AddDirectoryModal from '../components/admin/AddDirectoryModal'
+import AddContestCoordinatorModal from '../components/admin/AddContestCoordinatorModal'
 import EditDirectoryRecordModal from '../components/admin/EditDirectoryRecordModal'
 import {
   createAdminContestCoordinators,
   fetchAdminContestCoordinators,
   updateAdminContestCoordinator,
 } from '../api/adminApi'
-import { COORDINATOR_COLUMNS, validateContestCoordinatorRows } from '../utils/adminImport'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
   ChevronLeftIcon,
@@ -29,10 +28,23 @@ import {
  * as an input group in the card header, sortable `advisor-table` headers, and
  * pagination at 15 rows.
  *
- * A contest coordinator is a person, an address and a department, exactly as a head
- * of department is, in a single department-keyed table -- so both pages share the
- * add dialog and the edit dialog rather than duplicating them, and differ only in
- * the words and the column they are about.
+ * ## Adding is the one part that is not shared with the HOD page
+ *
+ * A head of department is appointed *to* a department: the admin supplies a name, an
+ * address and a department, and there is no CSV dialog for it. A contest coordinator is
+ * appointed *out of* a department's staff roster, so the only thing worth asking is
+ * which staff member, and `AddContestCoordinatorModal` asks exactly that -- department,
+ * then a searchable list of that department's staff showing name and email, then a
+ * read-only summary of the person chosen.
+ *
+ * That is not a convenience. Every staff member already has an `auth_users` row with the
+ * role `staff`, and the generic create route used to refuse an address whose account was
+ * not already a coordinator -- so appointing anyone who was actually on staff, which is
+ * the only kind of person a coordinator can be, failed with "already used by another
+ * faculty" about the very person being appointed. The create route now reuses the
+ * existing staff account for coordinators instead of refusing it (`reuseStaffAccount` in
+ * `backend/src/api/admin.ts`), and this dialog only ever submits identity read from the
+ * staff record, so the two halves cannot drift.
  *
  * The coordinator id is database-generated and immutable, so it is displayed but
  * never offered as an input.
@@ -130,7 +142,7 @@ export default function AdminContestCoordinatorManagement() {
         <DashboardHero
           icon={<CompassIcon size={26} />}
           title="Contest Coordinators"
-          subtitle="Browse contest coordinators, or import new records with their login accounts."
+          subtitle="Appoint an existing member of staff as each department's contest coordinator."
         />
 
         {notice && (
@@ -160,7 +172,7 @@ export default function AdminContestCoordinatorManagement() {
             </button>
           </div>
 
-          <div className="cf-card p-3 md:p-4">
+          <div className="cf-card admin-directory-card p-3 md:p-4">
             <div className="cf-card-header">
               <div>
                 <h2 className="section-title">Contest coordinators</h2>
@@ -170,7 +182,7 @@ export default function AdminContestCoordinatorManagement() {
                     : `${filtered.length} coordinator${filtered.length === 1 ? '' : 's'} found`}
                 </p>
               </div>
-              <div className="cf-input-group-custom w-full max-w-[260px]">
+              <div className="cf-input-group-custom w-full sm:max-w-[260px]">
                 <span className="cf-input-icon" aria-hidden="true">
                   <SearchIcon size={16} />
                 </span>
@@ -290,28 +302,32 @@ export default function AdminContestCoordinatorManagement() {
         </div>
 
         {showAdd && (
-          <AddDirectoryModal
+          <AddContestCoordinatorModal
             title="Add Contest Coordinator"
-            nameKey="coordinator_name"
-            nameLabel="Coordinator name"
-            rowLabel="Coordinator"
-            pluralNoun="Coordinators"
-            pluralUnit="coordinator"
-            csvColumns={COORDINATOR_COLUMNS}
-            validateRows={validateContestCoordinatorRows}
+            submitLabel="Add Coordinator"
             onSubmit={createAdminContestCoordinators}
             onClose={() => setShowAdd(false)}
-            onImported={(result) => {
+            onAdded={(result) => {
               setShowAdd(false)
               load()
+              // Reusing the staff account is the normal case, so it is named: the admin
+              // needs to know there is no new password to hand over before they leave.
+              if ((result.created || 0) === 0) {
+                setNotice('That person is already a contest coordinator. Nothing changed.')
+                return
+              }
               setNotice(
-                `Added ${result.created || 0} coordinator${result.created === 1 ? '' : 's'}${
-                  result.authAccountsCreated > 0
-                    ? ` and ${result.authAccountsCreated} login account${
-                        result.authAccountsCreated === 1 ? '' : 's'
-                      }`
-                    : ''
-                }.`
+                `Added ${result.created} coordinator${
+                  result.created === 1 ? '' : 's'
+                }${
+                  (result.authAccountsReused || 0) > 0
+                    ? '. They keep their existing staff login, so there is no new password.'
+                    : (result.authAccountsCreated || 0) > 0
+                      ? ` and ${result.authAccountsCreated} login account${
+                          result.authAccountsCreated === 1 ? '' : 's'
+                        }.`
+                      : '.'
+                }`
               )
             }}
           />

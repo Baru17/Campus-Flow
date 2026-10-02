@@ -1737,6 +1737,31 @@ interface DirectorySpec {
   /** Error-code stem, e.g. `hod` in `hod-not-found`. */
   codeStem: string;
   /**
+   * Set for a directory whose members are *already on the staff roster*, which is
+   * contest coordinators and nothing else. A coordinator is appointed out of a
+   * department's staff, so two things follow that are false for a head of department:
+   *
+   *   1. The address being added already holds an account -- with the role `staff`,
+   *      created by the staff import. `auth_users.user_name` is UNIQUE, so the only
+   *      options are "refuse" or "reuse", and refusal meant a coordinator could never
+   *      be anybody who is actually on staff. So the account is reused: same
+   *      `auth_user_id`, same role, same password, no second `auth_users` row, and no
+   *      `roleMismatches`. Approval authority never came from the role --
+   *      `verifyApprover` matches the caller's own address against this directory --
+   *      so keeping the `staff` role is what lets them action their own OD queue.
+   *
+   *   2. The row records `auth_user_id`. A coordinator created with no account to
+   *      reuse gets a `contest_coordinator` account, and both
+   *      `/api/auth/od-approver/login` and `/api/approver/me` resolve an approver by
+   *      that column -- so without it such a coordinator could not sign in at all.
+   *
+   * Head of department leaves this unset and is unaffected by both: an HOD is appointed
+   * *to* a department, is not expected to already be staff, and an address holding
+   * another kind of account really is a different person. Its rows are written exactly
+   * as before.
+   */
+  provisionFromStaff?: boolean;
+  /**
    * The row validator, in its own column vocabulary.
    *
    * Typed against only the two fields both directories share, so each concrete
@@ -1808,7 +1833,7 @@ function validateDirectoryId(value: string | undefined): number | null {
  */
 function registerDirectoryRoutes(spec: DirectorySpec): void {
   const validateDirectoryRow = directoryValidator(spec, spec.validateRow);
-  const { table, idColumn, nameColumn } = spec;
+  const { table, idColumn, nameColumn, provisionFromStaff = false } = spec;
 
   /* ------------------------------------------------------------------- list */
 
@@ -1879,6 +1904,9 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
    *   - an account that exists with a *different* role is a conflict, not a reuse:
    *     `user_name` is UNIQUE and both accounts would be the address, so the row is
    *     excluded and reported rather than leaving an entry nobody can sign in as.
+   *     `spec.provisionFromStaff` is the one exception, and it is what makes a member
+   *     of staff appointable as a contest coordinator: see that field for why reuse is
+   *     the right answer there and refusal the right answer everywhere else.
    *   - the directory rows and the accounts are written in one `DB.batch()`, which
    *     is a transaction, so an entry is never created without its account.
    *
@@ -1997,7 +2025,16 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         const found =
           byKey.get(emailUserName(entry.value.email).toLowerCase()) ??
           byEmail.get(entry.value.email.toLowerCase());
+
         if (found && found.role !== spec.role) {
+          if (provisionFromStaff) {
+            // Same account, same role, same password: this address already has one and
+            // it belongs to the very person being appointed. `planAccounts` resolves the
+            // plan to that existing account -- same `auth_user_id`, no new hash -- so the
+            // row below links to it and no second `auth_users` row is ever inserted.
+            linkable.push(entry);
+            return;
+          }
           roleMismatches.push({
             row: entry.row,
             reason: `${entry.value.email} already has a "${found.role}" account, so it cannot also be a ${spec.label.toLowerCase()} login`,
@@ -2006,6 +2043,22 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         }
         linkable.push(entry);
       });
+
+      /*
+       * `auth_user_id` is written on a staff-provisioned row, and only on those.
+       *
+       * A coordinator who was given a fresh `contest_coordinator` account cannot sign in
+       * without it: `/api/auth/od-approver/login` and `/api/approver/me` both resolve an
+       * approver by this column, so a row without it is a row nobody can act as.
+       *
+       * It is scoped to `provisionFromStaff` rather than applied to every directory
+       * because a head of department row has never carried the column, and writing it
+       * would be a change nobody asked for on a page nobody is editing. The column is
+       * nullable and its table has had it all along -- `auth.ts` reads
+       * `contest_coordinators.auth_user_id` on every approver sign-in -- so writing it
+       * here cannot introduce a column that was not there.
+       */
+      const linkColumn = provisionFromStaff;
 
       const pwdHash = await hashDefaultPassword();
       const { plans } = planAccounts(
@@ -2024,9 +2077,15 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         statements.push(
           c.env.DB
             .prepare(
-              `INSERT INTO ${table} (${nameColumn}, email, department) VALUES (?, ?, ?)`
+              `INSERT INTO ${table} (${nameColumn}, email, department${linkColumn ? ", auth_user_id" : ""})
+               VALUES (?, ?, ?${linkColumn ? ", ?" : ""})`
             )
-            .bind(entry.value.name, entry.value.email, entry.value.department)
+            .bind(
+              entry.value.name,
+              entry.value.email,
+              entry.value.department,
+              ...(linkColumn ? [plan.auth_user_id] : [])
+            )
         );
       });
 
@@ -2054,6 +2113,14 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         success: true,
         created: linkable.length,
         authAccountsCreated: accountsCreated,
+        /*
+         * How many of the rows that were written linked to an account that already
+         * existed rather than getting a new one. A caller that has just told an admin
+         * "here is the password" needs to know not to: the person already had a login,
+         * it still works, and it was not reset. Zero for a directory that creates
+         * every account afresh.
+         */
+        authAccountsReused: plans.filter((plan) => !plan.pwdHash).length,
         skipped,
         invalid,
         duplicates: inFileDuplicates,
@@ -2259,6 +2326,15 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
  * and the account role -- is a literal in the spec below, never anything a request
  * supplied.
  *
+ * The one difference that is not cosmetic is `provisionFromStaff`, and it is stated
+ * here because the two registrations look otherwise interchangeable. A head of
+ * department is appointed *to* a department and already has no account, so an address
+ * that already holds one of another role is refused. A contest coordinator is
+ * appointed *out of* a department's staff roster, so that address always holds a
+ * `staff` account belonging to the very person being appointed, and refusing it would
+ * mean a coordinator could never be anyone who is on staff -- which is everybody the
+ * dashboard offers them.
+ *
  * `spec.listKey.slice(0, -1)` turns the plural list key into the singular response
  * key for an edit, so `hods` -> `hod` and `contest-coordinators` ->
  * `contest-coordinator`, matching how the dashboard reads a saved record.
@@ -2289,6 +2365,9 @@ registerDirectoryRoutes(
     label: "Coordinator",
     listKey: "contest_coordinators",
     codeStem: "coordinator",
+    // A coordinator is appointed out of a department's staff roster, so the address
+    // being added belongs to somebody who already has a `staff` account. Reuse it.
+    provisionFromStaff: true,
     validateRow: validateContestCoordinatorRow,
   }
 );

@@ -98,6 +98,13 @@ async function applyMigration(sql: string): Promise<void> {
  * against a convenient approximation. In particular the ids are autoincrement here
  * too, which is what lets the "the database assigns the id" assertions mean
  * something.
+ *
+ * Both tables carry `auth_user_id`, as production does. That column is not optional
+ * decoration: `/api/auth/od-approver/login` reads `hods.auth_user_id` and
+ * `contest_coordinators.auth_user_id` to decide whose department to scope an approver
+ * to, and `GET /api/approver/me` reads it for the name and department it renders. A
+ * directory row created without it is a row nobody can act as, which is why the create
+ * route writes it whenever the table has it.
  */
 const DIRECTORY_DDL = [
 	`CREATE TABLE hods (
@@ -105,14 +112,16 @@ const DIRECTORY_DDL = [
 		hod_name TEXT NOT NULL,
 		email TEXT NOT NULL UNIQUE,
 		department TEXT NOT NULL,
-		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		auth_user_id TEXT
 	)`,
 	`CREATE TABLE contest_coordinators (
 		coordinator_id INTEGER PRIMARY KEY AUTOINCREMENT,
 		coordinator_name TEXT NOT NULL,
 		email TEXT NOT NULL UNIQUE,
 		department TEXT NOT NULL,
-		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		auth_user_id TEXT
 	)`,
 ];
 
@@ -193,6 +202,10 @@ const DIRECTORIES = [
 		invalidId: "invalid-hod-id",
 		notFound: "hod-not-found",
 		immutable: "hod-id-immutable",
+		/* An HOD is appointed to a department rather than appointed out of a roster, so
+		 * an address that already holds an account of another role is a conflict and
+		 * stays refused. Mirrors the server's `spec.provisionFromStaff`. */
+		provisionFromStaff: false,
 		/* Suffixed per directory: this suite runs twice from one table, and
 		 * `auth_users.auth_user_id` is UNIQUE, so a shared literal would collide. */
 		authIdSuffix: "10",
@@ -216,6 +229,10 @@ const DIRECTORIES = [
 		invalidId: "invalid-coordinator-id",
 		notFound: "coordinator-not-found",
 		immutable: "coordinator-id-immutable",
+		/* A coordinator is appointed out of a department's staff roster, so the address
+		 * being added belongs to somebody who already has a `staff` account. That account
+		 * is reused rather than refused. Mirrors the server's `spec.provisionFromStaff`. */
+		provisionFromStaff: true,
 		authIdSuffix: "20",
 		makeRow: (email: string, department: string, name: string) => ({
 			coordinator_name: name,
@@ -632,12 +649,13 @@ describe("HOD and contest coordinator management", () => {
 					// An account in some other role, holding a password that is *not* the
 					// documented default, so a silent reset would be detectable.
 					const originalHash = "$2b$10$abcdefghijklmnopqrstuvwxyz01234567890123456789012345678";
+					const originalAuthUserId = `c5e5f000-0000-4000-8000-0000000a${directory.authIdSuffix}1`;
 					await env.DB
 						.prepare(
 							"INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email) VALUES (?, ?, ?, ?, ?)",
 						)
 						.bind(
-							`c5e5f000-0000-4000-8000-0000000a${directory.authIdSuffix}1`,
+							originalAuthUserId,
 							email.toLowerCase(),
 							originalHash,
 							"staff",
@@ -647,17 +665,63 @@ describe("HOD and contest coordinator management", () => {
 
 					const { body } = await createOne(directory, email, "IT", "Wants This Address");
 
-					// The address already belongs to a staff login. `user_name` is UNIQUE
-					// and both accounts would be the address, so this is a conflict rather
-					// than a reuse: the row is excluded and reported, and the existing
-					// account is left completely alone.
-					expect(body.created).toBe(0);
-					expect(body.roleMismatches).toHaveLength(1);
-					expect(body.roleMismatches[0].reason).toContain('"staff" account');
-					expect(body.authAccountsCreated).toBe(0);
+					/*
+					 * The address already belongs to a `staff` login, and `user_name` is
+					 * UNIQUE, so the two accounts would collide. What happens next is the
+					 * one place the two directories genuinely differ, so it is asserted
+					 * per directory rather than parameterised away:
+					 *
+					 *   - An HOD is appointed to a department and is not expected to be
+					 *     staff, so an existing staff login for the address really is a
+					 *     different person. The row is excluded and reported, and the
+					 *     existing account is left completely alone.
+					 *
+					 *   - A coordinator is appointed out of a department's staff roster, so
+					 *     a staff login for the address is the *expected* case and the
+					 *     appointment it was chosen for. The row is written, linking the
+					 *     account that already holds the address. Coordinator authority
+					 *     follows from the coordinator row rather than from the role --
+					 *     `verifyApprover` matches the caller's own address against
+					 *     `contest_coordinators` -- so keeping the `staff` role is what
+					 *     lets them act on their own OD queue.
+					 *
+					 * In both cases the account itself is untouched: same id, same role,
+					 * same password, and still exactly one row for the address.
+					 */
+					if (directory.provisionFromStaff) {
+						expect(body.created).toBe(1);
+						expect(body.roleMismatches).toEqual([]);
+						expect(body.authAccountsCreated).toBe(0);
+						expect(body.authAccountsReused).toBe(1);
 
+						// The row records which account it belongs to, which is what the
+						// approver-login and `/api/approver/me` routes read.
+						const created = await env.DB
+							.prepare(`SELECT ${directory.idColumn}, auth_user_id FROM ${directory.table} WHERE email = ?`)
+							.bind(email.toLowerCase())
+							.first<{ [key: string]: any }>();
+						expect(created?.[directory.idColumn]).toBeGreaterThan(0);
+						expect(created?.auth_user_id).toBe(originalAuthUserId);
+					} else {
+						expect(body.created).toBe(0);
+						expect(body.roleMismatches).toHaveLength(1);
+						expect(body.roleMismatches[0].reason).toContain('"staff" account');
+						expect(body.authAccountsCreated).toBe(0);
+
+						// And no directory row was written, so there is not a record
+						// claiming an address that signs in as somebody else's login.
+						const rows = await env.DB
+							.prepare(`SELECT COUNT(*) AS n FROM ${directory.table} WHERE email = ?`)
+							.bind(email.toLowerCase())
+							.first<{ n: number }>();
+						expect(rows?.n).toBe(0);
+					}
+
+					// Never, for either directory: the password is untouched, the role is
+					// untouched, and there is still exactly one account for the address.
 					const account = await accountFor(email);
 					expect(account.role).toBe("staff");
+					expect(account.auth_user_id).toBe(originalAuthUserId);
 					expect(account.pwd_hash).toBe(originalHash);
 
 					const accounts = await env.DB
@@ -665,14 +729,30 @@ describe("HOD and contest coordinator management", () => {
 						.bind(email.toLowerCase())
 						.first<{ n: number }>();
 					expect(accounts?.n).toBe(1);
+				});
 
-					// And no directory row was written either, so there is not a record
-					// claiming an address that signs in as somebody else's login.
+				/*
+				 * Re-appointing somebody who is already a coordinator is a no-op rather
+				 * than an error, because `email` is UNIQUE on the directory table: the
+				 * second attempt is reported as skipped instead of failing a constraint.
+				 */
+				it("reports a second appointment of the same person as skipped, not as a failure", async () => {
+					const email = unique("already");
+					const first = await createOne(directory, email, "CSE", "First Appointment");
+					expect(first.status).toBe(200);
+					expect(first.body.created).toBe(1);
+
+					const second = await createOne(directory, email, "CSE", "Second Appointment");
+					expect(second.status).toBe(200);
+					expect(second.body.created).toBe(0);
+					expect(second.body.skipped).toBe(1);
+					expect(second.body.roleMismatches).toEqual([]);
+
 					const rows = await env.DB
 						.prepare(`SELECT COUNT(*) AS n FROM ${directory.table} WHERE email = ?`)
 						.bind(email.toLowerCase())
 						.first<{ n: number }>();
-					expect(rows?.n).toBe(0);
+					expect(rows?.n).toBe(1);
 				});
 			});
 

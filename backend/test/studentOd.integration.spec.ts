@@ -1169,6 +1169,94 @@ const second = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
       const { status } = await decide("od-plain-1", "CONTEST_COORDINATOR", id, "APPROVED");
       expect(status).toBe(403);
     });
+
+    /*
+     * The counterpart to the case above, and the reason a coordinator can be anybody on
+     * staff at all.
+     *
+     * A coordinator is appointed out of a department's staff roster, so the person being
+     * appointed already has an `auth_users` row -- with the role `staff`, created by the
+     * staff import. `auth_users.user_name` is UNIQUE, so a second account for the same
+     * address is impossible; the appointment has to reuse the one that is there.
+     *
+     * Reusing it is only safe because authority never came from the role. It comes from
+     * the directory row: `verifyApprover` matches the caller's own address against
+     * `contest_coordinators` beside the student's department, and this suite's own
+     * refusal above proves the role is not what is checked. So this walks the whole path
+     * -- appoint, keep the staff login, decide the coordinator stage -- because the
+     * failure mode being guarded against is a coordinator who is appointed successfully
+     * and then cannot act.
+     */
+    it("lets a member of staff appointed as coordinator decide that stage", async () => {
+      const id = await startRequest();
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+
+      const email = "priya.rao@kiot.ac.in";
+      const priya = await makeStaff("907", "Priya Rao", email, DEPARTMENT, "od-priya-1");
+
+      const before = await env.DB
+        .prepare("SELECT auth_user_id, role, pwd_hash FROM auth_users WHERE LOWER(email) = ?")
+        .bind(email.toLowerCase())
+        .first<{ auth_user_id: string; role: string; pwd_hash: string }>();
+
+      // The appointment, exactly as the dashboard makes it.
+      const { status, body } = await asAdmin("/api/admin/contest-coordinators", {
+        method: "POST",
+        body: JSON.stringify({
+          rows: [{ coordinator_name: "Priya Rao", email, department: DEPARTMENT }],
+        }),
+      });
+      expect(status, JSON.stringify(body)).toBe(200);
+      expect(body.created).toBe(1);
+      expect(body.roleMismatches).toEqual([]);
+      // Her account existed, so nothing was created and nothing was reused as new work.
+      expect(body.authAccountsCreated).toBe(0);
+      expect(body.authAccountsReused).toBe(1);
+
+      // The account is untouched: same id, same role, same password. One row, not two.
+      const after = await env.DB
+        .prepare("SELECT auth_user_id, role, pwd_hash FROM auth_users WHERE LOWER(email) = ?")
+        .bind(email.toLowerCase())
+        .first<{ auth_user_id: string; role: string; pwd_hash: string }>();
+      expect(after?.auth_user_id).toBe(before!.auth_user_id);
+      expect(after?.role).toBe("staff");
+      expect(after?.pwd_hash).toBe(before!.pwd_hash);
+
+      const accountCount = await env.DB
+        .prepare("SELECT COUNT(*) AS n FROM auth_users WHERE LOWER(email) = ?")
+        .bind(email.toLowerCase())
+        .first<{ n: number }>();
+      expect(accountCount?.n).toBe(1);
+
+      // The coordinator row records which account it belongs to, which is what
+      // `/api/auth/od-approver/login` and `/api/approver/me` read.
+      const row = await env.DB
+        .prepare(
+          "SELECT coordinator_name, department, auth_user_id FROM contest_coordinators WHERE LOWER(email) = ?",
+        )
+        .bind(email.toLowerCase())
+        .first<{ coordinator_name: string; department: string; auth_user_id: string | null }>();
+      expect(row?.coordinator_name).toBe("Priya Rao");
+      expect(row?.department).toBe(DEPARTMENT);
+      expect(row?.auth_user_id).toBe(before!.auth_user_id);
+
+      // She signs in to the approver routes as the staff member she already was.
+      const login = await call(null, "/api/auth/od-approver/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password: "1234" }),
+      });
+      expect(login.status).toBe(200);
+      expect(login.body.approver.role).toBe("staff");
+      expect(login.body.approver.department).toBe(DEPARTMENT);
+
+      // And she can action the coordinator stage, because the directory row -- not the
+      // role -- is what the check reads.
+      expect((await decide("od-priya-1", "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+
+      expect(priya.email).toBe(email.toLowerCase());
+    });
   });
 
   /* ============================================== approver sign-in */
