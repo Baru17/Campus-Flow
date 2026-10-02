@@ -38,12 +38,14 @@ import { resolveAppOrigin } from "../utils/appUrl";
 import {
   applyDecision,
   findOdRequest,
+  listApprovedForStage,
   listRequestsForStage,
   toRequestView,
   verifyApprover,
   type OdWorkflowEnv,
 } from "../utils/odService";
 import { verifyApprovalToken, type OdApprovalToken } from "../utils/odApprovalToken";
+import { isApproverRole, resolveApproverIdentity } from "../utils/approverDirectory";
 import { OD_DECISION, STAGES, type OdDecision, type OdStage } from "../utils/odWorkflow";
 
 const app = new Hono<{ Bindings: { DB: D1Database } & OdWorkflowEnv }>();
@@ -129,11 +131,29 @@ async function advisorCohort(
 /* --------------------------------------------------------------- inbox */
 
 /**
- * Requests waiting on one stage, for the signed-in approver.
+ * Requests waiting on one stage, for the signed-in approver, and the ones they have
+ * already decided.
  *
  * `?stage=` names the role's place in the chain and is matched against `STAGES`, so an
  * unknown value is refused rather than treated as some default. A class advisor's list
  * is additionally narrowed to their own cohort on the server.
+ *
+ * `?view=` picks between the two lists and defaults to `pending`.
+ *
+ *   - `pending` -- what is waiting on this approver right now. Only ever requests whose
+ *     status is this stage's pending status, because the stage's status is bound into the
+ *     query; there is no status parameter to widen it.
+ *   - `approved` -- what this approver has already signed off at their stage.
+ *
+ * The second exists because the two questions need different columns and the pending one
+ * cannot answer the second. By the time an approver looks, the request has left their
+ * pending queue -- `status` has moved past their stage — so the only record that they were
+ * the one who approved it is their own `*_decided_by`, which is what the approved view
+ * filters on. Filtering on `APPROVED` instead would show every request that reached the
+ * end, including ones this approver refused and ones they never saw.
+ *
+ * Anything else is refused rather than defaulted, so a typo cannot silently show an
+ * approver somebody else's list.
  */
 app.get("/requests", requireAuth, withApproverEmail, async (c) => {
   try {
@@ -142,6 +162,14 @@ app.get("/requests", requireAuth, withApproverEmail, async (c) => {
     if (!stage) {
       return c.json(
         { success: false, error: "Unknown approval stage", code: "od-unknown-stage" },
+        400
+      );
+    }
+
+    const requestedView = (c.req.query("view") ?? "pending").trim().toLowerCase();
+    if (requestedView !== "pending" && requestedView !== "approved") {
+      return c.json(
+        { success: false, error: "Unknown approval view", code: "od-unknown-view" },
         400
       );
     }
@@ -178,8 +206,18 @@ app.get("/requests", requireAuth, withApproverEmail, async (c) => {
       cohortScope = cohort;
     }
 
-    const requests = await listRequestsForStage(c.env.DB, stage, email, cohortScope);
-    return c.json({ success: true, stage: stage.key, stage_label: stage.label, requests });
+    const requests =
+      requestedView === "approved"
+        ? await listApprovedForStage(c.env.DB, stage, email, cohortScope)
+        : await listRequestsForStage(c.env.DB, stage, email, cohortScope);
+
+    return c.json({
+      success: true,
+      stage: stage.key,
+      stage_label: stage.label,
+      view: requestedView,
+      requests,
+    });
   } catch (error) {
     console.error("od_inbox_failed", getErrorMessageForLog(error));
     const transient = isTransientD1Error(error);
@@ -569,44 +607,29 @@ app.get("/requests/:requestId/permission", requireAuth, withApproverEmail, async
  * defined by. Nothing is accepted from the client, so this cannot be used to ask about
  * somebody else's queue -- it only ever describes the caller.
  *
- * Declining to include a coordinator or HOD whose directory row is missing is deliberate:
- * the role is on the account but there is no record, so there is no department to scope
- * to, and their queue would be empty anyway. Saying so plainly beats a dashboard that
- * loads and silently shows nothing.
+ * Resolution goes through `resolveApproverIdentity` rather than a role-to-table map, and
+ * that is the point: a coordinator's account role is `staff` because they reuse their
+ * staff login, so a map keyed on the role would describe them as a member of staff and
+ * route them to the wrong dashboard. Directory membership is what decides, and it is the
+ * same answer `/api/auth/od-approver/login` gives, so the two cannot disagree.
+ *
+ * Declining to include an approver whose directory row is missing is deliberate: there is
+ * no department to scope to, and their queue would be empty anyway. Saying so plainly
+ * beats a dashboard that loads and silently shows nothing.
  */
-const APPROVER_ROLE_DIRECTORY: Record<string, { table: string; nameColumn: string }> = {
-  staff: { table: "staff", nameColumn: "staff_name" },
-  class_advisor: { table: "staff", nameColumn: "staff_name" },
-  contest_coordinator: { table: "contest_coordinators", nameColumn: "coordinator_name" },
-  hod: { table: "hods", nameColumn: "hod_name" },
-};
-
 app.get("/approver/me", requireAuth, withApproverEmail, async (c) => {
   try {
     const authUser = (c as any).get("authUser") as AuthUser;
-    const role = String(authUser.role ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/[ -]+/g, "_");
 
-    const directory = APPROVER_ROLE_DIRECTORY[role];
-    if (!directory) {
-      return c.json(
-        { success: false, error: "This account is not an OD approver", code: "od-not-an-approver" },
-        403
-      );
+    // The account still has to be an approver account at all. Checked on the stored role
+    // rather than on the resolved directory, so a student or an admin cannot read this
+    // even if a directory row somehow carries their `auth_user_id`.
+    if (!isApproverRole(authUser.role)) {
+      return c.json({ success: false, error: "This account is not an OD approver", code: "od-not-an-approver" }, 403);
     }
 
-    // `table` and `nameColumn` are literals from the map above, keyed by the session's
-    // own role -- never anything a request supplied.
-    const row = await c.env.DB
-      .prepare(
-        `SELECT ${directory.nameColumn} AS name, department FROM ${directory.table} WHERE auth_user_id = ? LIMIT 1`
-      )
-      .bind(authUser.auth_user_id)
-      .first<{ name: string; department: string }>();
-
-    if (!row) {
+    const identity = await resolveApproverIdentity(c.env.DB, authUser.auth_user_id);
+    if (!identity) {
       return c.json(
         {
           success: false,
@@ -620,7 +643,12 @@ app.get("/approver/me", requireAuth, withApproverEmail, async (c) => {
 
     return c.json({
       success: true,
-      approver: { role, name: row.name, department: row.department, email: approverEmail(c) },
+      approver: {
+        role: identity.role,
+        name: identity.name,
+        department: identity.department,
+        email: approverEmail(c),
+      },
     });
   } catch (error) {
     console.error("od_approver_me_failed", getErrorMessageForLog(error));

@@ -1071,3 +1071,97 @@ async function findDirectoryApprover(
     .first<{ department: string }>();
   return row ? { department: row.department } : null;
 }
+
+/**
+ * Requests this approver has already decided, newest first.
+ *
+ * The counterpart to `listRequestsForStage`: that one answers "what is waiting on me",
+ * this answers "what have I signed off". Both are needed, because the stage column is a
+ * single `status` that has already moved past this approver by the time they look -- an
+ * HOD's own decision is the last one, so the request leaves their pending queue
+ * immediately and the only record that they were the one who approved it is the decision
+ * columns.
+ *
+ * ## Why it filters on `*_decided_by`, not on status
+ *
+ * `od_requests` stores four independent decision column groups, each holding the verdict,
+ * the address of the approver who made it, when, and an optional comment. The address is
+ * the identity here for the same reason it is in `verifyApprover`: every one of these
+ * roles authenticates by address.
+ *
+ * So "approved by me at my stage" is `{stage.columnPrefix}_decided_by = ?`, and the
+ * department scope is applied on top. Filtering on status instead would return every
+ * request that reached `APPROVED`, which includes ones this approver never saw and ones
+ * they explicitly refused.
+ *
+ * The column name is derived from `decisionColumns(stage)` -- the same derivation
+ * `applyDecision` writes with -- so a stage cannot appear in a filter that does not
+ * correspond to a set of columns. No identifier here comes from a request.
+ */
+export async function listApprovedForStage(
+  db: D1Database,
+  stage: OdStage,
+  approverEmail: string,
+  advisorCohort: {
+    department: string;
+    batch: string;
+    year: number;
+    section: string;
+  } | null
+): Promise<OdRequestView[]> {
+  const email = approverEmail.trim().toLowerCase();
+  const columns = decisionColumns(stage);
+
+  if (stage.key === "MENTOR") {
+    // A mentor is scoped by the address snapshotted onto the request, exactly as in the
+    // pending list. They decide before the department is anybody else's business.
+    const { results = [] } = await db
+      .prepare(
+        `SELECT * FROM od_requests
+         WHERE LOWER(${columns.decidedBy}) = ?
+           AND ${columns.decision} = ?
+           AND LOWER(mentor_email) = ?
+         ORDER BY ${columns.decidedAt} DESC`
+      )
+      .bind(email, OD_DECISION.APPROVED, email)
+      .all<OdRequestRow>();
+    return results.map(toRequestView);
+  }
+
+  if (stage.key === "CLASS_ADVISOR") {
+    if (!advisorCohort) return [];
+    const { results = [] } = await db
+      .prepare(
+        `SELECT * FROM od_requests
+         WHERE LOWER(${columns.decidedBy}) = ?
+           AND ${columns.decision} = ?
+           AND department = ? AND batch = ? AND year = ? AND section = ?
+         ORDER BY ${columns.decidedAt} DESC`
+      )
+      .bind(
+        email,
+        OD_DECISION.APPROVED,
+        advisorCohort.department,
+        advisorCohort.batch,
+        advisorCohort.year,
+        advisorCohort.section
+      )
+      .all<OdRequestRow>();
+    return results.map(toRequestView);
+  }
+
+  const approver = await findDirectoryApprover(db, stage, email);
+  if (!approver) return [];
+
+  const { results = [] } = await db
+    .prepare(
+      `SELECT * FROM od_requests
+       WHERE LOWER(${columns.decidedBy}) = ?
+         AND ${columns.decision} = ?
+         AND department = ?
+       ORDER BY ${columns.decidedAt} DESC`
+    )
+    .bind(email, OD_DECISION.APPROVED, approver.department)
+    .all<OdRequestRow>();
+  return results.map(toRequestView);
+}

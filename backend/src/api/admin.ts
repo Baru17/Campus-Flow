@@ -1750,15 +1750,17 @@ interface DirectorySpec {
    *      `verifyApprover` matches the caller's own address against this directory --
    *      so keeping the `staff` role is what lets them action their own OD queue.
    *
-   *   2. The row records `auth_user_id`. A coordinator created with no account to
-   *      reuse gets a `contest_coordinator` account, and both
-   *      `/api/auth/od-approver/login` and `/api/approver/me` resolve an approver by
-   *      that column -- so without it such a coordinator could not sign in at all.
+*   2. The row records `auth_user_id`, the account this appointment belongs to. Both roles
+   *      are permanent users of the existing authentication architecture, and both
+   *      approver routes resolve a signed-in session through that column rather than
+   *      through the address -- `/api/auth/od-approver/login` and `/api/approver/me` --
+   *      so a row without it cannot be signed in as. For a coordinator it is the reused
+   *      staff account's own id, so the two roles share one login and one password.
    *
-   * Head of department leaves this unset and is unaffected by both: an HOD is appointed
-   * *to* a department, is not expected to already be staff, and an address holding
-   * another kind of account really is a different person. Its rows are written exactly
-   * as before.
+   * Head of department leaves this unset and is unaffected by the first point: an HOD is
+   * appointed *to* a department, is not expected to already be staff, and an address
+   * holding another kind of account really is a different person. Its rows are written
+   * exactly as before.
    */
   provisionFromStaff?: boolean;
   /**
@@ -2044,22 +2046,30 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         linkable.push(entry);
       });
 
-      /*
-       * `auth_user_id` is written on a staff-provisioned row, and only on those.
+/*
+       * `auth_user_id` is written on every directory row, for both directories.
        *
-       * A coordinator who was given a fresh `contest_coordinator` account cannot sign in
-       * without it: `/api/auth/od-approver/login` and `/api/approver/me` both resolve an
-       * approver by this column, so a row without it is a row nobody can act as.
+       * Both roles are permanent users of the existing authentication architecture, so a
+       * row has to be linked to the account that was provisioned alongside it -- the same
+       * link `staff` and the student tables carry, and the one the approver routes
+       * resolve by:
        *
-       * It is scoped to `provisionFromStaff` rather than applied to every directory
-       * because a head of department row has never carried the column, and writing it
-       * would be a change nobody asked for on a page nobody is editing. The column is
-       * nullable and its table has had it all along -- `auth.ts` reads
-       * `contest_coordinators.auth_user_id` on every approver sign-in -- so writing it
-       * here cannot introduce a column that was not there.
+       *   - `/api/auth/od-approver/login` looks the department up with
+       *     `WHERE auth_user_id = ?`, so a row without it is refused at sign-in with
+       *     `unlinked-approver`.
+       *   - `/api/od/approver/me` reads the same column for the name and department the
+       *     dashboard header renders.
+       *
+       * It is always safe to write, because `planAccounts` has already resolved this row's
+       * account by the time the INSERT is built. For a head of department that account was
+       * just created here; for a contest coordinator it is the staff account being reused,
+       * which is the appointment itself.
+       *
+       * The column itself arrives with `migrations/0018_directory-auth-user-id.sql`, which
+       * also backfills rows that predate it. It was previously written here without being
+       * migrated, which made every appointment a 500.
        */
-      const linkColumn = provisionFromStaff;
-
+      const linkColumn = true;
       const pwdHash = await hashDefaultPassword();
       const { plans } = planAccounts(
         linkable.map((entry) => ({
@@ -2077,14 +2087,14 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         statements.push(
           c.env.DB
             .prepare(
-              `INSERT INTO ${table} (${nameColumn}, email, department${linkColumn ? ", auth_user_id" : ""})
-               VALUES (?, ?, ?${linkColumn ? ", ?" : ""})`
+              `INSERT INTO ${table} (${nameColumn}, email, department, auth_user_id)
+               VALUES (?, ?, ?, ?)`
             )
             .bind(
               entry.value.name,
               entry.value.email,
               entry.value.department,
-              ...(linkColumn ? [plan.auth_user_id] : [])
+              plan.auth_user_id
             )
         );
       });
@@ -2149,10 +2159,10 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
    * *different* id is refused rather than ignored, so a caller is never told an
    * edit succeeded when it moved another row.
    *
-   * Unlike a student or a staff member, these rows carry no `auth_user_id`, so the
-   * linked account is found by address instead. That is the same handle the login
-   * route uses, which makes it the right one: an account whose `user_name` is the
-   * address can be found by nothing else.
+   * Unlike a student or a staff member, these rows carry no `auth_user_id` in the
+   * projection below, so the linked account is found by address instead. That is the same
+   * handle the login route uses, which makes it the right one: an account whose
+   * `user_name` is the address can be found by nothing else.
    *
    * When the address moves, the account moves with it and the password is not
    * touched. The same `auth_user_id` and the same `pwd_hash` are kept, so the
@@ -2160,6 +2170,12 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
    * left claiming the old address. `user_name` is only rewritten when it currently
    * *is* the old address; an account signed into by some other handle keeps that
    * handle, exactly as the staff edit does.
+   *
+   * The row's own `auth_user_id` is repaired here when it is missing. A directory row
+   * that predates `0018_directory-auth-user-id.sql`, or one whose account could not be
+   * matched at the time, carries NULL and cannot be signed in as. Re-saving it is the
+   * point at which the link is known, so it is written then rather than leaving the
+   * administrator to create a second entry.
    */
   app.patch(`${spec.path}/:${spec.idParam}`, requireAuth, requireAdmin, async (c) => {
     try {
@@ -2183,7 +2199,9 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
       }
 
       const existing = await c.env.DB
-        .prepare(`SELECT ${idColumn}, ${nameColumn}, email, department FROM ${table} WHERE ${idColumn} = ?`)
+        .prepare(
+          `SELECT ${idColumn}, ${nameColumn}, email, department, auth_user_id FROM ${table} WHERE ${idColumn} = ?`
+        )
         .bind(id)
         .first<Record<string, string>>();
       if (!existing) {
@@ -2223,21 +2241,27 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
       const previousEmail = (existing.email ?? "").toLowerCase();
       const emailChanged = value.email.toLowerCase() !== previousEmail;
 
-      const account = emailChanged
-        ? await c.env.DB
-            .prepare(
-              `SELECT auth_user_id, user_name, role, email FROM auth_users
-               WHERE LOWER(user_name) = ? OR LOWER(email) = ? LIMIT 1`
-            )
-            .bind(previousEmail, previousEmail)
-            .first<{ auth_user_id: string; user_name: string; role: string; email: string | null }>()
-        : null;
+      /*
+       * The account that holds this row's current address.
+       *
+       * Read on every edit, not only when the address moves, because it is also what
+       * repairs the row's `auth_user_id`. A directory row that predates the migration, or
+       * one whose account could not be matched when it was created, carries NULL and
+       * cannot be signed in as; re-saving the entry is when the link becomes knowable.
+       */
+      const account = await c.env.DB
+        .prepare(
+          `SELECT auth_user_id, user_name, role, email FROM auth_users
+           WHERE LOWER(user_name) = ? OR LOWER(email) = ? LIMIT 1`
+        )
+        .bind(previousEmail, previousEmail)
+        .first<{ auth_user_id: string; user_name: string; role: string; email: string | null }>();
 
       /*
        * Sign-in is by address, so an address that moves must not already belong to
        * some other account or the same address would match two rows at login.
        */
-      if (account) {
+      if (account && emailChanged) {
         const clash = await c.env.DB
           .prepare(
             `SELECT auth_user_id FROM auth_users
@@ -2259,6 +2283,16 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
       const nameChanged = value.name !== existing[nameColumn];
       const departmentChanged = value.department !== existing.department;
 
+      /*
+       * The row is re-linked to the account that holds its address whenever the stored
+       * link is missing or names a different account. A missing link is a row nobody can
+       * act as; a link that has drifted would point one person's directory entry at
+       * another person's authority, and the address is the only thing that decides which
+       * account that is. Nothing is written when it already agrees.
+       */
+      const nextAuthUserId = account?.auth_user_id ?? null;
+      const linkChanged = nextAuthUserId !== null && nextAuthUserId !== (existing.auth_user_id ?? null);
+
       const statements: D1PreparedStatement[] = [];
 
       /*
@@ -2266,15 +2300,25 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
        * that saves the values it was given is a no-op rather than a write, so it
        * cannot churn `updated_at`-style bookkeeping or race another admin's edit.
        */
-      if (nameChanged || departmentChanged || emailChanged) {
+      if (nameChanged || departmentChanged || emailChanged || linkChanged) {
         statements.push(
           c.env.DB
-            .prepare(`UPDATE ${table} SET ${nameColumn} = ?, email = ?, department = ? WHERE ${idColumn} = ?`)
-            .bind(value.name, value.email, value.department, id)
+            .prepare(
+              `UPDATE ${table} SET ${nameColumn} = ?, email = ?, department = ?${
+                linkChanged ? ", auth_user_id = ?" : ""
+              } WHERE ${idColumn} = ?`
+            )
+            .bind(
+              value.name,
+              value.email,
+              value.department,
+              ...(linkChanged ? [nextAuthUserId] : []),
+              id
+            )
         );
       }
 
-      if (account) {
+      if (account && emailChanged) {
         const nextUserName =
           account.user_name.toLowerCase() === previousEmail
             ? emailUserName(value.email)

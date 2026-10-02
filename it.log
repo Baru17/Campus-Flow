@@ -1,0 +1,1222 @@
+﻿
+> backend@0.0.0 test:integration
+> vitest --config vitest.integration.config.mts --run
+
+
+ RUN  v4.1.11 C:/Users/bdhar/Desktop/Campus-Flow/backend
+
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+node.exe : stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval 
+email > is a different link each time one is issued, even for one request
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (stderr | test/o...for one request:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > is 
+a different link each time one is issued, even for one request
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > 
+reports a failed notification without undoing the decision
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > 
+reports a failed notification without undoing the decision
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > 
+reports a failed notification without undoing the decision
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > 
+reports a failed notification without undoing the decision
+{"event":"od_decision_email_failed","odRequestId":"1ef0dbcb-069e-4e06-acde-5dd6dfadcb13","stage":"MENTOR","outcome":"em
+ail_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > 
+reports a failed notification without undoing the decision
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > 
+reports a failed notification without undoing the decision
+{"event":"od_next_stage_email_failed","odRequestId":"1ef0dbcb-069e-4e06-acde-5dd6dfadcb13","stage":"CLASS_ADVISOR","out
+come":"email_not_sent"}
+
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > A. returns 
+the coordinator's request, and says who they are
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > A. returns 
+the coordinator's request, and says who they are
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > returns 
+nothing it should not: no auth internals, no student address
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > returns 
+nothing it should not: no auth internals, no student address
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > walks all four stages 
+and ends APPROVED
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > walks all four stages 
+and ends APPROVED
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > tells a 
+browser not to cache the page the token is in
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > tells a 
+browser not to cache the page the token is in
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > never needs 
+a session, and a session cannot widen it
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > never needs 
+a session, and a session cannot widen it
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > stops on a rejection 
+at any later stage too
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > stops on a rejection 
+at any later stage too
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > C. refuses a 
+forged token -- one the attacker signed himself
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > C. refuses a 
+forged token -- one the attacker signed himself
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > records the decision 
+and advances even when nothing is notified
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > records the decision 
+and advances even when nothing is notified
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > records the decision 
+and advances even when nothing is notified
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > records the decision 
+and advances even when nothing is notified
+{"event":"od_decision_email_failed","odRequestId":"8d66f8ff-4a37-475c-86e9-00d426f9c61d","stage":"MENTOR","outcome":"em
+ail_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > records the decision 
+and advances even when nothing is notified
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > records the decision 
+and advances even when nothing is notified
+{"event":"od_next_stage_email_failed","odRequestId":"8d66f8ff-4a37-475c-86e9-00d426f9c61d","stage":"CLASS_ADVISOR","out
+come":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > C. refuses a 
+tampered token and says nothing about what was changed
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > C. refuses a 
+tampered token and says nothing about what was changed
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > emails the final 
+approval exactly once, when the HOD says yes
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > emails the final 
+approval exactly once, when the HOD says yes
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+Using secrets defined in .dev.vars
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > D. refuses an 
+expired token
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > D. refuses an 
+expired token
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > D. still accepts 
+a link right up to its expiry
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > D. still accepts 
+a link right up to its expiry
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses a coordinator 
+from another department
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses a coordinator 
+from another department
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. refuses a link 
+that has already been used
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. refuses a link 
+that has already been used
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+Using secrets defined in .dev.vars
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. is also spent 
+once somebody else has decided the stage
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. is also spent 
+once somebody else has decided the stage
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. is spent on a 
+request that was rejected before the link was opened
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. is spent on a 
+request that was rejected before the link was opened
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses an HOD from 
+another department
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses an HOD from 
+another department
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > F. 
+refuses a coordinator's link against a different request
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > F. 
+refuses a coordinator's link against a different request
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > F. 
+refuses a coordinator's link against a different request
+{"event":"auth_failed","path":"/api/od/requests/df030073-f85b-4e94-9008-3bf68b3ba86b/decision","origin":null,"cookiePre
+sent":false,"failure":"no-cookie","tokenHashPrefix":null}
+
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > H. 
+refuses an HOD's link for a request waiting on the coordinator
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > H. 
+refuses an HOD's link for a request waiting on the coordinator
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > H. 
+refuses a link that is asked to act at a stage it was not issued for
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > H. 
+refuses a link that is asked to act at a stage it was not issued for
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > H. 
+refuses a link that is asked to act at a stage it was not issued for
+{"event":"auth_failed","path":"/api/od/requests/e0152f4c-7543-484f-abb5-61da7f3834b7/decision","origin":null,"cookiePre
+sent":false,"failure":"no-cookie","tokenHashPrefix":null}
+
+Using secrets defined in .dev.vars
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > I. 
+refuses a link minted for a coordinator in another department
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > I. 
+refuses a link minted for a coordinator in another department
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses to act on a 
+fully approved request
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses to act on a 
+fully approved request
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > I. 
+stops working when the named approver is moved to another department
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > I. 
+stops working when the named approver is moved to another department
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > 
+refuses a link for a request that does not exist
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > 
+refuses a link for a request that does not exist
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > 
+cannot be used by a student or a staff session to borrow an approver's authority
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > 
+cannot be used by a student or a staff session to borrow an approver's authority
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > 
+cannot be used by a student or a staff session to borrow an approver's authority
+{"event":"auth_failed","path":"/api/od/requests/1061eeb0-57b2-412a-ab16-3024934a5991/decision","origin":null,"cookiePre
+sent":false,"failure":"no-cookie","tokenHashPrefix":null}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > J. a coordinator's approval hands the request to the class advisor, and only that far
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > J. a coordinator's approval hands the request to the class advisor, and only that far
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > J. a coordinator's approval hands the request to the class advisor, and only that far
+{"event":"auth_failed","path":"/api/od/requests/3554e303-5ce1-4a74-abf4-db5eab2fbadf/decision","origin":null,"cookiePre
+sent":false,"failure":"no-cookie","tokenHashPrefix":null}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > lets a member of staff 
+appointed as coordinator decide that stage
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > lets a member of staff 
+appointed as coordinator decide that stage
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > records who decided it, and when, from a link exactly as from a session
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > records who decided it, and when, from a link exactly as from a session
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > records who decided it, and when, from a link exactly as from a session
+{"event":"auth_failed","path":"/api/od/requests/6d81bc7e-4484-4d21-91f8-238312edd7cc/decision","origin":null,"cookiePre
+sent":false,"failure":"no-cookie","tokenHashPrefix":null}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > requires a reason to reject, through a link as much as through a session
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > requires a reason to reject, through a link as much as through a session
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > requires a reason to reject, through a link as much as through a session
+{"event":"auth_failed","path":"/api/od/requests/7aeaeacf-b0dd-43bf-be0f-c02898bb0b0f/decision","origin":null,"cookiePre
+sent":false,"failure":"no-cookie","tokenHashPrefix":null}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > refuses a decision that is neither APPROVED nor REJECTED
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > refuses a decision that is neither APPROVED nor REJECTED
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > refuses a decision that is neither APPROVED nor REJECTED
+{"event":"auth_failed","path":"/api/od/requests/d33b8839-3ea6-4b77-91ec-c82a5a392bd7/decision","origin":null,"cookiePre
+sent":false,"failure":"no-cookie","tokenHashPrefix":null}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the coordinator in that coordinator's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the coordinator in that coordinator's queue
+{"event":"od_submission_email_failed","odRequestId":"71f82dd0-1ca3-46dc-b474-6afbc3f92b0e","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the coordinator in that coordinator's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the coordinator in that coordinator's queue
+{"event":"od_decision_email_failed","odRequestId":"71f82dd0-1ca3-46dc-b474-6afbc3f92b0e","stage":"MENTOR","outcome":"em
+ail_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the coordinator in that coordinator's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the coordinator in that coordinator's queue
+{"event":"od_next_stage_email_failed","odRequestId":"71f82dd0-1ca3-46dc-b474-6afbc3f92b0e","stage":"CLASS_ADVISOR","out
+come":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > records one decision when the same link is submitted twice at once
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > records one decision when the same link is submitted twice at once
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a rejection stops the chain and 
+tells the student > K. a coordinator's rejection ends it, and the advisor is never asked
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a rejection stops the chain and 
+tells the student > K. a coordinator's rejection ends it, and the advisor is never asked
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a rejection stops the chain and 
+tells the student > K. a coordinator's rejection ends it, and the advisor is never asked
+{"event":"auth_failed","path":"/api/od/requests/350ae574-83d4-4b0c-871b-23e1f5d017c4/decision","origin":null,"cookiePre
+sent":false,"failure":"no-cookie","tokenHashPrefix":null}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"od_submission_email_failed","odRequestId":"f235f41c-f641-4bff-8381-a894b20ac0cf","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"od_decision_email_failed","odRequestId":"f235f41c-f641-4bff-8381-a894b20ac0cf","stage":"MENTOR","outcome":"em
+ail_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"od_next_stage_email_failed","odRequestId":"f235f41c-f641-4bff-8381-a894b20ac0cf","stage":"CLASS_ADVISOR","out
+come":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"od_decision_email_failed","odRequestId":"f235f41c-f641-4bff-8381-a894b20ac0cf","stage":"CLASS_ADVISOR","outco
+me":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"od_next_stage_email_failed","odRequestId":"f235f41c-f641-4bff-8381-a894b20ac0cf","stage":"CONTEST_COORDINATOR
+","outcome":"email_not_sent"}
+
+ Γ¥» test/odEmailApproval.integration.spec.ts (40 tests | 27 failed) 28163ms
+       ├ù is a single-use approval link, never the approver sign-in page 206ms
+       ├ù is a different link each time one is issued, even for one request 537ms
+       ├ù reports a failed notification without undoing the decision 644ms
+       ├ù A. returns the coordinator's request, and says who they are 509ms
+       ├ù returns nothing it should not: no auth internals, no student address 532ms
+       ├ù tells a browser not to cache the page the token is in 522ms
+       ├ù never needs a session, and a session cannot widen it 570ms
+       ├ù C. refuses a forged token -- one the attacker signed himself 708ms
+       ├ù C. refuses a tampered token and says nothing about what was changed 676ms
+       ├ù D. refuses an expired token 548ms
+       ├ù D. still accepts a link right up to its expiry 514ms
+       ├ù E. refuses a link that has already been used 761ms
+       ├ù E. is also spent once somebody else has decided the stage 540ms
+       ├ù E. is spent on a request that was rejected before the link was opened 1071ms
+       ├ù F. refuses a coordinator's link against a different request 629ms
+       ├ù H. refuses an HOD's link for a request waiting on the coordinator 924ms
+       ├ù H. refuses a link that is asked to act at a stage it was not issued for 558ms
+       ├ù I. refuses a link minted for a coordinator in another department 722ms
+       ├ù I. stops working when the named approver is moved to another department 515ms
+       ├ù refuses a link for a request that does not exist 519ms
+       ├ù cannot be used by a student or a staff session to borrow an approver's authority 713ms
+       ├ù J. a coordinator's approval hands the request to the class advisor, and only that far 665ms
+       ├ù records who decided it, and when, from a link exactly as from a session 498ms
+       ├ù requires a reason to reject, through a link as much as through a session 470ms
+       ├ù refuses a decision that is neither APPROVED nor REJECTED 479ms
+       ├ù records one decision when the same link is submitted twice at once 492ms
+       ├ù K. a coordinator's rejection ends it, and the advisor is never asked 491ms
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request 
+in a queue for a stage it has already passed
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request 
+in a queue for a stage it has already passed
+{"event":"od_submission_email_failed","odRequestId":"ecf53d78-e5fd-4cbe-bc82-137f2efb3a9c","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request 
+in a queue for a stage it has already passed
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request 
+in a queue for a stage it has already passed
+{"event":"od_decision_email_failed","odRequestId":"ecf53d78-e5fd-4cbe-bc82-137f2efb3a9c","stage":"MENTOR","outcome":"em
+ail_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request 
+in a queue for a stage it has already passed
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request 
+in a queue for a stage it has already passed
+{"event":"od_next_stage_email_failed","odRequestId":"ecf53d78-e5fd-4cbe-bc82-137f2efb3a9c","stage":"CLASS_ADVISOR","out
+come":"email_not_sent"}
+
+ Γ¥» test/studentOd.integration.spec.ts (59 tests | 11 failed) 30786ms
+       ├ù walks all four stages and ends APPROVED 486ms
+       ├ù stops on a rejection at any later stage too 691ms
+       ├ù records the decision and advances even when nothing is notified 618ms
+       ├ù emails the final approval exactly once, when the HOD says yes 631ms
+       ├ù refuses a coordinator from another department 922ms
+       ├ù refuses an HOD from another department 1116ms
+       ├ù refuses to act on a fully approved request 1002ms
+       ├ù lets a member of staff appointed as coordinator decide that stage 436ms
+       ├ù puts a request waiting on the coordinator in that coordinator's queue 993ms
+       ├ù puts a request waiting on the HOD in that HOD's queue 1695ms
+       ├ù does not put a request in a queue for a stage it has already passed 1160ms
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ» Failed Tests 38 ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > is a 
+single-use approval link, never the approver sign-in page
+AssertionError: expected undefined to be defined
+ Γ¥» test/odEmailApproval.integration.spec.ts:474:31
+    472|
+    473|       const coordinatorMail = mailTo(COORDINATOR_EMAIL)[0];
+    474|       expect(coordinatorMail).toBeDefined();
+       |                               ^
+    475|       expect(coordinatorMail.subject).toContain(STUDENT_NAME);
+    476|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[1/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > is a 
+different link each time one is issued, even for one request
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:516:49
+    514|       expect(second).not.toBe(first);
+    515|       // Both work, because neither has been used.
+    516|       expect((await resolveLink(first)).status).toBe(200);
+       |                                                 ^
+    517|       expect((await resolveLink(second)).status).toBe(200);
+    518|     });
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[2/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > the link in the approval email > 
+reports a failed notification without undoing the decision
+AssertionError: expected 'PENDING_CLASS_ADVISOR' to be 'PENDING_CONTEST_COORDINATOR' // Object.is equality
+
+Expected: "PENDING_CONTEST_COORDINATOR"
+Received: "PENDING_CLASS_ADVISOR"
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:555:34
+    553|       // told "saved" has to be able to rely on it even when the mail ΓÇª
+    554|       expect(status).toBe(200);
+    555|       expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDIΓÇª
+       |                                  ^
+    556|       expect(body.status).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+    557|       // ...and the caller is told the notification separately, not buΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[3/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > A. returns 
+the coordinator's request, and says who they are
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:572:22
+    570|
+    571|       const { status, body } = await resolveLink(token);
+    572|       expect(status).toBe(200);
+       |                      ^
+    573|       expect(body.success).toBe(true);
+    574|       expect(body.can_decide).toBe(true);
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[4/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > returns 
+nothing it should not: no auth internals, no student address
+TypeError: Cannot read properties of undefined (reading 'auth_user_id')
+ Γ¥» test/odEmailApproval.integration.spec.ts:631:27
+    629|
+    630|       // The one column that links to the auth internals, and the studΓÇª
+    631|       expect(body.request.auth_user_id).toBeUndefined();
+       |                           ^
+    632|       expect(body.request.student_email).toBeUndefined();
+    633|       expect(body.request.student_table).toBeUndefined();
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[5/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > tells a 
+browser not to cache the page the token is in
+AssertionError: expected null to be 'no-store' // Object.is equality
+
+- Expected:
+"no-store"
+
++ Received:
+null
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:646:53
+    644|
+    645|       const response = await SELF.fetch(`https://example.com/api/od/emΓÇª
+    646|       expect(response.headers.get("Cache-Control")).toBe("no-store");
+       |                                                     ^
+    647|       expect(response.headers.get("Referrer-Policy")).toBe("no-referreΓÇª
+    648|     });
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[6/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > never needs a 
+session, and a session cannot widen it
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:656:49
+    654|
+    655|       // No cookie at all, and a cookie for somebody who is not the apΓÇª
+    656|       expect((await resolveLink(token)).status).toBe(200);
+       |                                                 ^
+    657|       expect((await call(COORDINATOR_TOKEN, `/api/od/email-approval/${ΓÇª
+    658|       expect((await call(ADVISOR_TOKEN, `/api/od/email-approval/${tokeΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[7/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > C. refuses a forged 
+token -- one the attacker signed himself
+AssertionError: expected 'PENDING_CLASS_ADVISOR' to be 'PENDING_CONTEST_COORDINATOR' // Object.is equality
+
+Expected: "PENDING_CONTEST_COORDINATOR"
+Received: "PENDING_CLASS_ADVISOR"
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:695:34
+    693|       expect(status).toBe(400);
+    694|       expect(body.error).toBe("Approval link is invalid or has expiredΓÇª
+    695|       expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDIΓÇª
+       |                                  ^
+    696|     });
+    697|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[8/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > C. refuses a 
+tampered token and says nothing about what was changed
+TypeError: Cannot read properties of undefined (reading 'length')
+ Γ¥» test/odEmailApproval.integration.spec.ts:712:45
+    710|       // wrong reason.
+    711|       const [encoded, signature] = token.split(".");
+    712|       const midpoint = Math.floor(signature.length / 2);
+       |                                             ^
+    713|       const flippedSig = `${encoded}.${signature.slice(0, midpoint)}${
+    714|         signature[midpoint] === "A" ? "B" : "A"
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[9/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > D. refuses an 
+expired token
+AssertionError: expected 'PENDING_CLASS_ADVISOR' to be 'PENDING_CONTEST_COORDINATOR' // Object.is equality
+
+Expected: "PENDING_CONTEST_COORDINATOR"
+Received: "PENDING_CLASS_ADVISOR"
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:750:34
+    748|       expect(decided.status).toBe(400);
+    749|       expect(decided.body.error).toBe("Approval link is invalid or hasΓÇª
+    750|       expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDIΓÇª
+       |                                  ^
+    751|     });
+    752|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[10/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > D. still accepts a 
+link right up to its expiry
+AssertionError: expected 400 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 400
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:759:22
+    757|
+    758|       const { status, body } = await resolveLink(token);
+    759|       expect(status).toBe(200);
+       |                      ^
+    760|       // Roughly three days out, and not a token that is already dead.
+    761|       expect(body.expires_at.slice(0, 10)).toBe(
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[11/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. refuses a link 
+that has already been used
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:772:49
+    770|       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
+    771|
+    772|       expect((await resolveLink(token)).status).toBe(200);
+       |                                                 ^
+    773|       const approved = await decideByLink(token, id, "APPROVED");
+    774|       expect(approved.status).toBe(200);
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[12/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. is also spent 
+once somebody else has decided the stage
+AssertionError: expected 403 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 403
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:800:104
+    798|       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
+    799|
+    800|       expect((await decideBySession(COORDINATOR_TOKEN, "CONTEST_COORDIΓÇª
+       |                                                                                                        ^
+    801|
+    802|       const { status, body } = await resolveLink(token);
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[13/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > an unusable link > E. is spent on a 
+request that was rejected before the link was opened
+AssertionError: expected 404 to be 400 // Object.is equality
+
+- Expected
++ Received
+
+- 400
++ 404
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:815:49
+    813|
+    814|       await decideBySession(COORDINATOR_TOKEN, "CONTEST_COORDINATOR", ΓÇª
+    815|       expect((await resolveLink(token)).status).toBe(400);
+       |                                                 ^
+    816|     });
+    817|   });
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[14/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > F. 
+refuses a coordinator's link against a different request
+AssertionError: expected 401 to be 403 // Object.is equality
+
+- Expected
++ Received
+
+- 403
++ 401
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:847:22
+    845|
+    846|       const { status, body } = await decideByLink(token, otherId, "APPΓÇª
+    847|       expect(status).toBe(403);
+       |                      ^
+    848|       expect(body.code).toBe("od-approval-link-mismatch");
+    849|       // Nobody was decided by that attempt.
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[15/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > H. 
+refuses an HOD's link for a request waiting on the coordinator
+AssertionError: expected 'PENDING_CLASS_ADVISOR' to be 'PENDING_CONTEST_COORDINATOR' // Object.is equality
+
+Expected: "PENDING_CONTEST_COORDINATOR"
+Received: "PENDING_CLASS_ADVISOR"
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:886:34
+    884|       const attempt = await decideByLink(token, id, "APPROVED", undefiΓÇª
+    885|       expect(attempt.status).toBe(400);
+    886|       expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDIΓÇª
+       |                                  ^
+    887|     });
+    888|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[16/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > H. 
+refuses a link that is asked to act at a stage it was not issued for
+AssertionError: expected 401 to be 403 // Object.is equality
+
+- Expected
++ Received
+
+- 403
++ 401
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:901:30
+    899|
+    900|       const attempt = await decideByLink(token, id, "APPROVED", undefiΓÇª
+    901|       expect(attempt.status).toBe(403);
+       |                              ^
+    902|       expect(attempt.body.code).toBe("od-approval-link-stage-mismatch"ΓÇª
+    903|       expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDIΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[17/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > I. 
+refuses a link minted for a coordinator in another department
+AssertionError: expected 'PENDING_CLASS_ADVISOR' to be 'PENDING_CONTEST_COORDINATOR' // Object.is equality
+
+Expected: "PENDING_CONTEST_COORDINATOR"
+Received: "PENDING_CLASS_ADVISOR"
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:923:34
+    921|       const attempt = await decideByLink(wrongDepartment, id, "APPROVEΓÇª
+    922|       expect(attempt.status).toBe(400);
+    923|       expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDIΓÇª
+       |                                  ^
+    924|     });
+    925|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[18/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > I. 
+stops working when the named approver is moved to another department
+AssertionError: expected 404 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 404
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:930:49
+    928|       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+    929|       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
+    930|       expect((await resolveLink(token)).status).toBe(200);
+       |                                                 ^
+    931|
+    932|       // An administrator reorganises. The link was for this departmenΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[19/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > 
+refuses a link for a request that does not exist
+AssertionError: expected 404 to be 400 // Object.is equality
+
+- Expected
++ Received
+
+- 400
++ 404
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:971:22
+    969|       // whether the request behind it ever existed.
+    970|       const { status, body } = await resolveLink(token);
+    971|       expect(status).toBe(400);
+       |                      ^
+    972|       expect(body.error).toBe("Approval link is invalid or has expiredΓÇª
+    973|       expect((await decideByLink(token, id, "APPROVED")).status).toBe(ΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[20/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a link cannot cross a boundary > 
+cannot be used by a student or a staff session to borrow an approver's authority
+AssertionError: expected 401 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 401
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:992:22
+    990|         body: JSON.stringify({ decision: "APPROVED", approver_email: "ΓÇª
+    991|       });
+    992|       expect(status).toBe(200);
+       |                      ^
+    993|       const row = await env.DB
+    994|         .prepare("SELECT coordinator_decision, coordinator_decided_by ΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[21/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > J. a coordinator's approval hands the request to the class advisor, and only that far
+AssertionError: expected 401 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 401
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:1011:22
+    1009|
+    1010|       const { status, body } = await decideByLink(token, id, "APPROVEDΓÇª
+    1011|       expect(status).toBe(200);
+       |                      ^
+    1012|       expect(body.status).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+    1013|       expect(body.next_stage).toBe("Class Advisor");
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[22/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > records who decided it, and when, from a link exactly as from a session
+AssertionError: expected 401 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 401
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:1081:89
+    1079|       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
+    1080|
+    1081|       expect((await decideByLink(token, id, "APPROVED", "Approved, gooΓÇª
+       |                                                                                         ^
+    1082|       const row = await env.DB
+    1083|         .prepare(
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[23/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > requires a reason to reject, through a link as much as through a session
+AssertionError: expected 401 to be 400 // Object.is equality
+
+- Expected
++ Received
+
+- 400
++ 401
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:1104:30
+    1102|
+    1103|       const refused = await decideByLink(token, id, "REJECTED", "   ");
+    1104|       expect(refused.status).toBe(400);
+       |                              ^
+    1105|       expect(refused.body.code).toBe("od-invalid-comment");
+    1106|       // A refusal is not a rejection: the request is untouched and thΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[24/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > refuses a decision that is neither APPROVED nor REJECTED
+AssertionError: MAYBE: expected 401 to be 400 // Object.is equality
+
+- Expected
++ Received
+
+- 400
++ 401
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:1122:34
+    1120|       for (const decision of ["MAYBE", "", "approve", "1"]) {
+    1121|         const { status, body } = await decideByLink(token, id, decisioΓÇª
+    1122|         expect(status, decision).toBe(400);
+       |                                  ^
+    1123|         expect(body.code, decision).toBe("od-invalid-decision");
+    1124|       }
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[25/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > deciding through a link moves the 
+workflow > records one decision when the same link is submitted twice at once
+AssertionError: expected '' not to be '' // Object.is equality
+ Γ¥» test/odEmailApproval.integration.spec.ts:1149:25
+    1147|       expect((await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROΓÇª
+    1148|       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
+    1149|       expect(token).not.toBe("");
+       |                         ^
+    1150|
+    1151|       const [first, second] = await Promise.all([
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[26/38]ΓÄ»
+
+ FAIL  test/odEmailApproval.integration.spec.ts > OD approval by emailed link > a rejection stops the chain and tells 
+the student > K. a coordinator's rejection ends it, and the advisor is never asked
+AssertionError: expected 401 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 401
+
+ Γ¥» test/odEmailApproval.integration.spec.ts:1188:22
+    1186|
+    1187|       const { status, body } = await decideByLink(token, id, "REJECTEDΓÇª
+    1188|       expect(status).toBe(200);
+       |                      ^
+    1189|       expect(body.status).toBe(OD_STATUS.REJECTED);
+    1190|       expect(await statusOf(id)).toBe(OD_STATUS.REJECTED);
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[27/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > walks all four stages 
+and ends APPROVED
+AssertionError: expected 'PENDING_CLASS_ADVISOR' to be 'PENDING_CONTEST_COORDINATOR' // Object.is equality
+
+Expected: "PENDING_CONTEST_COORDINATOR"
+Received: "PENDING_CLASS_ADVISOR"
+
+ Γ¥» test/studentOd.integration.spec.ts:807:39
+    805|
+    806|       expect((await decide("od-mentor-1", "MENTOR", id, "APPROVED")).sΓÇª
+    807|       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_CΓÇª
+       |                                       ^
+    808|
+    809|       expect((await decide("od-coord-1", "CONTEST_COORDINATOR", id, "AΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[28/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > stops on a rejection at 
+any later stage too
+AssertionError: CONTEST_COORDINATOR: expected 403 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 403
+
+ Γ¥» test/studentOd.integration.spec.ts:901:31
+    899|         stubEmail();
+    900|         const { status } = await decide(token, stage, id, "REJECTED", ΓÇª
+    901|         expect(status, stage).toBe(200);
+       |                               ^
+    902|         expect(await currentStatus(id)).toBe(OD_STATUS.REJECTED);
+    903|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[29/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > records the decision and 
+advances even when nothing is notified
+AssertionError: expected 'PENDING_CLASS_ADVISOR' to be 'PENDING_CONTEST_COORDINATOR' // Object.is equality
+
+Expected: "PENDING_CONTEST_COORDINATOR"
+Received: "PENDING_CLASS_ADVISOR"
+
+ Γ¥» test/studentOd.integration.spec.ts:942:27
+    940|       const { status, body } = await decide("od-mentor-1", "MENTOR", iΓÇª
+    941|       expect(status).toBe(200);
+    942|       expect(body.status).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+       |                           ^
+    943|       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_CΓÇª
+    944|       expect(body.notification_sent).toBe(false);
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[30/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > emails the final 
+approval exactly once, when the HOD says yes
+AssertionError: CONTEST_COORDINATOR: expected 403 to be 200 // Object.is equality
+
+- Expected
++ Received
+
+- 200
++ 403
+
+ Γ¥» test/studentOd.integration.spec.ts:962:31
+    960|       ] as const) {
+    961|         const { status, body } = await decide(approver, stage, id, "APΓÇª
+    962|         expect(status, stage).toBe(200);
+       |                               ^
+    963|         // Only the last one finishes it, and only the last one names ΓÇª
+    964|         expect(body.next_stage ?? null, stage).toBe(
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[31/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses a coordinator 
+from another department
+AssertionError: expected 'od-wrong-stage' to be 'od-not-your-request' // Object.is equality
+
+Expected: "od-not-your-request"
+Received: "od-wrong-stage"
+
+ Γ¥» test/studentOd.integration.spec.ts:1019:25
+    1017|       const { status, body } = await decide("od-coord-2", "CONTEST_COOΓÇª
+    1018|       expect(status).toBe(403);
+    1019|       expect(body.code).toBe("od-not-your-request");
+       |                         ^
+    1020|       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_CΓÇª
+    1021|     });
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[32/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses an HOD from 
+another department
+AssertionError: expected 'PENDING_CONTEST_COORDINATOR' to be 'PENDING_HOD' // Object.is equality
+
+Expected: "PENDING_HOD"
+Received: "PENDING_CONTEST_COORDINATOR"
+
+
+ Γ¥» test/studentOd.integration.spec.ts:1041:39
+ Test Files  2 failed | 12 passed (14)
+    1039|       const { status } = await decide("od-hod-2", "HOD", id, "APPROVEDΓÇª
+    1040|       expect(status).toBe(403);
+    1041|       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_HOD);
+       |                                       ^
+    1042|     });
+    1043|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[33/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > refuses to act on a 
+fully approved request
+AssertionError: expected 403 to be 409 // Object.is equality
+
+- Expected
++ Received
+
+- 409
++ 403
+
+ Γ¥» test/studentOd.integration.spec.ts:1103:22
+    1101|
+    1102|       const { status, body } = await decide("od-hod-1", "HOD", id, "REΓÇª
+    1103|       expect(status).toBe(409);
+       |                      ^
+    1104|       expect(body.code).toBe("od-already-approved");
+    1105|     });
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[34/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > lets a member of staff 
+appointed as coordinator decide that stage
+AssertionError: expected 'PENDING_CLASS_ADVISOR' to be 'PENDING_CONTEST_COORDINATOR' // Object.is equality
+
+Expected: "PENDING_CONTEST_COORDINATOR"
+Received: "PENDING_CLASS_ADVISOR"
+
+ Γ¥» test/studentOd.integration.spec.ts:1176:39
+    1174|       const id = await startRequest();
+    1175|       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+    1176|       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_CΓÇª
+       |                                       ^
+    1177|
+    1178|       const email = "priya.rao@kiot.ac.in";
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[35/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting on 
+the coordinator in that coordinator's queue
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ Γ¥» test/studentOd.integration.spec.ts:1351:87
+    1349|       const mine = await call("od-coord-1", "/api/od/requests?stage=COΓÇª
+    1350|       expect(mine.status).toBe(200);
+    1351|       expect(mine.body.requests.some((request: any) => request.od_requΓÇª
+       |                                                                                       ^
+    1352|
+    1353|       // The coordinator of another department does not see it.
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[36/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting on 
+the HOD in that HOD's queue
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
+      Tests  38 failed | 390 passed (428)
++ Received
+
+- true
++ false
+
+ Γ¥» test/studentOd.integration.spec.ts:1367:87
+    1365|       const mine = await call("od-hod-1", "/api/od/requests?stage=HOD"ΓÇª
+    1366|       expect(mine.status).toBe(200);
+    1367|       expect(mine.body.requests.some((request: any) => request.od_requΓÇª
+       |                                                                                       ^
+    1368|
+    1369|       const theirs = await call("od-hod-2", "/api/od/requests?stage=HOΓÇª
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[37/38]ΓÄ»
+
+ FAIL  test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request in 
+a queue for a stage it has already passed
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ Γ¥» test/studentOd.integration.spec.ts:1403:9
+    1401|           (request: any) => request.od_request_id === id
+    1402|         )
+    1403|       ).toBe(true);
+       |         ^
+    1404|       // And it is no longer the mentor's business.
+    1405|       expect(
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[38/38]ΓÄ»
+
+   Start at  17:20:14
+   Duration  42.51s (transform 8.06s, setup 0ms, import 28.70s, tests 138.17s, environment 2ms)
+

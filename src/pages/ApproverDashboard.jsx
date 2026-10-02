@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import OdApprovalPanel from '../components/od/OdApprovalPanel'
 import { useApproverMe } from '../hooks/useApproverMe'
+import { fetchApprovedApprovals, fetchPendingApprovals } from '../api/odApi'
 import { ShieldIcon } from '../components/Icons'
 
 /**
@@ -16,10 +18,33 @@ import { ShieldIcon } from '../components/Icons'
  *
  * ## Why this is its own page rather than another tab somewhere
  *
- * A Contest Coordinator and an HOD are not staff: they have no staff record, they cannot
- * sign in at `/staff/login`, and adding them to the staff dashboard would mean widening
- * what "staff" means for every lecturer in the system. They get their own door
- * (`/approver/login`) and their own screen, and neither touches how anybody else signs in.
+ * A Contest Coordinator and an HOD are not staff: they have no staff record of their own,
+ * and adding them to the staff dashboard would mean widening what "staff" means for every
+ * lecturer in the system. They get their own door (`/approver/login`) and their own screen,
+ * and neither touches how anybody else signs in.
+ *
+ * A coordinator *is* on the staff roster -- that is where they are appointed from -- so
+ * their account keeps the `staff` role and their staff login keeps working. What makes
+ * them a coordinator is their `contest_coordinators` row, and that is what the server
+ * reads to decide which of the two dashboards below is theirs. The check below compares
+ * the stage this screen is for against the role the server resolved, so the two cannot
+ * drift.
+ *
+ * ## Pending and Approved
+ *
+ * Two questions, two views, and they are not the same list:
+ *
+ *   - **Pending** -- what is waiting on this approver now.
+ *   - **Approved** -- what they have already signed off at their stage.
+ *
+ * They need separate queries because `status` is a single column that moves the moment
+ * they act. An HOD's decision is the last one in the chain, so from the instant they
+ * approve, that request is gone from Pending -- without a second view there would be no
+ * record on their screen of anything they ever approved.
+ *
+ * The counts are shown on the tabs, so the count is not the length of whichever list
+ * happens to be open. They are read once when the tab set is first shown and refreshed
+ * after each decision, from the same two endpoints the lists use.
  *
  * ## What the screen does not do
  *
@@ -38,6 +63,7 @@ export default function ApproverDashboard({
 }) {
   const navigate = useNavigate()
   const { approver, loading, error, expired, logout } = useApproverMe()
+  const [view, setView] = useState('pending')
 
   const handleLogout = async () => {
     await logout()
@@ -96,7 +122,7 @@ export default function ApproverDashboard({
   }
 
   /*
-   * The role on the account is not the one this screen is for. Reaching `/hod` as a
+   * The role the server resolved is not the one this screen is for. Reaching `/hod` as a
    * coordinator is only possible by typing the URL, and the queue would be empty rather
    * than wrong -- but a heading that names the wrong role is confusing enough to be worth
    * refusing outright.
@@ -139,19 +165,109 @@ export default function ApproverDashboard({
           subtitle={subtitle || `Requests waiting on your decision as the ${stageLabel}.`}
         />
 
+        <ViewTabs stage={stage} view={view} onChange={setView} />
+
         <div className="mt-4">
-          <OdApprovalPanel
-            stage={stage}
-            title="Waiting on you"
-            emptyText={emptyText}
-          />
+          {view === 'pending' ? (
+            <OdApprovalPanel
+              stage={stage}
+              view="pending"
+              title="Pending"
+              emptyText={emptyText}
+            />
+          ) : (
+            <OdApprovalPanel
+              stage={stage}
+              view="approved"
+              title="Approved"
+              emptyText={`You have not approved any OD requests as the ${stageLabel} yet. Requests you approve appear here, newest first.`}
+            />
+          )}
         </div>
 
         <p className="mt-3 text-xs text-slate-400">
-          This is the only screen for your role. A request reaches you once the stage before you
-          has approved it, and approving hands it to the next person in the chain.
+          A request reaches you once the stage before you has approved it, and approving
+          hands it to the next person in the chain. Everything you approve stays listed
+          under Approved.
         </p>
       </main>
+    </div>
+  )
+}
+
+/**
+ * The Pending / Approved switch.
+ *
+ * A real tablist rather than two links, so the arrow keys move between them and the active
+ * tab is announced as selected rather than only looking different. The count on each tab is
+ * fetched separately from the list itself, so the number on the tab you are *not* looking
+ * at is still true -- which matters most immediately after a decision, when Pending drops
+ * by one and Approved rises by one.
+ *
+ * A failure here degrades to no count rather than an error: the list below is the thing the
+ * page is for, and a count that could not be fetched is not worth an alert above it.
+ */
+function ViewTabs({ stage, view, onChange }) {
+  const [counts, setCounts] = useState({})
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      const [pending, approved] = await Promise.all([
+        fetchPendingApprovals(stage).catch(() => null),
+        fetchApprovedApprovals(stage).catch(() => null),
+      ])
+      if (cancelled) return
+      setCounts({
+        pending: pending ? (pending.requests || []).length : undefined,
+        approved: approved ? (approved.requests || []).length : undefined,
+      })
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [stage])
+
+  const tabs = [
+    { id: 'pending', label: 'Pending', count: counts.pending },
+    { id: 'approved', label: 'Approved', count: counts.approved },
+  ]
+
+  return (
+    <div className="mb-1 flex flex-wrap gap-2" role="tablist" aria-label="OD request views">
+      {tabs.map((tab) => {
+        const active = view === tab.id
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            id={`od-tab-${tab.id}`}
+            aria-selected={active}
+            aria-controls={`od-tabpanel-${tab.id}`}
+            onClick={() => onChange(tab.id)}
+            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-colors ${
+              active
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            {tab.label}
+            {typeof tab.count === 'number' && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+                  active ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                {tab.count}
+              </span>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }

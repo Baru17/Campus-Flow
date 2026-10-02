@@ -4,6 +4,7 @@ import { hashToken, generateToken, setSessionCookie, clearSessionCookie, getSess
 import { requireAuth, requireRole, requireStaff, requireAdmin, requireStudent, type AuthUser } from "../middleware/auth";
 import { isTransientD1Error } from "../utils/databaseErrors";
 import { assertAllowedStudentTable, listAllowedStudentTables } from "../utils/tableResolver";
+import { isApproverRole, resolveApproverIdentity } from "../utils/approverDirectory";
 
 const app = new Hono<{ Bindings: { DB: D1Database } }>();
 
@@ -205,7 +206,7 @@ app.post("/staff/login", async (c) => {
  * no route accepted their role. This closes that gap without touching the routes that
  * already work.
  *
- * What is deliberately *not* changed:
+ * ## What is deliberately *not* changed
  *
  *   - `/api/auth/login` still accepts students only, and `/api/auth/staff/login` still
  *     accepts staff and class advisors only. A coordinator cannot reach either, so
@@ -215,15 +216,22 @@ app.post("/staff/login", async (c) => {
  *     attendance generator. A coordinator who signs in here can do exactly one thing:
  *     action OD requests.
  *   - The session is the established one -- `auth_sessions`, the same token hashing,
- *     the same cookie.
+ *     the same cookie, the same 7-day expiry. There is no account TTL for either role.
  *
  * So this adds a way in for two roles rather than widening any door. The OD routes
  * authorise on the directory the request names, not on the role alone, so a valid
  * session here still has to be matched against a real coordinator or HOD row for the
  * student's department before it can decide anything.
+ *
+ * ## Why the role in the response is not always the role on the account
+ *
+ * A contest coordinator is appointed out of a department's staff roster and *reuses*
+ * that person's staff login, so their `auth_users.role` is `staff` -- correctly, since
+ * renaming it would take their mentor and attendance access away. What makes them a
+ * coordinator is the `contest_coordinators` row, and that is what decides which dashboard
+ * they land in. `resolveApproverIdentity` reads it; the account role is still checked
+ * first, so a student or an admin cannot get a session here at all.
  */
-
-const OD_APPROVER_ROLES = ["staff", "class_advisor", "contest_coordinator", "hod"] as const;
 
 app.post("/od-approver/login", async (c) => {
   try {
@@ -240,10 +248,10 @@ app.post("/od-approver/login", async (c) => {
 
     const resolvedEmail = email.trim().toLowerCase();
     const user = (await c.env.DB
-      .prepare("SELECT id, auth_user_id, user_name, pwd_hash, role FROM auth_users WHERE user_name = ? OR email = ? LIMIT 1")
+      .prepare("SELECT id, auth_user_id, user_name, pwd_hash, role, email FROM auth_users WHERE user_name = ? OR email = ? LIMIT 1")
       .bind(resolvedEmail, resolvedEmail)
       .first()) as
-      | { id: number; auth_user_id: string; user_name: string; pwd_hash: string; role: string }
+      | { id: number; auth_user_id: string; user_name: string; pwd_hash: string; role: string; email: string }
       | null;
 
     if (!user) {
@@ -255,48 +263,21 @@ app.post("/od-approver/login", async (c) => {
       return c.json({ success: false, error: "Invalid credentials", code: "invalid_credentials" }, 401);
     }
 
-    const role = user.role.trim().toLowerCase().replace(/[ -]+/g, "_");
-    if (!(OD_APPROVER_ROLES as readonly string[]).includes(role)) {
-      // A student account must not be able to sign in here, or the student session
+    if (!isApproverRole(user.role)) {
+      // A student or an admin account must not be able to sign in here, or the session
       // would be a second way to reach the approver routes.
       return c.json({ success: false, error: "Invalid credentials", code: "invalid_credentials" }, 401);
     }
 
     /*
-     * The role has to correspond to a real record before a session is created, so an
-     * account whose role was set but whose row is missing cannot sign in to an empty
-     * inbox. The table is chosen from the role, which is a literal from the list
-     * above -- never from the request.
+     * The role has to correspond to a real directory record before a session is created,
+     * so an account whose role was set but whose row is missing cannot sign in to an empty
+     * inbox. Resolution is by `auth_user_id` against the caller's own session -- the tables
+     * are literals inside that module, never anything from the request.
      */
-    let record:
-      | { table: "staff" | "contest_coordinators" | "hods"; nameColumn: string; department: string | null }
-      | null;
+    const identity = await resolveApproverIdentity(c.env.DB, user.auth_user_id);
 
-    if (role === "staff" || role === "class_advisor") {
-      const staff = await c.env.DB
-        .prepare("SELECT department FROM staff WHERE auth_user_id = ? LIMIT 1")
-        .bind(user.auth_user_id)
-        .first<{ department: string }>();
-      record = staff
-        ? { table: "staff", nameColumn: "staff_name", department: staff.department }
-        : null;
-    } else if (role === "contest_coordinator") {
-      const coordinator = await c.env.DB
-        .prepare("SELECT department FROM contest_coordinators WHERE auth_user_id = ? LIMIT 1")
-        .bind(user.auth_user_id)
-        .first<{ department: string }>();
-      record = coordinator
-        ? { table: "contest_coordinators", nameColumn: "coordinator_name", department: coordinator.department }
-        : null;
-    } else {
-      const hod = await c.env.DB
-        .prepare("SELECT department FROM hods WHERE auth_user_id = ? LIMIT 1")
-        .bind(user.auth_user_id)
-        .first<{ department: string }>();
-      record = hod ? { table: "hods", nameColumn: "hod_name", department: hod.department } : null;
-    }
-
-    if (!record) {
+    if (!identity) {
       return c.json(
         {
           success: false,
@@ -321,7 +302,11 @@ app.post("/od-approver/login", async (c) => {
     return c.json({
       success: true,
       user: safeUser(user),
-      approver: { role, department: record.department },
+      approver: {
+        role: identity.role,
+        name: identity.name,
+        department: identity.department,
+      },
     });
   } catch (error) {
     if (error instanceof InvalidJsonError) {

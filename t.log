@@ -1,0 +1,14 @@
+﻿
+> backend@0.0.0 test:integration
+> vitest --config vitest.integration.config.mts --run adminDirectory
+
+
+ RUN  v4.1.11 C:/Users/bdhar/Desktop/Campus-Flow/backend
+
+Using secrets defined in .dev.vars
+
+ Test Files  1 passed (1)
+      Tests  88 passed (88)
+   Start at  18:08:04
+   Duration  24.68s (transform 1.12s, setup 0ms, import 1.97s, tests 16.94s, environment 0ms)
+

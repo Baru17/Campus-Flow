@@ -134,12 +134,29 @@ export function fetchMyOdRequests() {
 /**
  * Requests waiting on one stage of the chain.
  *
- * `stage` is the role's place in the order -- MENTOR, CONTEST_COORDINATOR,
- * CLASS_ADVISOR or HOD -- and the server matches it against the fixed chain rather
- * than trusting it, so a value that is not one of those four is refused.
+ * `stage` is the role's place in the order -- MENTOR, CLASS_ADVISOR, CONTEST_COORDINATOR
+ * or HOD -- and the server matches it against the fixed chain rather than trusting it, so
+ * a value that is not one of those four is refused.
  */
 export function fetchPendingApprovals(stage) {
-  return request('/api/od/requests', { query: { stage } })
+  return request('/api/od/requests', { query: { stage, view: 'pending' } })
+}
+
+/**
+ * Requests this approver has already approved at their own stage, newest decision first.
+ *
+ * A separate call rather than a parameter on the pending one, so the two questions an
+ * approver has -- "what is waiting on me" and "what have I signed off" -- are named
+ * separately at the call site and cannot be confused for one another.
+ *
+ * It has to be a separate question rather than a filter on the pending list: by the time
+ * an approver looks, the request has already left their pending queue, so the record that
+ * they approved it is their own decision on it. An HOD's decision is the last one, which
+ * means *every* request they have ever approved is, from that moment, invisible to the
+ * pending view.
+ */
+export function fetchApprovedApprovals(stage) {
+  return request('/api/od/requests', { query: { stage, view: 'approved' } })
 }
 
 /**

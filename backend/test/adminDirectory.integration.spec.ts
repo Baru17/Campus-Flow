@@ -52,6 +52,12 @@ import migration0013 from "../migrations/0013_department-aware-attendance.sql?ra
 import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
 import migration0016 from "../migrations/0016_academic_batches.sql?raw";
+/*
+ * Creates `hods` and `contest_coordinators` with the `auth_user_id` column both approver
+ * routes resolve a session through. See the note above the admin credentials for why these
+ * two tables are no longer hand-written here.
+ */
+import migration0018 from "../migrations/0018_directory-auth-user-id.sql?raw";
 
 const APPLY_ORDER = [
 	migration0001,
@@ -69,6 +75,7 @@ const APPLY_ORDER = [
 	migration0014,
 	migration0015,
 	migration0016,
+	migration0018,
 ];
 
 async function applyMigration(sql: string): Promise<void> {
@@ -85,45 +92,26 @@ async function applyMigration(sql: string): Promise<void> {
 }
 
 /*
- * The two directory tables.
+ * The two directory tables now come from `migrations/0018_directory-auth-user-id.sql`.
  *
- * Written here rather than added to `migrations/`, and the reason is the whole point
- * of this feature: the tables already exist in production, with exactly this shape.
- * Adding a migration for them would claim a change that production has not had and
- * would make `d1_migrations` disagree with the live database.
+ * They used to be written out here, and the comment above them claimed the shape was
+ * "copied verbatim from the production `sqlite_master` entry". It was not. Production had
+ * five columns and no `auth_user_id`; this file had six. So the suites passed against a
+ * table the deployed database did not have, and the first attempt to appoint a
+ * coordinator in production failed at the database with a 500 on an INSERT naming a
+ * column that was not there.
  *
- * The DDL below is copied verbatim from the production `sqlite_master` entry for
- * each table, so the routes are exercised against the real column names, types,
- * NOT NULLs, UNIQUE constraint and `INTEGER PRIMARY KEY AUTOINCREMENT` -- not
- * against a convenient approximation. In particular the ids are autoincrement here
- * too, which is what lets the "the database assigns the id" assertions mean
- * something.
+ * The migration is the source of truth for both tables now, and this file applies it like
+ * every other migration. That is the point of the change: a hand-written approximation of
+ * a table is a table that can drift from the real one, and this one did, silently, for as
+ * long as it was here.
  *
- * Both tables carry `auth_user_id`, as production does. That column is not optional
- * decoration: `/api/auth/od-approver/login` reads `hods.auth_user_id` and
- * `contest_coordinators.auth_user_id` to decide whose department to scope an approver
- * to, and `GET /api/approver/me` reads it for the name and department it renders. A
- * directory row created without it is a row nobody can act as, which is why the create
- * route writes it whenever the table has it.
+ * `auth_user_id` is not optional decoration, which is why the migration adds it. Both roles
+ * are permanent users of the existing authentication architecture, and both approver
+ * routes resolve a session through that column rather than through the address --
+ * `/api/auth/od-approver/login` and `/api/approver/me`. A directory row without it is a
+ * row nobody can sign in as.
  */
-const DIRECTORY_DDL = [
-	`CREATE TABLE hods (
-		hod_id INTEGER PRIMARY KEY AUTOINCREMENT,
-		hod_name TEXT NOT NULL,
-		email TEXT NOT NULL UNIQUE,
-		department TEXT NOT NULL,
-		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		auth_user_id TEXT
-	)`,
-	`CREATE TABLE contest_coordinators (
-		coordinator_id INTEGER PRIMARY KEY AUTOINCREMENT,
-		coordinator_name TEXT NOT NULL,
-		email TEXT NOT NULL UNIQUE,
-		department TEXT NOT NULL,
-		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		auth_user_id TEXT
-	)`,
-];
 
 const ADMIN_ID = "c5e5f000-0000-4000-8000-00000000ad01";
 const ADMIN_TOKEN = "directory-admin-session-token";
@@ -258,13 +246,25 @@ async function createOne(
 	});
 }
 
+/**
+ * A globally unique address, for suites outside the per-directory loop.
+ *
+ * The loop's own `unique` is deliberately not reused: it is the same address for every
+ * test that names the same slug, which is exactly what those tests want -- they each run
+ * against a directory whose table is cleared between cases. The permanent-account cases
+ * below run both directories' rows in one test and are parameterised rather than cleared,
+ * so they need addresses that cannot collide with each other or with anything above.
+ */
+let uniqueCounter = 0;
+function freshEmail(slug: string): string {
+	uniqueCounter += 1;
+	return `permanent.${slug}.${uniqueCounter}@kiot.ac.in`;
+}
+
 describe("HOD and contest coordinator management", () => {
 	beforeAll(async () => {
 		for (const migration of APPLY_ORDER) {
 			await applyMigration(migration);
-		}
-		for (const ddl of DIRECTORY_DDL) {
-			await env.DB.prepare(ddl).run();
 		}
 
 		// The seed ships an advisor and a student but no admin, and every route
@@ -694,14 +694,18 @@ describe("HOD and contest coordinator management", () => {
 						expect(body.authAccountsCreated).toBe(0);
 						expect(body.authAccountsReused).toBe(1);
 
-						// The row records which account it belongs to, which is what the
-						// approver-login and `/api/approver/me` routes read.
-						const created = await env.DB
-							.prepare(`SELECT ${directory.idColumn}, auth_user_id FROM ${directory.table} WHERE email = ?`)
-							.bind(email.toLowerCase())
-							.first<{ [key: string]: any }>();
-						expect(created?.[directory.idColumn]).toBeGreaterThan(0);
-						expect(created?.auth_user_id).toBe(originalAuthUserId);
+// The row records the account it belongs to. Both roles are
+					// permanent users of the existing authentication architecture, and
+					// `/api/auth/od-approver/login` and `/api/od/approver/me` both resolve a
+					// session with `WHERE auth_user_id = ?`, so a row without this is a row
+					// nobody can sign in as. For a coordinator it is the *reused staff
+					// account's* own id -- one login, one password, two roles.
+					const created = await env.DB
+						.prepare(`SELECT ${directory.idColumn}, auth_user_id FROM ${directory.table} WHERE email = ?`)
+						.bind(email.toLowerCase())
+						.first<{ [key: string]: any }>();
+					expect(created?.[directory.idColumn]).toBeGreaterThan(0);
+					expect(created?.auth_user_id).toBe(originalAuthUserId);
 					} else {
 						expect(body.created).toBe(0);
 						expect(body.roleMismatches).toHaveLength(1);
@@ -1187,6 +1191,152 @@ describe("HOD and contest coordinator management", () => {
 				.all<{ auth_user_id: string }>();
 			expect(results).toEqual([]);
 		});
+	});
+
+	/* ============================================ permanent accounts */
+
+	/**
+	 * Both roles are permanent Campus-Flow users, and this block is what holds them to
+	 * that. Everything here is a property of the *account*, not of a workflow, so it is
+	 * asserted once per directory rather than folded into the import cases above.
+	 */
+	describe("permanent authentication", () => {
+		for (const directory of DIRECTORIES) {
+			it(`${directory.label}: an appointment is a usable login, not a pending invitation`, async () => {
+				const email = freshEmail("permanent");
+				const { status, body } = await createOne(directory, email, "IT", "Permanent Person");
+				expect(status).toBe(200);
+				expect(body.created).toBe(1);
+
+				// 1. The row is linked to the account it was created with.
+				const row = await env.DB
+					.prepare(`SELECT ${directory.idColumn}, auth_user_id FROM ${directory.table} WHERE email = ?`)
+					.bind(email.toLowerCase())
+					.first<Record<string, string>>();
+				const account = await accountFor(email);
+				expect(row?.[directory.idColumn]).toBeGreaterThan(0);
+				expect(row?.auth_user_id).toBe(account.auth_user_id);
+
+				// 2. The credentials work, through the existing approver login.
+				const response = await SELF.fetch("https://example.com/api/auth/od-approver/login", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ email, password: DEFAULT_INITIAL_PASSWORD }),
+				});
+				expect(response.status).toBe(200);
+				const login = (await response.json()) as any;
+				expect(login.success).toBe(true);
+				expect(login.approver.role).toBe(directory.role);
+				expect(login.approver.department).toBe("IT");
+				expect(login.approver.name).toBe("Permanent Person");
+
+				// 3. The session resolves back to the directory row, not just to the
+				//    account -- which is the only thing `auth_user_id` is for.
+				const cookie = (response.headers.get("set-cookie") ?? "").split(";")[0];
+				const me = await SELF.fetch("https://example.com/api/od/approver/me", {
+					headers: { Cookie: cookie },
+				});
+				expect(me.status).toBe(200);
+				const profile = (await me.json()) as any;
+				expect(profile.approver.role).toBe(directory.role);
+				expect(profile.approver.name).toBe("Permanent Person");
+				expect(profile.approver.department).toBe("IT");
+			});
+
+			it(`${directory.label}: the account does not expire`, async () => {
+				const email = freshEmail("nottl");
+				expect((await createOne(directory, email, "IT", "Permanent Person")).status).toBe(200);
+
+				/*
+				 * Stated as a schema fact rather than as a wait.
+				 *
+				 * There is no time-based assertion that could fail this meaningfully -- an
+				 * expiry test would have to out-wait the expiry to prove its absence. What
+				 * *can* be asserted, and is the thing an expiry would actually be built from,
+				 * is that the account carries no expiry column and that nothing in the
+				 * account table can be used to expire it.
+				 */
+				const columns = await env.DB
+					.prepare("SELECT name FROM pragma_table_info('auth_users')")
+					.all<{ name: string }>();
+				const names = (columns.results ?? []).map((c) => c.name.toLowerCase());
+				for (const forbidden of ["expires_at", "expires", "valid_until", "disabled_at", "deleted_at", "ttl"]) {
+					expect(names, `${directory.label} must not have ${forbidden}`).not.toContain(forbidden);
+				}
+
+				// And the directory row has no expiry either, so re-saving it months later
+				// is not something the row itself would reject.
+				const rowColumns = await env.DB
+					.prepare(`SELECT name FROM pragma_table_info('${directory.table}')`)
+					.all<{ name: string }>();
+				const rowNames = (rowColumns.results ?? []).map((c) => c.name.toLowerCase());
+				for (const forbidden of ["expires_at", "valid_until", "ttl"]) {
+					expect(rowNames, `${directory.label} row must not have ${forbidden}`).not.toContain(forbidden);
+				}
+
+				// The account still signs in, which is the practical statement of "no TTL".
+				const response = await SELF.fetch("https://example.com/api/auth/od-approver/login", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ email, password: DEFAULT_INITIAL_PASSWORD }),
+				});
+				expect(response.status).toBe(200);
+			});
+
+			it(`${directory.label}: re-appointing the same person is refused, not duplicated`, async () => {
+				const email = freshEmail("nodupe");
+
+				// On staff existence alone, or on the account existing, the first
+				// appointment is always allowed -- so this proves the *second* is refused by
+				// the directory's own uniqueness rather than by either of those.
+				expect((await createOne(directory, email, "IT", "First")).body.created).toBe(1);
+				const second = await createOne(directory, email, "IT", "Second");
+				expect(second.status).toBe(200);
+				expect(second.body.created).toBe(0);
+				expect(second.body.skipped).toBe(1);
+
+				// Exactly one row, and it kept the first name.
+				const rows = await env.DB
+					.prepare(`SELECT ${directory.nameColumn} FROM ${directory.table} WHERE email = ?`)
+					.bind(email.toLowerCase())
+					.all<Record<string, string>>();
+				expect(rows.results ?? []).toHaveLength(1);
+				expect(rows.results?.[0]?.[directory.nameColumn]).toBe("First");
+			});
+
+			it(`${directory.label}: re-saving repairs a missing auth_user_id`, async () => {
+				const email = freshEmail("repair");
+				const created = await createOne(directory, email, "IT", "Repairable");
+				expect(created.body.created).toBe(1);
+
+				// A row from before the migration: linked to nothing, and so not signable-in
+				// as. Re-saving it is the point at which the link becomes knowable.
+				await env.DB
+					.prepare(`UPDATE ${directory.table} SET auth_user_id = NULL WHERE email = ?`)
+					.bind(email.toLowerCase())
+					.run();
+
+				const id = (
+					await env.DB
+						.prepare(`SELECT ${directory.idColumn} FROM ${directory.table} WHERE email = ?`)
+						.bind(email.toLowerCase())
+						.first<Record<string, number>>()
+				)?.[directory.idColumn];
+				expect(id).toBeGreaterThan(0);
+
+				const saved = await api(`${directory.path}/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ [directory.nameColumn]: "Repairable" }),
+				});
+				expect(saved.status).toBe(200);
+
+				const repaired = await env.DB
+					.prepare(`SELECT auth_user_id FROM ${directory.table} WHERE email = ?`)
+					.bind(email.toLowerCase())
+					.first<{ auth_user_id: string | null }>();
+				expect(repaired?.auth_user_id).toBe((await accountFor(email)).auth_user_id);
+			});
+		}
 	});
 });
 

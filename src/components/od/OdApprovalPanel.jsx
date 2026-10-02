@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import StatusMessage from '../StatusMessage'
-import { fetchPendingApprovals, submitApprovalDecision } from '../../api/odApi'
+import { fetchApprovedApprovals, fetchPendingApprovals, submitApprovalDecision } from '../../api/odApi'
 import { CheckIcon, ChevronRightIcon, ClockIcon, XIcon } from '../Icons'
 
 /**
@@ -11,6 +11,25 @@ import { CheckIcon, ChevronRightIcon, ClockIcon, XIcon } from '../Icons'
  * position in the chain. That is deliberate: the four approvers are deciding the same
  * kind of thing, so they should see the same shape of thing, and a change to how a
  * request is displayed should land in one file rather than four.
+ *
+ * ## Pending or approved
+ *
+ * `view` picks which of the two questions this panel is answering, and it is the same
+ * component either way so the two lists are the same shape:
+ *
+ *   - `pending` (the default) -- what is waiting on this approver now. Read-only for
+ *     anything but the two buttons, and the buttons are a convenience: the server
+ *     re-checks authority on every decision.
+ *   - `approved` -- what this approver has already signed off at their stage. There are
+ *     no buttons at all here, and that is not a permission decision. A decided stage
+ *     cannot be decided twice -- `applyDecision` writes with
+ *     `WHERE status = <the status this stage was waiting on>`, so a second attempt matches
+ *     no rows -- so a button here could only ever produce an error.
+ *
+ * The two need different queries and cannot share one. `status` is a single column that
+ * moves on the moment an approver acts, so their own approvals are already out of the
+ * pending list by the time they look. The approved view filters on their own
+ * `*_decided_by` instead, which is the only record of *who* decided.
  *
  * ## Where it lives
  *
@@ -44,7 +63,10 @@ export default function OdApprovalPanel({
   subtitle,
   emptyText = 'Nothing is waiting on you. Requests appear here as soon as the previous stage approves them.',
   collapsible = false,
+  view = 'pending',
 }) {
+  const isApprovedView = view === 'approved'
+
   const [requests, setRequests] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -63,14 +85,16 @@ export default function OdApprovalPanel({
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchPendingApprovals(stage)
+      const data = isApprovedView
+        ? await fetchApprovedApprovals(stage)
+        : await fetchPendingApprovals(stage)
       setRequests(data.requests || [])
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [stage])
+  }, [stage, isApprovedView])
 
   useEffect(() => {
     load()
@@ -120,13 +144,20 @@ export default function OdApprovalPanel({
           <div>
             <h2 className="section-title">{title}</h2>
             <p className="text-muted-2 text-sm mb-0">
-              {loading ? 'Loading requests…' : subtitle || `${requests.length} waiting`}
+              {loading
+                ? 'Loading requests…'
+                : subtitle ||
+                  (isApprovedView
+                    ? `${requests.length} approved`
+                    : `${requests.length} waiting`)}
             </p>
           </div>
           {!loading && requests.length > 0 && (
-            <span className="cf-status-pill active">
-              <span className="dot" aria-hidden="true" />
-              {requests.length} waiting
+            <span className={isApprovedView ? 'cf-status-pill' : 'cf-status-pill active'}>
+              {isApprovedView ? null : <span className="dot" aria-hidden="true" />}
+              {isApprovedView
+                ? `${requests.length} approved`
+                : `${requests.length} waiting`}
             </span>
           )}
         </div>
@@ -164,32 +195,38 @@ export default function OdApprovalPanel({
                           decide blind about a request three people have already seen. */}
                       <ProgressTrail request={request} />
 
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => decide(request.od_request_id, 'APPROVED', '')}
-                          disabled={working === request.od_request_id}
-                          className="btn-cf-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
-                        >
-                          <CheckIcon size={16} />
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRejecting(request.od_request_id)
-                            setReason('')
-                            setDecisionError(null)
-                          }}
-                          disabled={working === request.od_request_id}
-                          className="btn-cf-outline inline-flex items-center gap-2 px-4 py-2 text-sm"
-                        >
-                          <XIcon size={16} />
-                          Reject
-                        </button>
-                      </div>
+                      <DecisionStamp request={request} stage={stage} />
 
-                      {rejecting === request.od_request_id && (
+                      {/* No buttons in the approved view: this stage is already decided, and
+                          the workflow refuses a second decision on it. */}
+                      {!isApprovedView && (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => decide(request.od_request_id, 'APPROVED', '')}
+                            disabled={working === request.od_request_id}
+                            className="btn-cf-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
+                          >
+                            <CheckIcon size={16} />
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRejecting(request.od_request_id)
+                              setReason('')
+                              setDecisionError(null)
+                            }}
+                            disabled={working === request.od_request_id}
+                            className="btn-cf-outline inline-flex items-center gap-2 px-4 py-2 text-sm"
+                          >
+                            <XIcon size={16} />
+                            Reject
+                          </button>
+                        </div>
+                      )}
+
+                      {!isApprovedView && rejecting === request.od_request_id && (
                         <RejectForm
                           request={request}
                           reason={reason}
@@ -208,11 +245,36 @@ export default function OdApprovalPanel({
         )}
       </div>
 
-      <p className="mt-3 flex items-center gap-2 text-xs text-slate-400">
-        <ClockIcon size={13} />
-        Approving hands the request to the next stage. Rejecting stops it and emails the student.
-      </p>
+      {!isApprovedView && (
+        <p className="mt-3 flex items-center gap-2 text-xs text-slate-400">
+          <ClockIcon size={13} />
+          Approving hands the request to the next stage. Rejecting stops it and emails the
+          student.
+        </p>
+      )}
     </div>
+  )
+}
+
+/**
+ * This approver's own verdict on this request, when there is one.
+ *
+ * Read from the request's own decision column group for *this* stage rather than
+ * recomputed, so it cannot disagree with the record. Rendered in both views because the
+ * pending view is exactly where it is absent -- the request is in the queue precisely
+ * because this stage has not decided yet -- and the approved view is exactly where it is
+ * the thing worth showing.
+ */
+function DecisionStamp({ request, stage }) {
+  const mine = (request.decisions || {})[stage.toLowerCase()]
+  if (!mine?.decided_at) return null
+
+  return (
+    <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+      You approved this on {new Date(mine.decided_at).toLocaleString()}
+      {mine.decided_by ? ` as ${mine.decided_by}` : ''}
+      {mine.comment ? ` — “${mine.comment}”` : ''}
+    </p>
   )
 }
 
@@ -407,8 +469,8 @@ const STAGE_LABEL = {
  */
 const STAGE_ORDER = [
   { key: 'mentor', label: 'Mentor', pending: 'PENDING_MENTOR' },
-  { key: 'contest_coordinator', label: 'Coordinator', pending: 'PENDING_CONTEST_COORDINATOR' },
   { key: 'class_advisor', label: 'Class Advisor', pending: 'PENDING_CLASS_ADVISOR' },
+  { key: 'contest_coordinator', label: 'Coordinator', pending: 'PENDING_CONTEST_COORDINATOR' },
   { key: 'hod', label: 'HOD', pending: 'PENDING_HOD' },
 ]
 

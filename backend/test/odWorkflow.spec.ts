@@ -41,13 +41,13 @@ describe("OD workflow", () => {
     it("has exactly four stages, in the required order", () => {
       expect(STAGES.map((stage) => stage.key)).toEqual([
         "MENTOR",
-        "CONTEST_COORDINATOR",
         "CLASS_ADVISOR",
+        "CONTEST_COORDINATOR",
         "HOD",
       ]);
     });
 
-    it("walks Mentor -> Coordinator -> Class Advisor -> HOD -> APPROVED", () => {
+    it("walks Mentor -> Class Advisor -> Contest Coordinator -> HOD -> APPROVED", () => {
       // Each stage's `next` must be the following stage's `status`, and the last
       // stage's must be APPROVED. This is the single assertion that a stage cannot be
       // reordered, inserted or skipped without the suite noticing.
@@ -76,7 +76,8 @@ describe("OD workflow", () => {
 
   describe("checkTransition", () => {
     const mentor = STAGES[0];
-    const coordinator = STAGES[1];
+    const classAdvisor = STAGES[1];
+    const coordinator = STAGES[2];
     const hod = STAGES[3];
 
     it("allows the stage a request is actually waiting on", () => {
@@ -86,8 +87,8 @@ describe("OD workflow", () => {
     });
 
     it("refuses a stage that is not the one holding the request up", () => {
-      // The mentor cannot answer a request that has reached the coordinator.
-      const check = checkTransition(coordinator.status, mentor);
+      // The mentor cannot answer a request that has reached the class advisor.
+      const check = checkTransition(classAdvisor.status, mentor);
       expect(check.allowed).toBe(false);
       expect(check.code).toBe("od-wrong-stage");
     });
@@ -118,14 +119,17 @@ describe("OD workflow", () => {
       // these would start allowing a jump.
       expect(checkTransition(OD_STATUS.PENDING_MENTOR, hod).allowed).toBe(false);
       expect(checkTransition(OD_STATUS.PENDING_MENTOR, coordinator).allowed).toBe(false);
+      expect(checkTransition(OD_STATUS.PENDING_MENTOR, classAdvisor).allowed).toBe(false);
+      // The class advisor comes before the coordinator, so a coordinator cannot act while
+      // the request is still with the advisor.
       expect(checkTransition(OD_STATUS.PENDING_CLASS_ADVISOR, coordinator).allowed).toBe(false);
     });
   });
 
   describe("statusAfterDecision", () => {
     it("advances on approval", () => {
-      expect(statusAfterDecision(STAGES[0], "APPROVED")).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
-      expect(statusAfterDecision(STAGES[1], "APPROVED")).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(statusAfterDecision(STAGES[0], "APPROVED")).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(statusAfterDecision(STAGES[1], "APPROVED")).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
       expect(statusAfterDecision(STAGES[2], "APPROVED")).toBe(OD_STATUS.PENDING_HOD);
       expect(statusAfterDecision(STAGES[3], "APPROVED")).toBe(OD_STATUS.APPROVED);
     });
@@ -145,8 +149,8 @@ describe("OD workflow", () => {
         decidedAt: "mentor_decided_at",
         comment: "mentor_comment",
       });
-      expect(decisionColumns(STAGES[1]).decision).toBe("coordinator_decision");
-      expect(decisionColumns(STAGES[2]).decision).toBe("advisor_decision");
+      expect(decisionColumns(STAGES[1]).decision).toBe("advisor_decision");
+      expect(decisionColumns(STAGES[2]).decision).toBe("coordinator_decision");
       expect(decisionColumns(STAGES[3]).decision).toBe("hod_decision");
     });
   });

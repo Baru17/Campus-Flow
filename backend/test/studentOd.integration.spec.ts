@@ -55,6 +55,8 @@ import migration0013 from "../migrations/0013_department-aware-attendance.sql?ra
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
 import migration0016 from "../migrations/0016_academic_batches.sql?raw";
 import migration0017 from "../migrations/0017_od_requests.sql?raw";
+/* Creates `hods` and `contest_coordinators`, with the `auth_user_id` both approver routes resolve through. */
+import migration0018 from "../migrations/0018_directory-auth-user-id.sql?raw";
 
 const APPLY_ORDER = [
   migration0001,
@@ -72,6 +74,7 @@ const APPLY_ORDER = [
   migration0015,
   migration0016,
   migration0017,
+  migration0018,
 ];
 
 async function applyMigration(sql: string): Promise<void> {
@@ -371,33 +374,13 @@ describe("student OD and mentor flow", () => {
       await applyMigration(migration);
     }
 
-    // The two directory tables, verbatim from production. Not a migration: these
-    // already exist there, and adding a migration for them would claim a change
-    // production has not had.
-    await env.DB
-      .prepare(
-        `CREATE TABLE IF NOT EXISTS hods (
-          hod_id INTEGER PRIMARY KEY AUTOINCREMENT,
-          hod_name TEXT NOT NULL,
-          email TEXT NOT NULL UNIQUE,
-          department TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          auth_user_id TEXT
-        )`
-      )
-      .run();
-    await env.DB
-      .prepare(
-        `CREATE TABLE IF NOT EXISTS contest_coordinators (
-          coordinator_id INTEGER PRIMARY KEY AUTOINCREMENT,
-          coordinator_name TEXT NOT NULL,
-          email TEXT NOT NULL UNIQUE,
-          department TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          auth_user_id TEXT
-        )`
-      )
-      .run();
+    /*
+     * `hods` and `contest_coordinators` are created by migration 0018, which is in
+     * APPLY_ORDER above. They used to be written out inline here with a comment claiming
+     * the shape was "verbatim from production", and it was not -- production had no
+     * `auth_user_id` on either table, which is why the coordinator INSERT failed there
+     * with a 500 while this suite passed. The migration is the single source of truth now.
+     */
 
     await env.DB
       .prepare(
@@ -821,12 +804,12 @@ it("keeps the assignment even though no mentor is notified", async () => {
       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_MENTOR);
 
       expect((await decide("od-mentor-1", "MENTOR", id, "APPROVED")).status).toBe(200);
-      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
-
-      expect((await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
 
       expect((await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED")).status).toBe(200);
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+
+      expect((await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_HOD);
 
       expect((await decide("od-hod-1", "HOD", id, "APPROVED")).status).toBe(200);
@@ -904,8 +887,8 @@ const row = await env.DB
         // Walk to the stage under test.
         const order: [string, string][] = [
           ["od-mentor-1", "MENTOR"],
-          ["od-coord-1", "CONTEST_COORDINATOR"],
           ["od-advisor-1", "CLASS_ADVISOR"],
+          ["od-coord-1", "CONTEST_COORDINATOR"],
         ];
         for (const [previousToken, previousStage] of order) {
           if (previousStage === stage) break;
@@ -956,8 +939,8 @@ const row = await env.DB
       failEmail();
       const { status, body } = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
       expect(status).toBe(200);
-      expect(body.status).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
-      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+      expect(body.status).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
       expect(body.notification_sent).toBe(false);
       expect(body.warning).toContain("could not be sent");
       // Nothing left the Worker during the decision itself.
@@ -971,8 +954,8 @@ const row = await env.DB
 
       for (const [approver, stage] of [
         ["od-mentor-1", "MENTOR"],
-        ["od-coord-1", "CONTEST_COORDINATOR"],
         ["od-advisor-1", "CLASS_ADVISOR"],
+        ["od-coord-1", "CONTEST_COORDINATOR"],
         ["od-hod-1", "HOD"],
       ] as const) {
         const { status, body } = await decide(approver, stage, id, "APPROVED");
@@ -1020,9 +1003,9 @@ const row = await env.DB
 
     it("refuses the right person at the wrong stage", async () => {
       const id = await startRequest();
-      // The mentor cannot answer the coordinator's stage, even though they are the
+      // The mentor cannot answer the class advisor's stage, even though they are the
       // mentor. Authority is a function of the stage the request is waiting on.
-      const { status, body } = await decide("od-mentor-1", "CONTEST_COORDINATOR", id, "APPROVED");
+      const { status, body } = await decide("od-mentor-1", "CLASS_ADVISOR", id, "APPROVED");
       expect(status).toBe(403);
       expect(body.code).toBe("od-wrong-stage");
     });
@@ -1031,27 +1014,35 @@ const row = await env.DB
       const id = await startRequest();
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
 
-      const { status, body } = await decide("od-coord-2", "CONTEST_COORDINATOR", id, "APPROVED");
+      /*
+       * The request is waiting on the class advisor, so the stage is right and the refusal
+       * has to come from the *directory* check instead: the class-advisor lookup matches the
+       * address against `staff` alongside the request's cohort, and this coordinator is not
+       * in it. That is a different failure from `od-wrong-stage`, and it is asserted as such
+       * because the two are what tell "you are not this one's approver" apart from "it is
+       * not your turn yet".
+       */
+      const { status, body } = await decide("od-coord-2", "CLASS_ADVISOR", id, "APPROVED");
       expect(status).toBe(403);
       expect(body.code).toBe("od-not-your-request");
-      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
     });
 
     it("refuses an advisor mapped to a different section", async () => {
       const id = await startRequest();
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
-      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
 
       // Section B's advisor is not section A's advisor.
-      const { status } = await decide("od-advisor-2", "CLASS_ADVISOR", id, "APPROVED");
+      const { status, body } = await decide("od-advisor-2", "CLASS_ADVISOR", id, "APPROVED");
       expect(status).toBe(403);
+      expect(body.code).toBe("od-not-your-request");
     });
 
     it("refuses an HOD from another department", async () => {
       const id = await startRequest();
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
-      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
       await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
 
       const { status } = await decide("od-hod-2", "HOD", id, "APPROVED");
       expect(status).toBe(403);
@@ -1060,7 +1051,7 @@ const row = await env.DB
 
     it("refuses a student", async () => {
       const id = await startRequest();
-      for (const stage of ["MENTOR", "CONTEST_COORDINATOR", "CLASS_ADVISOR", "HOD"]) {
+      for (const stage of ["MENTOR", "CLASS_ADVISOR", "CONTEST_COORDINATOR", "HOD"]) {
         const { status } = await decide(STUDENT_TOKEN, stage, id, "APPROVED");
         expect(status, stage).toBe(403);
       }
@@ -1112,8 +1103,8 @@ const second = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
     it("refuses to act on a fully approved request", async () => {
       const id = await startRequest();
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
-      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
       await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
       await decide("od-hod-1", "HOD", id, "APPROVED");
 
       const { status, body } = await decide("od-hod-1", "HOD", id, "REJECTED", "Changed my mind");
@@ -1163,6 +1154,7 @@ const second = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
       // Walk to the coordinator stage, so the refusal is about the directory rather
       // than about the stage being wrong.
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
       // A staff account that is not a coordinator: the role is not the authority, the
       // directory row is.
       await makeStaff("906", "Just Staff", "just.staff@kiot.ac.in", DEPARTMENT, "od-plain-1");
@@ -1190,6 +1182,7 @@ const second = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
     it("lets a member of staff appointed as coordinator decide that stage", async () => {
       const id = await startRequest();
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
       expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
 
       const email = "priya.rao@kiot.ac.in";
@@ -1241,21 +1234,105 @@ const second = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
       expect(row?.department).toBe(DEPARTMENT);
       expect(row?.auth_user_id).toBe(before!.auth_user_id);
 
-      // She signs in to the approver routes as the staff member she already was.
+      // She signs in to the approver routes, and they describe her as the
+      // coordinator she now is -- even though her *account* role is still
+      // `staff`, which the two assertions above prove has not changed.
+      //
+      // This is the whole reason role resolution reads the directory rather
+      // than the account: `auth_users.role` holds one value and hers has to stay
+      // `staff` or she loses her mentor and attendance access, so on the account
+      // alone there is nothing that says "coordinator". The `contest_coordinators`
+      // row says it, and that is what `/api/auth/od-approver/login` and
+      // `/api/od/approver/me` read to put her on the coordinator dashboard.
       const login = await call(null, "/api/auth/od-approver/login", {
         method: "POST",
         body: JSON.stringify({ email, password: "1234" }),
       });
       expect(login.status).toBe(200);
-      expect(login.body.approver.role).toBe("staff");
+      expect(login.body.approver.role).toBe("contest_coordinator");
       expect(login.body.approver.department).toBe(DEPARTMENT);
+      expect(login.body.user.role).toBe("staff");
 
       // And she can action the coordinator stage, because the directory row -- not the
       // role -- is what the check reads.
       expect((await decide("od-priya-1", "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
-      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_HOD);
 
       expect(priya.email).toBe(email.toLowerCase());
+    });
+
+    /*
+     * The Approved view on the coordinator's dashboard.
+     *
+     * It cannot be the pending list with a filter, and this is the test that says why. Priya
+     * has just decided the only request in the system, so `status` has moved to PENDING_HOD --
+     * there is nothing at PENDING_CONTEST_COORDINATOR left to show her. The only record that
+     * she approved it is her own `coordinator_decided_by`, and that is what the view filters
+     * on. Before the approved view existed she had no way to see anything she had signed off.
+     */
+    it("lists what the coordinator approved after it left her pending queue", async () => {
+      const id = await startRequest();
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+
+      // It has reached the coordinator stage, so it is waiting on them.
+      const before = await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR");
+      expect(before.status).toBe(200);
+      expect(before.body.view).toBe("pending");
+      expect(before.body.requests.some((r: any) => r.od_request_id === id)).toBe(true);
+
+      expect((await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
+
+      // Gone from Pending...
+      const pending = await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR");
+      expect(pending.body.requests.some((r: any) => r.od_request_id === id)).toBe(false);
+
+      // ...and in Approved, because she is the one who decided it.
+      const approved = await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR&view=approved");
+      expect(approved.status).toBe(200);
+      expect(approved.body.view).toBe("approved");
+      const mine = approved.body.requests.filter((r: any) => r.od_request_id === id);
+      expect(mine).toHaveLength(1);
+      expect(mine[0].decisions.contest_coordinator.decision).toBe("APPROVED");
+      expect(mine[0].decisions.contest_coordinator.decided_by).toBe(actors.coordinator.email);
+
+      // Another coordinator for the same department approved nothing, so they must not
+      // see it -- otherwise the view is a department list wearing a "mine" label.
+      const other = await call("od-coord-2", "/api/od/requests?stage=CONTEST_COORDINATOR&view=approved");
+      expect(other.body.requests.some((r: any) => r.od_request_id === id)).toBe(false);
+
+      // An unknown view is refused rather than quietly defaulted to pending.
+      const bogus = await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR&view=everything");
+      expect(bogus.status).toBe(400);
+      expect(bogus.body.code).toBe("od-unknown-view");
+    });
+
+    it("lists what the HOD approved, and nobody else's", async () => {
+      const id = await startRequest();
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
+
+      // It is waiting on the HOD, so it is in their Pending.
+      const pending = await call("od-hod-1", "/api/od/requests?stage=HOD");
+      expect(pending.status).toBe(200);
+      expect(pending.body.requests.some((r: any) => r.od_request_id === id)).toBe(true);
+
+      // The HOD approves last, and approving finishes the request outright -- so this is
+      // the case where the Pending view has nothing at all left to show.
+      expect((await decide("od-hod-1", "HOD", id, "APPROVED")).status).toBe(200);
+      expect(await currentStatus(id)).toBe(OD_STATUS.APPROVED);
+
+      const emptied = await call("od-hod-1", "/api/od/requests?stage=HOD");
+      expect(emptied.body.requests.some((r: any) => r.od_request_id === id)).toBe(false);
+
+      const approved = await call("od-hod-1", "/api/od/requests?stage=HOD&view=approved");
+      expect(approved.status).toBe(200);
+      expect(approved.body.requests.some((r: any) => r.od_request_id === id)).toBe(true);
+
+      // The HOD for the other department signed off nothing.
+      const other = await call("od-hod-2", "/api/od/requests?stage=HOD&view=approved");
+      expect(other.body.requests.some((r: any) => r.od_request_id === id)).toBe(false);
     });
   });
 
@@ -1362,6 +1439,7 @@ it("reports whether the signed-in approver may act", async () => {
       const { body } = await fileOd([futureDate(60)], 1);
       const id = body.request.od_request_id;
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
 
       const mine = await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR");
       expect(mine.status).toBe(200);
@@ -1376,8 +1454,8 @@ it("reports whether the signed-in approver may act", async () => {
       const { body } = await fileOd([futureDate(70)], 1);
       const id = body.request.od_request_id;
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
-      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
       await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
 
       const mine = await call("od-hod-1", "/api/od/requests?stage=HOD");
       expect(mine.status).toBe(200);
@@ -1391,7 +1469,6 @@ it("reports whether the signed-in approver may act", async () => {
       const { body } = await fileOd([futureDate(80)], 1);
       const id = body.request.od_request_id;
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
-      await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
 
       const mine = await call("od-advisor-1", "/api/od/requests?stage=CLASS_ADVISOR");
       expect(mine.body.requests.some((request: any) => request.od_request_id === id)).toBe(true);
@@ -1404,9 +1481,9 @@ it("reports whether the signed-in approver may act", async () => {
       const { body } = await fileOd([futureDate(90)], 1);
       const id = body.request.od_request_id;
 
-      // Still PENDING_MENTOR: the coordinator has not had it yet.
+      // Still PENDING_MENTOR: the class advisor has not had it yet.
       expect(
-        (await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR")).body.requests.some(
+        (await call("od-advisor-1", "/api/od/requests?stage=CLASS_ADVISOR")).body.requests.some(
           (request: any) => request.od_request_id === id
         )
       ).toBe(false);
@@ -1414,7 +1491,7 @@ it("reports whether the signed-in approver may act", async () => {
       await decide("od-mentor-1", "MENTOR", id, "APPROVED");
       // Now it has.
       expect(
-        (await call("od-coord-1", "/api/od/requests?stage=CONTEST_COORDINATOR")).body.requests.some(
+        (await call("od-advisor-1", "/api/od/requests?stage=CLASS_ADVISOR")).body.requests.some(
           (request: any) => request.od_request_id === id
         )
       ).toBe(true);

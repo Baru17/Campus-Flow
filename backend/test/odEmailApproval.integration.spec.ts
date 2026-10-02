@@ -69,6 +69,8 @@ import migration0013 from "../migrations/0013_department-aware-attendance.sql?ra
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
 import migration0016 from "../migrations/0016_academic_batches.sql?raw";
 import migration0017 from "../migrations/0017_od_requests.sql?raw";
+/* Creates `hods` and `contest_coordinators`, with the `auth_user_id` both approver routes resolve through. */
+import migration0018 from "../migrations/0018_directory-auth-user-id.sql?raw";
 
 const APPLY_ORDER = [
   migration0001,
@@ -86,6 +88,7 @@ const APPLY_ORDER = [
   migration0015,
   migration0016,
   migration0017,
+  migration0018,
 ];
 
 async function applyMigration(sql: string): Promise<void> {
@@ -299,34 +302,12 @@ describe("OD approval by emailed link", () => {
     }
 
     /*
-     * The two directory tables, verbatim from production. Not a migration: these already
-     * exist there, and adding a migration for them would claim a change production has not
-     * had.
+     * `hods` and `contest_coordinators` are created by migration 0018, which is in
+     * APPLY_ORDER above. They used to be written out inline here with a comment claiming
+     * the shape was "verbatim from production", and it was not -- production had no
+     * `auth_user_id` on either table. The migration is the single source of truth now, so
+     * this suite cannot pass against a schema the deployed database does not have.
      */
-    await env.DB
-      .prepare(
-        `CREATE TABLE IF NOT EXISTS hods (
-          hod_id INTEGER PRIMARY KEY AUTOINCREMENT,
-          hod_name TEXT NOT NULL,
-          email TEXT NOT NULL UNIQUE,
-          department TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          auth_user_id TEXT
-        )`
-      )
-      .run();
-    await env.DB
-      .prepare(
-        `CREATE TABLE IF NOT EXISTS contest_coordinators (
-          coordinator_id INTEGER PRIMARY KEY AUTOINCREMENT,
-          coordinator_name TEXT NOT NULL,
-          email TEXT NOT NULL UNIQUE,
-          department TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          auth_user_id TEXT
-        )`
-      )
-      .run();
 
     await makeAccount(ADMIN_AUTH, "e2e.admin", "e2e.admin@kiot.ac.in", "admin");
     await signIn(ADMIN_AUTH, ADMIN_TOKEN);
@@ -447,9 +428,11 @@ describe("OD approval by emailed link", () => {
   }
 
   /** Files a request and returns its id. */
+    /** Files a request and returns its id. */
   async function startRequest(dates: string[] = [OD_DATE]): Promise<string> {
     await giveMentor();
     stubEmail();
+
     const { status, body } = await asStudent("/api/student/od", {
       method: "POST",
       body: JSON.stringify({
@@ -458,10 +441,14 @@ describe("OD approval by emailed link", () => {
         reason: "Attending an inter-college technical event",
       }),
     });
+
+    if (status !== 200) {
+      console.log("startRequest failed:", status, body);
+    }
+
     expect(status).toBe(200);
     return body.request.od_request_id;
   }
-
   /** Walks a request up to the stage named, approving each earlier one. */
   async function advanceTo(requestId: string, target: OdStage): Promise<void> {
     for (const stage of STAGES) {
@@ -488,7 +475,11 @@ describe("OD approval by emailed link", () => {
     it("is a single-use approval link, never the approver sign-in page", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      // The mentor's approval hands it to the class advisor, who is staff and is sent to
+      // their dashboard rather than given a token.
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
 
+      // The coordinator is next, and is sent a real approval link.
       const coordinatorMail = mailTo(COORDINATOR_EMAIL)[0];
       expect(coordinatorMail).toBeDefined();
       expect(coordinatorMail.subject).toContain(STUDENT_NAME);
@@ -506,7 +497,6 @@ describe("OD approval by emailed link", () => {
 
       // And the same for the HOD, further along the chain.
       await decideBySession(COORDINATOR_TOKEN, "CONTEST_COORDINATOR", id, "APPROVED");
-      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const hodMail = mailTo(HOD_EMAIL)[0];
       expect(hodMail).toBeDefined();
       expect(linkIn(hodMail)).toMatch(/\/od\/approve\/[A-Za-z0-9_.-]+$/);
@@ -516,6 +506,7 @@ describe("OD approval by emailed link", () => {
     it("carries no password, session or API key in the URL", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
 
       const link = linkIn(mailTo(COORDINATOR_EMAIL)[0]);
       expect(link.toLowerCase()).not.toMatch(/password|pwd|api[-_]?key|session|secret/i);
@@ -526,6 +517,7 @@ describe("OD approval by emailed link", () => {
     it("is a different link each time one is issued, even for one request", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
 
       const first = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
       // A re-send: same request, same coordinator, same stage.
@@ -543,13 +535,20 @@ describe("OD approval by emailed link", () => {
       const mentorMail = mailTo(MENTOR_EMAIL)[0];
       expect(linkIn(mentorMail)).toBe("https://campus-flow-cdl.pages.dev/staff");
 
+      // The mentor approves, and the next person in the chain is the class advisor --
+      // the other staff role, so also sent to a dashboard rather than given a token.
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
-      await decideBySession(COORDINATOR_TOKEN, "CONTEST_COORDINATOR", id, "APPROVED");
 
       const advisorMail = mailTo(ADVISOR_EMAIL)[0];
       expect(linkIn(advisorMail)).toBe("https://campus-flow-cdl.pages.dev/advisor");
       expect(mentorMail.text).toContain("asked to sign in");
       expect(advisorMail.text).toContain("asked to sign in");
+
+      // Only once the advisor has approved does anyone get a bearer link, and that is the
+      // coordinator rather than the HOD.
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
+      expect(mailTo(COORDINATOR_EMAIL)[0].text).toContain("approves this one request only");
+      expect(mailTo(HOD_EMAIL)).toHaveLength(0);
     });
 
     it("reports a failed notification without undoing the decision", async () => {
@@ -571,8 +570,10 @@ describe("OD approval by emailed link", () => {
       // The decision is the record; the mail is a side effect of it. An approver who was
       // told "saved" has to be able to rely on it even when the mail server is down.
       expect(status).toBe(200);
-      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
-      expect(body.status).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+      // The class advisor is next in the chain, and they were never told -- which is the
+      // point being asserted.
+      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(body.status).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
       // ...and the caller is told the notification separately, not buried.
       expect(body.notification_sent).toBe(false);
       expect(body.warning).toContain("could not be sent");
@@ -585,6 +586,7 @@ describe("OD approval by emailed link", () => {
     it("A. returns the coordinator's request, and says who they are", async () => {
       const id = await startRequest([OD_DATE, OD_DATE_2]);
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       const { status, body } = await resolveLink(token);
@@ -641,6 +643,7 @@ describe("OD approval by emailed link", () => {
     it("returns nothing it should not: no auth internals, no student address", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       const { body } = await resolveLink(token);
@@ -659,6 +662,7 @@ describe("OD approval by emailed link", () => {
     it("tells a browser not to cache the page the token is in", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       const response = await SELF.fetch(`https://example.com/api/od/email-approval/${token}`);
@@ -669,6 +673,7 @@ describe("OD approval by emailed link", () => {
     it("never needs a session, and a session cannot widen it", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       // No cookie at all, and a cookie for somebody who is not the approver.
@@ -701,6 +706,7 @@ describe("OD approval by emailed link", () => {
     it("C. refuses a forged token -- one the attacker signed himself", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
 
       // The right shape, the right claims, and a signature over a different secret.
       const forged = await issueApprovalToken(
@@ -717,6 +723,7 @@ describe("OD approval by emailed link", () => {
     it("C. refuses a tampered token and says nothing about what was changed", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       // Tamper with each half in turn: one character changed in the middle of the signature,
@@ -749,6 +756,7 @@ describe("OD approval by emailed link", () => {
     it("D. refuses an expired token", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
 
       // Issued a week ago with a week-long life, so it is unambiguously past its expiry.
       const expired = await mintToken(
@@ -772,6 +780,7 @@ describe("OD approval by emailed link", () => {
     it("D. still accepts a link right up to its expiry", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = await mintToken(id, COORDINATOR_STAGE, COORDINATOR_EMAIL);
 
       const { status, body } = await resolveLink(token);
@@ -786,12 +795,13 @@ describe("OD approval by emailed link", () => {
     it("E. refuses a link that has already been used", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       expect((await resolveLink(token)).status).toBe(200);
       const approved = await decideByLink(token, id, "APPROVED");
       expect(approved.status).toBe(200);
-      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_HOD);
 
       // Spent. The same link, the same answer as a forged one.
       const again = await resolveLink(token);
@@ -802,7 +812,7 @@ describe("OD approval by emailed link", () => {
       expect(second.status).toBe(400);
       expect(second.body.code).toBe("od-invalid-approval-link");
       // Untouched by the attempt.
-      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_HOD);
     });
 
     it("E. is also spent once somebody else has decided the stage", async () => {
@@ -814,6 +824,7 @@ describe("OD approval by emailed link", () => {
        */
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       expect((await decideBySession(COORDINATOR_TOKEN, "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
@@ -822,12 +833,13 @@ describe("OD approval by emailed link", () => {
       expect(status).toBe(400);
       expect(body.error).toBe("Approval link is invalid or has expired.");
       expect((await decideByLink(token, id, "APPROVED")).status).toBe(400);
-      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_HOD);
     });
 
     it("E. is spent on a request that was rejected before the link was opened", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       await decideBySession(COORDINATOR_TOKEN, "CONTEST_COORDINATOR", id, "REJECTED", "No");
@@ -841,6 +853,7 @@ describe("OD approval by emailed link", () => {
     it("F. refuses a coordinator's link against a different request", async () => {
       const mine = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", mine, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", mine, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       // A second request, so there is a real other request to aim at. A fresh request id
@@ -895,6 +908,7 @@ describe("OD approval by emailed link", () => {
     it("H. refuses an HOD's link for a request waiting on the coordinator", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
 
       const token = await mintToken(id, HOD_STAGE, HOD_EMAIL);
       const { status } = await resolveLink(token);
@@ -914,6 +928,7 @@ describe("OD approval by emailed link", () => {
        */
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       const attempt = await decideByLink(token, id, "APPROVED", undefined, "HOD");
@@ -928,6 +943,7 @@ describe("OD approval by emailed link", () => {
     it("I. refuses a link minted for a coordinator in another department", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
 
       // CSE's coordinator, correctly signed, correctly named -- and not this student's
       // coordinator.
@@ -945,6 +961,7 @@ describe("OD approval by emailed link", () => {
     it("I. stops working when the named approver is moved to another department", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
       expect((await resolveLink(token)).status).toBe(200);
 
@@ -970,6 +987,7 @@ describe("OD approval by emailed link", () => {
     it("I. refuses a link for an approver with no directory record at all", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
 
       // Signed for someone who is not a coordinator for anybody.
       const notAnApprover = await mintToken(id, COORDINATOR_STAGE, "nobody.here@kiot.ac.in");
@@ -980,6 +998,7 @@ describe("OD approval by emailed link", () => {
     it("refuses a link for a request that does not exist", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       await env.DB.prepare("DELETE FROM od_requests WHERE od_request_id = ?").bind(id).run();
@@ -1000,6 +1019,7 @@ describe("OD approval by emailed link", () => {
        */
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       // A body that claims to be somebody else changes nothing: the address comes from the
@@ -1024,28 +1044,31 @@ describe("OD approval by emailed link", () => {
     it("J. a coordinator's approval hands the request to the class advisor, and only that far", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       const { status, body } = await decideByLink(token, id, "APPROVED");
       expect(status).toBe(200);
-      expect(body.status).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
-      expect(body.next_stage).toBe("Class Advisor");
-      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(body.status).toBe(OD_STATUS.PENDING_HOD);
+      expect(body.next_stage).toBe("HOD");
+      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_HOD);
 
-      // The advisor is asked, through their own dashboard, and the student is told this
-      // stage went through -- not that they are approved.
-      expect(mailTo(ADVISOR_EMAIL)).toHaveLength(1);
-      expect(linkIn(mailTo(ADVISOR_EMAIL)[0])).toBe("https://campus-flow-cdl.pages.dev/advisor");
+      // The HOD is asked next, through a bearer link rather than a dashboard,
+      // and the student is told this stage went through -- not that they
+      // are approved.
+      expect(mailTo(HOD_EMAIL)).toHaveLength(1);
+      expect(linkIn(mailTo(HOD_EMAIL)[0])).toMatch(/\/od\/approve\//);
 
       const studentMail = mailTo(STUDENT_EMAIL);
-      expect(studentMail).toHaveLength(2); // the submission mail is not to the student
+      expect(studentMail).toHaveLength(3); // mentor and advisor decisions, then this one
       const decision = studentMail.at(-1)!;
       expect(decision.subject).toContain("approved by the Contest Coordinator");
       expect(decision.text).not.toContain("fully approved");
 
-      // Not yet.
-      expect(mailTo(HOD_EMAIL)).toHaveLength(0);
+      // Nobody has approved it yet, so nobody has told the student that.
+      expect(mailTo(STUDENT_EMAIL).some((m) => m.subject.includes("OD Request Approved"))).toBe(false);
       expect(mailTo(COORDINATOR_EMAIL)).toHaveLength(1); // only the original request-for-approval
+      expect(mailTo(ADVISOR_EMAIL)).toHaveLength(1); // their own dashboard request
     });
 
     it("N. the HOD's approval finishes it, and tells only the student", async () => {
@@ -1095,6 +1118,7 @@ describe("OD approval by emailed link", () => {
     it("records who decided it, and when, from a link exactly as from a session", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       expect((await decideByLink(token, id, "APPROVED", "Approved, good luck")).status).toBe(200);
@@ -1111,12 +1135,13 @@ describe("OD approval by emailed link", () => {
       expect(row.coordinator_decided_by).toBe(COORDINATOR_EMAIL);
       expect(row.coordinator_decided_at).toBeTruthy();
       expect(row.coordinator_comment).toBe("Approved, good luck");
-      expect(row.status).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(row.status).toBe(OD_STATUS.PENDING_HOD);
     });
 
     it("requires a reason to reject, through a link as much as through a session", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       const refused = await decideByLink(token, id, "REJECTED", "   ");
@@ -1134,6 +1159,7 @@ describe("OD approval by emailed link", () => {
     it("refuses a decision that is neither APPROVED nor REJECTED", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       for (const decision of ["MAYBE", "", "approve", "1"]) {
@@ -1164,6 +1190,8 @@ describe("OD approval by emailed link", () => {
        */
       const id = await startRequest();
       expect((await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED")).status).toBe(200);
+      // The coordinator is third in the chain, so the class advisor approves first.
+      expect((await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED")).status).toBe(200);
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
       expect(token).not.toBe("");
 
@@ -1188,7 +1216,7 @@ describe("OD approval by emailed link", () => {
         .first<any>();
       expect(row.coordinator_decision).toBe("APPROVED");
       expect(row.coordinator_decided_by).toBe(COORDINATOR_EMAIL);
-      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_CLASS_ADVISOR);
+      expect(await statusOf(id)).toBe(OD_STATUS.PENDING_HOD);
 
       // One decision, so one notification to the student.
       expect(mailTo(STUDENT_EMAIL).filter((m) => m.subject.includes("Contest Coordinator"))).toHaveLength(1);
@@ -1201,6 +1229,7 @@ describe("OD approval by emailed link", () => {
     it("K. a coordinator's rejection ends it, and the advisor is never asked", async () => {
       const id = await startRequest();
       await decideBySession(MENTOR_TOKEN, "MENTOR", id, "APPROVED");
+      await decideBySession(ADVISOR_TOKEN, "CLASS_ADVISOR", id, "APPROVED");
       const token = tokenFrom(mailTo(COORDINATOR_EMAIL)[0]);
 
       const { status, body } = await decideByLink(token, id, "REJECTED", "Not a contest day");
@@ -1226,11 +1255,11 @@ describe("OD approval by emailed link", () => {
       expect(studentMail.text).toContain(`Department: ${DEPARTMENT}`);
       expect(studentMail.text).toContain(`Batch: ${BATCH}`);
 
-      expect(mailTo(ADVISOR_EMAIL)).toHaveLength(0);
+      // The HOD is the only person still ahead, and a rejection means nobody is asked.
       expect(mailTo(HOD_EMAIL)).toHaveLength(0);
-      // Exactly one rejection message, on top of the mentor's earlier approval.
+      // Exactly one rejection message, on top of the mentor's and the advisor's approvals.
       const toStudent = mailTo(STUDENT_EMAIL);
-      expect(toStudent).toHaveLength(2);
+      expect(toStudent).toHaveLength(3);
       expect(toStudent.filter((m) => m.subject.includes("OD Request Rejected"))).toHaveLength(1);
     });
 

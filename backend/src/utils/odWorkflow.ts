@@ -10,11 +10,11 @@
  * Two properties are load-bearing and are why the order is data rather than a
  * series of `if` statements in a handler:
  *
- *   1. **The order is fixed.** Mentor, then Contest Coordinator, then Class
- *      Advisor, then HOD. A stage cannot be skipped, run out of order, or run twice,
- *      because a stage is only reachable from the status the previous stage leaves
- *      behind. `STAGES` is therefore the definition of the chain and the route
- *      handlers walk it rather than naming the next status themselves.
+ *   1. **The order is fixed.** Mentor, then Class Advisor, then Contest Coordinator,
+ *      then HOD. A stage cannot be skipped, run out of order, or run twice, because a
+ *      stage is only reachable from the status the previous stage leaves behind.
+ *      `STAGES` is therefore the definition of the chain and the route handlers walk it
+ *      rather than naming the next status themselves.
  *   2. **A decision belongs to one stage.** Which status is waiting tells you which
  *      approver may act, so authority is a function of the request's own state
  *      rather than anything the caller sends. A student, or a mentor trying to
@@ -99,30 +99,30 @@ export const STAGES: readonly OdStage[] = [
     label: "Mentor",
     columnPrefix: "mentor",
     status: OD_STATUS.PENDING_MENTOR,
-    next: OD_STATUS.PENDING_CONTEST_COORDINATOR,
+    next: OD_STATUS.PENDING_CLASS_ADVISOR,
     table: null,
     emailColumn: null,
     nameColumn: null,
-  },
-  {
-    key: "CONTEST_COORDINATOR",
-    label: "Contest Coordinator",
-    columnPrefix: "coordinator",
-    status: OD_STATUS.PENDING_CONTEST_COORDINATOR,
-    next: OD_STATUS.PENDING_CLASS_ADVISOR,
-    table: "contest_coordinators",
-    emailColumn: "email",
-    nameColumn: "coordinator_name",
   },
   {
     key: "CLASS_ADVISOR",
     label: "Class Advisor",
     columnPrefix: "advisor",
     status: OD_STATUS.PENDING_CLASS_ADVISOR,
-    next: OD_STATUS.PENDING_HOD,
+    next: OD_STATUS.PENDING_CONTEST_COORDINATOR,
     table: "staff",
     emailColumn: "email",
     nameColumn: "staff_name",
+  },
+  {
+    key: "CONTEST_COORDINATOR",
+    label: "Contest Coordinator",
+    columnPrefix: "coordinator",
+    status: OD_STATUS.PENDING_CONTEST_COORDINATOR,
+    next: OD_STATUS.PENDING_HOD,
+    table: "contest_coordinators",
+    emailColumn: "email",
+    nameColumn: "coordinator_name",
   },
   {
     key: "HOD",
