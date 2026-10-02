@@ -71,6 +71,12 @@ export default function AdminContestCoordinatorManagement() {
   const [showAdd, setShowAdd] = useState(false)
   const [editing, setEditing] = useState(null)
   const [notice, setNotice] = useState(null)
+  /*
+   * A refusal is not a success, so the notice is not styled as one. Kept beside
+   * `notice` rather than folded into it so every existing `setNotice(text)` call
+   * stays a plain string and only the branches that need another colour say so.
+   */
+  const [noticeVariant, setNoticeVariant] = useState('success')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -146,7 +152,11 @@ export default function AdminContestCoordinatorManagement() {
         />
 
         {notice && (
-          <StatusMessage variant="success" dismissible onDismiss={() => setNotice(null)}>
+          <StatusMessage
+            variant={noticeVariant}
+            dismissible
+            onDismiss={() => setNotice(null)}
+          >
             {notice}
           </StatusMessage>
         )}
@@ -310,12 +320,33 @@ export default function AdminContestCoordinatorManagement() {
             onAdded={(result) => {
               setShowAdd(false)
               load()
-              // Reusing the staff account is the normal case, so it is named: the admin
-              // needs to know there is no new password to hand over before they leave.
+              /*
+               * Same reason the dialog distinguishes them: `created === 0` is not
+               * evidence that the person is already a coordinator. The server also
+               * returns `created: 0` when it refused the row outright -- an account
+               * role conflict is the common one, because a coordinator is appointed
+               * out of a department's staff roster and every member of staff already
+               * holds a `staff` account. Asserting "already a coordinator" there
+               * would tell the admin their appointment succeeded when no row was
+               * written, so the server's own reason is what gets shown.
+               */
               if ((result.created || 0) === 0) {
-                setNotice('That person is already a contest coordinator. Nothing changed.')
+                const refusal = (result.roleMismatches || []).map((m) => m.reason).filter(Boolean)
+                if (refusal.length > 0) {
+                  setNoticeVariant('danger')
+                  setNotice(`${refusal.join(' ')} No coordinator was added.`)
+                  return
+                }
+                if ((result.skipped || 0) > 0) {
+                  setNoticeVariant('info')
+                  setNotice('That person is already a contest coordinator. Nothing changed.')
+                  return
+                }
+                setNoticeVariant('danger')
+                setNotice('No coordinator was added. Nothing changed.')
                 return
               }
+              setNoticeVariant('success')
               setNotice(
                 `Added ${result.created} coordinator${
                   result.created === 1 ? '' : 's'
@@ -347,6 +378,7 @@ export default function AdminContestCoordinatorManagement() {
             onSaved={(saved) => {
               setEditing(null)
               load()
+              setNoticeVariant('success')
               setNotice(`Updated ${saved?.coordinator_name || editing.coordinator_name}.`)
             }}
           />

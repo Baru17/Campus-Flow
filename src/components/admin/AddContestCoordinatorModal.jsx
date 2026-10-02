@@ -134,6 +134,68 @@ export default function AddContestCoordinatorModal({
   const added = (result?.created || 0) > 0
   const reused = result?.authAccountsReused || 0
 
+  /*
+   * Why `created === 0` needs to be explained rather than reported as one thing.
+   *
+   * Zero rows written is not one condition, it is four, and only one of them is
+   * "they are already a coordinator":
+   *
+   *   - `skipped` -- the address was already in `contest_coordinators`. The genuine
+   *     duplicate, and the only case the word "already" fits.
+   *   - `roleMismatches` -- the address holds an `auth_users` row of another role,
+   *     which is the refusal described at the top of this file. The coordinator row
+   *     was *not* written, so calling this "already a coordinator" states the
+   *     opposite of what happened and leaves the admin with nothing to act on.
+   *   - `invalid` / `duplicates` -- the row never got far enough to be considered.
+   *
+   * So the reason is chosen here, in order of how much it explains, and rendered
+   * as text. A server that refuses must be able to say why, or the message is worse
+   * than no message at all.
+   */
+  const notAddedReason = (() => {
+    if (!result) return null
+    if ((result.roleMismatches || []).length > 0) {
+      const reasons = result.roleMismatches
+        .map((mismatch) => mismatch.reason)
+        .filter(Boolean)
+        .join(' ')
+      return {
+        heading: 'The account could not be reused',
+        body: reasons
+          ? `${reasons}. No coordinator was added.`
+          : 'This address already holds a login account with a different role, so it ' +
+            'cannot also be a coordinator login. No coordinator was added.',
+      }
+    }
+    if ((result.invalid || []).length > 0) {
+      const messages = result.invalid
+        .flatMap((entry) => (entry.errors || []).map((e) => e.message))
+        .filter(Boolean)
+      return {
+        heading: 'That row was rejected',
+        body: `${messages.join(' ') || 'The row did not pass validation.'} No coordinator was added.`,
+      }
+    }
+    if ((result.duplicates || []).length > 0) {
+      return {
+        heading: 'Nothing to add',
+        body: 'The same address was submitted more than once in this request, so there ' +
+          'was nothing new to add.',
+      }
+    }
+    if ((result.skipped || 0) > 0) {
+      return {
+        heading: 'Already a coordinator',
+        body: `${selected?.email} is already a contest coordinator, so nothing was changed.`,
+      }
+    }
+    return {
+      heading: 'Nothing was added',
+      body: 'The request produced no coordinator row and the server gave no reason. ' +
+        'Nothing was changed.',
+    }
+  })()
+
   const staffOptions = staff.map((person) => ({
     value: String(person.staff_id),
     label: `${person.staff_name} — ${person.email}`,
@@ -235,10 +297,17 @@ export default function AddContestCoordinatorModal({
           )}
 
           {result && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+            <div
+              role="status"
+              className={`rounded-xl border px-4 py-3 text-sm ${
+                added
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-800'
+              }`}
+            >
               <div className="flex items-center gap-2 font-bold">
-                <CheckIcon size={16} />
-                {added ? 'Coordinator added' : 'Already a coordinator'}
+                {added ? <CheckIcon size={16} /> : <AlertIcon size={16} />}
+                {added ? 'Coordinator added' : notAddedReason?.heading || 'Nothing was added'}
               </div>
 
               {added ? (
@@ -269,9 +338,7 @@ export default function AddContestCoordinatorModal({
                   </p>
                 </>
               ) : (
-                <p className="mt-1">
-                  {selected?.email} is already a contest coordinator, so nothing was changed.
-                </p>
+                <p className="mt-1">{notAddedReason?.body}</p>
               )}
 
               {/* Only when an account was actually created. */}
