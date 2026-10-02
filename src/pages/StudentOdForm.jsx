@@ -57,7 +57,7 @@ const STATUS_COPY = {
 
 export default function StudentOdForm() {
   const navigate = useNavigate()
-  const { logout } = useAuth()
+  const { logout, student: authStudent, loading: authLoading } = useAuth()
 
   const [me, setMe] = useState(null)
   const [requests, setRequests] = useState([])
@@ -86,12 +86,27 @@ export default function StudentOdForm() {
     }
   }, [])
 
+  /*
+   * Same gate as `StudentEntry`, and for the same reason: the session is restored by
+   * `AuthProvider` on mount, and both `/api/student/me` and `/api/student/od` need it.
+   * Firing them at the same time as the restore meant a redundant pair of requests whose
+   * failure showed as an error banner on a cold load. `AdvisorDashboard` already gates its
+   * first authenticated call on the context having resolved; this now does the same.
+   *
+   * No server behaviour changes. The student role is still required and still checked.
+   */
   useEffect(() => {
+    if (authLoading) return
+    if (!authStudent) {
+      navigate('/role-selection', { replace: true })
+      return
+    }
     load()
-  }, [load])
+  }, [authLoading, authStudent, load, navigate])
 
-  const student = me?.student
+  const student = me?.student ?? authStudent
   const hasMentor = Boolean(student?.mentor_email)
+  const busy = authLoading || loading
   const submissionDate = today()
 
   /*
@@ -214,7 +229,7 @@ export default function StudentOdForm() {
         <DashboardHero
           icon={<SparklesIcon size={26} />}
           title="OD Form"
-          subtitle="Request on-duty leave. It is reviewed by your mentor, the Contest Coordinator, your Class Advisor and the HOD."
+          subtitle="Request on-duty leave. It is reviewed by your mentor, your Class Advisor, the Contest Coordinator and the HOD."
         />
 
         {loadError && <StatusMessage variant="danger">{loadError}</StatusMessage>}
@@ -229,7 +244,16 @@ export default function StudentOdForm() {
             within the grid area of a `col-span-8` item, which is columns 1-8, so the card
             sat against the left edge. The wrapper centres itself with `mx-auto`. */}
         <div className="page-enter mt-4 mx-auto w-full max-w-2xl">
-          {!loading && student && (
+          {busy && (
+            <div className="cf-empty">
+              <span className="cf-spinner" role="status" aria-hidden="true" />
+              <p className="text-sm text-slate-500">
+                {authLoading ? 'Checking your session…' : 'Loading your details…'}
+              </p>
+            </div>
+          )}
+
+          {!busy && student && (
             <form
               className="cf-card cf-card-hover p-3 md:p-4"
               onSubmit={(event) => {

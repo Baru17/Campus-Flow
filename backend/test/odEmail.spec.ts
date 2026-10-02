@@ -13,7 +13,6 @@ import {
   odMentorAssignedEmail,
   type OdRequestFacts,
 } from "../src/utils/odEmail";
-import { OD_APPROVAL_TOKEN_TTL_HOURS } from "../src/utils/odApprovalToken";
 
 /**
  * Unit coverage for the pure pieces of the mail layer: where a link points, and what a
@@ -21,9 +20,14 @@ import { OD_APPROVAL_TOKEN_TTL_HOURS } from "../src/utils/odApprovalToken";
  *
  * Both are pure string builders, so nothing is sent and no network is touched. Delivery is
  * the integration suite's business. What is pinned here is that the URL is always one of
- * ours, that a dashboard link carries no credential at all, that the emailed-link copy
- * tells the truth about what the link can do, and that nothing an approver types can
- * corrupt the message they receive.
+ * ours, that the link carries no credential at all for any of the four stages, and that
+ * nothing an approver types can corrupt the message they receive.
+ *
+ * There used to be a second action kind here -- `"email-link"`, a signed bearer token for a
+ * Contest Coordinator or an HOD -- with three tests asserting what that token could do and
+ * when it expired. Those are gone with the mechanism: all four roles now receive a dashboard
+ * route and authenticate against it, so there is one kind of link and the credential check
+ * below now covers every stage rather than two of them.
  */
 
 const FACTS: OdRequestFacts = {
@@ -44,13 +48,15 @@ const DASHBOARD_ACTION = {
   kind: "dashboard" as const,
 };
 
-/**
- * A stand-in for a real minted token: the *shape* is what matters here, and whether the
- * signature is valid is the token module's problem, tested on its own.
- */
-const EMAIL_LINK_ACTION = {
-  url: "https://campus-flow-cdl.pages.dev/od/approve/eyJ2IjoxfQ.c2lnbmF0dXJl",
-  kind: "email-link" as const,
+/** The two roles that used to get a bearer link, now pointed at their own dashboards. */
+const COORDINATOR_ACTION = {
+  url: "https://campus-flow-cdl.pages.dev/coordinator",
+  kind: "dashboard" as const,
+};
+
+const HOD_ACTION = {
+  url: "https://campus-flow-cdl.pages.dev/hod",
+  kind: "dashboard" as const,
 };
 
 describe("resolveAppOrigin", () => {
@@ -103,7 +109,7 @@ describe("appUrl", () => {
 
 describe("odApprovalRequestEmail", () => {
   it("names the student in the subject and the role in the body", () => {
-    const message = odApprovalRequestEmail(FACTS, "Contest Coordinator", EMAIL_LINK_ACTION);
+    const message = odApprovalRequestEmail(FACTS, "Contest Coordinator", COORDINATOR_ACTION);
 
     expect(message.subject).toContain("Asha Raman");
     expect(message.subject).toContain("22CS014");
@@ -114,66 +120,83 @@ describe("odApprovalRequestEmail", () => {
   });
 
   it("offers the action link in both the HTML and the plain text", () => {
-    const message = odApprovalRequestEmail(FACTS, "HOD", EMAIL_LINK_ACTION);
+    const message = odApprovalRequestEmail(FACTS, "HOD", HOD_ACTION);
 
-    expect(message.html).toContain(`href="${EMAIL_LINK_ACTION.url}"`);
+    expect(message.html).toContain(`href="${HOD_ACTION.url}"`);
     expect(message.html).toContain("Review OD Request");
-    expect(message.text).toContain(EMAIL_LINK_ACTION.url);
+    expect(message.text).toContain(HOD_ACTION.url);
   });
 
-  it("carries no credential in a dashboard link, in any stage", () => {
+  it("carries no credential in the link, for any stage", () => {
     /*
-     * A mentor's and a class advisor's link is only an address to arrive at. A token, a
-     * session id or an approval in the query string would make the chain approvable by
-     * forwarding, so every dashboard link is checked for the absence of one.
+     * A dashboard link is only an address to arrive at. A token, a session id or an
+     * approval in the query string would make the chain approvable by forwarding, so every
+     * stage is checked for the absence of one -- all four, now that the coordinator and the
+     * HOD get a link rather than a credential.
      */
-    for (const stage of ["Mentor", "Class Advisor"]) {
-      const message = odApprovalRequestEmail(FACTS, stage, DASHBOARD_ACTION);
+    const stages: [string, typeof DASHBOARD_ACTION][] = [
+      ["Mentor", DASHBOARD_ACTION],
+      ["Class Advisor", DASHBOARD_ACTION],
+      ["Contest Coordinator", COORDINATOR_ACTION],
+      ["HOD", HOD_ACTION],
+    ];
+    for (const [stage, action] of stages) {
+      const message = odApprovalRequestEmail(FACTS, stage, action);
       const link = message.html.match(/href="([^"]+)"/)?.[1] ?? "";
       const credentials = link.split(/[?#]/).slice(1).join("");
-      expect(credentials).not.toMatch(/token|session|approve|decision|sig|auth/i);
-      expect(link).not.toContain(FACTS.odRequestId);
+      expect(credentials, stage).not.toMatch(/token|session|approve|decision|sig|auth/i);
+      expect(link, stage).not.toContain(FACTS.odRequestId);
     }
   });
 
-  it("says a dashboard link cannot approve anything on its own", () => {
-    const message = odApprovalRequestEmail(FACTS, "Mentor", DASHBOARD_ACTION);
-    expect(message.html).toContain("it cannot approve anything on its own");
-    expect(message.text).toContain("Sign in to Campus-Flow");
-  });
-
-  it("tells a coordinator or HOD exactly what their emailed link does", () => {
+  it("says the link cannot approve anything on its own, for every stage", () => {
     /*
-     * The emailed link is a real credential, so the copy has to be honest about it: it
-     * approves one request, it expires, it stops working after use, and there is no
-     * sign-in step. Anything vaguer would leave an approver unsure whether they can
-     * trust it, and the old copy -- "you will be asked to sign in" -- was actively wrong
-     * for them.
+     * This used to be true of only two stages. A coordinator and an HOD were told the
+     * opposite -- that their link approved the request outright with no sign-in -- because
+     * it was a bearer token. They no longer are, so the copy is now uniform, and this
+     * asserts it holds for the two roles whose mail said otherwise.
      */
-    const message = odApprovalRequestEmail(FACTS, "Contest Coordinator", EMAIL_LINK_ACTION);
-
-    expect(message.html).toContain("approves this one request only");
-    expect(message.html).toContain("you will not be asked to sign in");
-    expect(message.html).toContain(`${OD_APPROVAL_TOKEN_TTL_HOURS} hours`);
-    expect(message.text).toContain("stops working the moment you approve or reject it");
-    // And it must not also claim a sign-in step.
-    expect(message.html).not.toContain("it cannot approve anything on its own");
-    expect(message.text).not.toContain("Sign in to Campus-Flow to review and action");
-  });
-
-  it("never tells an emailed approver to sign in", () => {
-    for (const stage of ["Contest Coordinator", "HOD"]) {
-      const message = odApprovalRequestEmail(FACTS, stage, EMAIL_LINK_ACTION);
-      expect(message.text, stage).not.toContain("You will be asked to sign in");
+    for (const [stage, action] of [
+      ["Mentor", DASHBOARD_ACTION],
+      ["Contest Coordinator", COORDINATOR_ACTION],
+      ["HOD", HOD_ACTION],
+    ] as const) {
+      const message = odApprovalRequestEmail(FACTS, stage, action);
+      expect(message.html, stage).toContain("it cannot approve anything on its own");
+      expect(message.text, stage).toContain("Sign in to Campus-Flow to review and action");
     }
   });
 
-  it("never names a password, a session or an API key in either kind of link", () => {
-    for (const action of [DASHBOARD_ACTION, EMAIL_LINK_ACTION]) {
+  it("tells every approver they will have to sign in", () => {
+    for (const [stage, action] of [
+      ["Mentor", DASHBOARD_ACTION],
+      ["Class Advisor", DASHBOARD_ACTION],
+      ["Contest Coordinator", COORDINATOR_ACTION],
+      ["HOD", HOD_ACTION],
+    ] as const) {
+      const message = odApprovalRequestEmail(FACTS, stage, action);
+      expect(message.text, stage).toContain("You will be asked to sign in");
+    }
+  });
+
+  it("never mentions an expiry, because there is no longer a credential to expire", () => {
+    // The 72-hour token is gone, so no approver mail may claim a link that times out.
+    for (const [stage, action] of [
+      ["Contest Coordinator", COORDINATOR_ACTION],
+      ["HOD", HOD_ACTION],
+    ] as const) {
+      const message = odApprovalRequestEmail(FACTS, stage, action);
+      expect(message.html, stage).not.toMatch(/expires?\b/i);
+      expect(message.text, stage).not.toMatch(/expires?\b/i);
+    }
+  });
+
+  it("never names a password, a session or an API key in any link", () => {
+    for (const action of [DASHBOARD_ACTION, COORDINATOR_ACTION, HOD_ACTION]) {
       for (const stage of ["Mentor", "Class Advisor", "Contest Coordinator", "HOD"]) {
         const message = odApprovalRequestEmail(FACTS, stage, action);
         const link = message.html.match(/href="([^"]+)"/)?.[1] ?? "";
-        expect(link.toLowerCase(), `${stage} ${action.kind}`).not.toMatch(/password|pwd|api[-_]?key|session/i);
+        expect(link.toLowerCase(), `${stage} ${action.url}`).not.toMatch(/password|pwd|api[-_]?key|session/i);
       }
     }
   });

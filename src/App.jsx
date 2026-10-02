@@ -20,7 +20,6 @@ import StudentMentorAllocation from './pages/StudentMentorAllocation'
 import StudentOdForm from './pages/StudentOdForm'
 import ApproverLogin from './pages/ApproverLogin'
 import ApproverOdInbox from './pages/ApproverOdInbox'
-import OdEmailApproval from './pages/OdEmailApproval'
 import CoordinatorDashboard from './pages/CoordinatorDashboard'
 import HodDashboard from './pages/HodDashboard'
 import AdminRoute from './components/AdminRoute'
@@ -34,7 +33,7 @@ import NotFound from './pages/NotFound'
  * exist. The server matches the same four values and refuses anything else, so this is
  * about not rendering an empty screen rather than about security.
  */
-const OD_STAGES = ['MENTOR', 'CONTEST_COORDINATOR', 'CLASS_ADVISOR', 'HOD']
+const OD_STAGES = ['MENTOR', 'CLASS_ADVISOR', 'CONTEST_COORDINATOR', 'HOD']
 
 function ApproverOdInboxRoute() {
   const { stage } = useParams()
@@ -71,16 +70,6 @@ export default function App() {
 {/* Approvers. The stage is in the path and is re-checked server-side. */}
               <Route path="/approver/login" element={<ApproverLogin />} />
               <Route path="/approver/od/:stage" element={<ApproverOdInboxRoute />} />
-              {/*
-                Where an OD approval email for a Contest Coordinator or an HOD lands.
-
-                The token in the path is the authorisation, so this page has no sign-in form
-                and no role selection -- it resolves the token, shows the one request that
-                token names, and posts the decision back to the same endpoint every other
-                approver uses. Deliberately outside `/approver`, so nothing about the
-                approver sign-in screen is involved in it.
-              */}
-              <Route path="/od/approve/:token" element={<OdEmailApproval />} />
               {/*
                 The two dedicated approver dashboards. Contest coordinators and heads of
                 department are not staff, so they are not on the role-selection screen and

@@ -36,7 +36,7 @@
  */
 
 import { env, SELF } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashToken } from "../src/utils/auth";
 import { hashDefaultPassword } from "../src/utils/accountProvisioning";
 import { OD_STATUS } from "../src/utils/odWorkflow";
@@ -466,10 +466,34 @@ describe("student OD and mentor flow", () => {
       ),
     };
 
+  });
+
+  /*
+   * The mail stub is installed per test, not once for the suite.
+   *
+   * It used to be called at the end of `beforeAll`, which looked sufficient because
+   * `vi.stubGlobal` mutates the global for the whole file. It is not: the `afterEach` below
+   * calls `vi.unstubAllGlobals()`, so the stub was gone from the *second* test onward. Every
+   * test that reached a mail send without re-stubbing therefore made a real HTTPS request
+   * to `api.brevo.com` -- the integration key is a placeholder, so the request is attempted
+   * rather than short-circuited by `EmailNotConfiguredError`.
+   *
+   * The visible symptom was a pair of mentor-allocation tests intermittently timing out at
+   * 20s, because `POST /api/student/mentor` notifies the mentor and that notification was a
+   * live network round trip. Their sibling cases -- the ones that return 400 or 404 before
+   * the send -- never noticed, which is why it looked like two unrelated flakes rather than
+   * one missing stub.
+   *
+   * Stubbing here rather than relying on the individual helpers means a test cannot forget.
+   * `stubEmail` is idempotent and delegates any non-Brevo URL to the real fetch, so the
+   * suite's own HTTP calls through `SELF` are untouched.
+   */
+  beforeEach(() => {
+    sentMail = [];
     stubEmail();
   });
 
-afterEach(async () => {
+  afterEach(async () => {
     vi.unstubAllGlobals();
     sentMail = [];
 
@@ -993,6 +1017,165 @@ const row = await env.DB
       expect(mailTo(actors.coordinator.email)).toHaveLength(1);
     });
 
+    /*
+     * Where each stage's "your approval is needed" mail points, and what it is allowed to
+     * contain.
+     *
+     * A Contest Coordinator and an HOD used to receive a signed, time-limited bearer token
+     * in the URL instead of a page, because they had no account to sign in with. Both are
+     * permanent authenticated users now, so every stage gets a dashboard route and the mail
+     * is a notification rather than an authorisation. That is the security property worth
+     * pinning: a forwarded mail now tells the next person there is work waiting and cannot
+     * let them approve it.
+     */
+    describe("the link in each stage's approval mail", () => {
+      /** The first href in the message, which is the action button. */
+      function actionLink(message: SentMail): string {
+        return message.html.match(/href="([^"]+)"/)?.[1] ?? "";
+      }
+
+      /**
+       * Only the "your approval is needed" mail for an address, not every mail they got.
+       *
+       * A mentor is sent a separate message when a student is allocated to them, and that
+       * one has no action link at all. Filtering by the subject is what keeps this from
+       * reading the wrong message depending on whether a mail stub happened to be active
+       * when the allocation happened.
+       */
+      function approvalMailTo(address: string): SentMail | undefined {
+        return mailTo(address).find((message) => message.subject.includes("OD approval needed"));
+      }
+
+      /**
+       * These tests each walk a request part-way and leave it pending, and this suite shares
+       * one student -- so `od_requests`' partial unique index on
+       * `(student_table, student_id, od_dates) WHERE status LIKE 'PENDING_%'` would refuse
+       * the next test's submission as a duplicate. Each therefore files on its own dates and
+       * removes its request when it is done, which is what the other multi-stage cases in
+       * this file already do.
+       */
+      let ownDates: string[] = [];
+      const withOwnRequest = async (run: (id: string) => Promise<void>, daysAhead: number) => {
+        ownDates = [futureDate(daysAhead)];
+        // Cleared *before* filing: the submission is itself what mails the mentor, so
+        // resetting afterwards would throw away the first link these tests check.
+        sentMail = [];
+        const id = await startRequest(ownDates);
+        try {
+          stubEmail();
+          await run(id);
+        } finally {
+          await env.DB.prepare("DELETE FROM od_requests WHERE od_request_id = ?").bind(id).run();
+        }
+      };
+
+      it("points every stage at a dashboard route, in chain order", async () => {
+        await withOwnRequest(async (id) => {
+          // 1. Mentor, on submission.
+          const mentorMail = approvalMailTo(actors.mentor.email);
+          expect(mentorMail).toBeDefined();
+          expect(actionLink(mentorMail)).toBe("https://campus-flow-cdl.pages.dev/staff");
+
+          // 2. Class Advisor, once the mentor approves.
+          await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+          const advisorMail = approvalMailTo(actors.advisor.email);
+          expect(advisorMail).toBeDefined();
+          expect(actionLink(advisorMail)).toBe("https://campus-flow-cdl.pages.dev/advisor");
+
+          // 3. Contest Coordinator, once the class advisor approves. This is the one that
+          //    used to be a token.
+          await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+          const coordinatorMail = approvalMailTo(actors.coordinator.email);
+          expect(coordinatorMail).toBeDefined();
+          expect(actionLink(coordinatorMail)).toBe("https://campus-flow-cdl.pages.dev/coordinator");
+
+          // 4. HOD, once the coordinator approves. Also used to be a token.
+          await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
+          const hodMail = approvalMailTo(actors.hod.email);
+          expect(hodMail).toBeDefined();
+          expect(actionLink(hodMail)).toBe("https://campus-flow-cdl.pages.dev/hod");
+
+          // Nothing was left waiting for anybody once the HOD has the last word.
+          expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_HOD);
+        }, 200);
+      });
+
+      it("carries no credential in any stage's mail", async () => {
+        await withOwnRequest(async (id) => {
+          await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+          await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+
+          for (const message of [
+            approvalMailTo(actors.mentor.email),
+            approvalMailTo(actors.advisor.email),
+            approvalMailTo(actors.coordinator.email),
+          ]) {
+            expect(message).toBeDefined();
+            const link = actionLink(message);
+            // No query string at all, so nothing in it can authorise anything.
+            expect(link.split("?")).toHaveLength(1);
+            expect(link).not.toContain("/od/approve/");
+            expect(link.toLowerCase()).not.toMatch(/token|password|session|sig|secret/i);
+            // And the copy says so, for the two roles whose mail used to say the opposite.
+            expect(message.text).toContain("You will be asked to sign in");
+          }
+        }, 210);
+      });
+
+      it("no longer tells an approver their mail can approve the request", async () => {
+        await withOwnRequest(async (id) => {
+          await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+          await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+          await decide("od-coord-1", "CONTEST_COORDINATOR", id, "APPROVED");
+
+          const coordinatorMail = approvalMailTo(actors.coordinator.email);
+          const hodMail = approvalMailTo(actors.hod.email);
+
+          for (const message of [coordinatorMail, hodMail]) {
+            expect(message).toBeDefined();
+            // The old copy promised a direct approval and quoted a 72-hour expiry.
+            expect(message.text).not.toContain("approves this one request only");
+            expect(message.text).not.toMatch(/expires?\b/i);
+            expect(message.html).toContain("it cannot approve anything on its own");
+          }
+        }, 220);
+      });
+
+      /*
+       * The decision route used to accept `?token=`, which skipped `requireAuth` entirely.
+       * With the bearer links gone that escape hatch is closed, and this is the test that
+       * says so: a caller with no session is refused whatever they put in the query string,
+       * because the query string is no longer read as a credential at all.
+       */
+      it("refuses a decision with no session, whatever the query string claims", async () => {
+        await withOwnRequest(async (id) => {
+          for (const token of [
+            "",
+            "anything",
+            "eyJ2IjoxfQ.c2lnbmF0dXJl",
+            `${Date.now()}.deadbeef`,
+          ]) {
+            const { status, body } = await call(
+              null,
+              `/api/od/requests/${id}/decision?stage=MENTOR&token=${encodeURIComponent(token)}`,
+              { method: "POST", body: JSON.stringify({ decision: "APPROVED" }) },
+            );
+            expect(status, token).toBe(401);
+            expect(body.code, token).toBe("auth-required");
+          }
+          // Nothing was decided.
+          expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_MENTOR);
+        }, 230);
+      });
+
+      it("no longer serves the emailed-link resolve endpoint", async () => {
+        const { status } = await call(null, "/api/od/email-approval/anything");
+        // The route is gone entirely, so this is the app's own not-found rather than any
+        // approval answer. Either way there is no way to resolve a link any more.
+        expect([400, 401, 403, 404]).toContain(status);
+      });
+    });
+
     it("refuses a mentor who is not this student's mentor", async () => {
       const id = await startRequest();
       const { status, body } = await decide("od-mentor-2", "MENTOR", id, "APPROVED");
@@ -1160,105 +1343,6 @@ const second = await decide("od-mentor-1", "MENTOR", id, "APPROVED");
       await makeStaff("906", "Just Staff", "just.staff@kiot.ac.in", DEPARTMENT, "od-plain-1");
       const { status } = await decide("od-plain-1", "CONTEST_COORDINATOR", id, "APPROVED");
       expect(status).toBe(403);
-    });
-
-    /*
-     * The counterpart to the case above, and the reason a coordinator can be anybody on
-     * staff at all.
-     *
-     * A coordinator is appointed out of a department's staff roster, so the person being
-     * appointed already has an `auth_users` row -- with the role `staff`, created by the
-     * staff import. `auth_users.user_name` is UNIQUE, so a second account for the same
-     * address is impossible; the appointment has to reuse the one that is there.
-     *
-     * Reusing it is only safe because authority never came from the role. It comes from
-     * the directory row: `verifyApprover` matches the caller's own address against
-     * `contest_coordinators` beside the student's department, and this suite's own
-     * refusal above proves the role is not what is checked. So this walks the whole path
-     * -- appoint, keep the staff login, decide the coordinator stage -- because the
-     * failure mode being guarded against is a coordinator who is appointed successfully
-     * and then cannot act.
-     */
-    it("lets a member of staff appointed as coordinator decide that stage", async () => {
-      const id = await startRequest();
-      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
-      await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
-      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
-
-      const email = "priya.rao@kiot.ac.in";
-      const priya = await makeStaff("907", "Priya Rao", email, DEPARTMENT, "od-priya-1");
-
-      const before = await env.DB
-        .prepare("SELECT auth_user_id, role, pwd_hash FROM auth_users WHERE LOWER(email) = ?")
-        .bind(email.toLowerCase())
-        .first<{ auth_user_id: string; role: string; pwd_hash: string }>();
-
-      // The appointment, exactly as the dashboard makes it.
-      const { status, body } = await asAdmin("/api/admin/contest-coordinators", {
-        method: "POST",
-        body: JSON.stringify({
-          rows: [{ coordinator_name: "Priya Rao", email, department: DEPARTMENT }],
-        }),
-      });
-      expect(status, JSON.stringify(body)).toBe(200);
-      expect(body.created).toBe(1);
-      expect(body.roleMismatches).toEqual([]);
-      // Her account existed, so nothing was created and nothing was reused as new work.
-      expect(body.authAccountsCreated).toBe(0);
-      expect(body.authAccountsReused).toBe(1);
-
-      // The account is untouched: same id, same role, same password. One row, not two.
-      const after = await env.DB
-        .prepare("SELECT auth_user_id, role, pwd_hash FROM auth_users WHERE LOWER(email) = ?")
-        .bind(email.toLowerCase())
-        .first<{ auth_user_id: string; role: string; pwd_hash: string }>();
-      expect(after?.auth_user_id).toBe(before!.auth_user_id);
-      expect(after?.role).toBe("staff");
-      expect(after?.pwd_hash).toBe(before!.pwd_hash);
-
-      const accountCount = await env.DB
-        .prepare("SELECT COUNT(*) AS n FROM auth_users WHERE LOWER(email) = ?")
-        .bind(email.toLowerCase())
-        .first<{ n: number }>();
-      expect(accountCount?.n).toBe(1);
-
-      // The coordinator row records which account it belongs to, which is what
-      // `/api/auth/od-approver/login` and `/api/approver/me` read.
-      const row = await env.DB
-        .prepare(
-          "SELECT coordinator_name, department, auth_user_id FROM contest_coordinators WHERE LOWER(email) = ?",
-        )
-        .bind(email.toLowerCase())
-        .first<{ coordinator_name: string; department: string; auth_user_id: string | null }>();
-      expect(row?.coordinator_name).toBe("Priya Rao");
-      expect(row?.department).toBe(DEPARTMENT);
-      expect(row?.auth_user_id).toBe(before!.auth_user_id);
-
-      // She signs in to the approver routes, and they describe her as the
-      // coordinator she now is -- even though her *account* role is still
-      // `staff`, which the two assertions above prove has not changed.
-      //
-      // This is the whole reason role resolution reads the directory rather
-      // than the account: `auth_users.role` holds one value and hers has to stay
-      // `staff` or she loses her mentor and attendance access, so on the account
-      // alone there is nothing that says "coordinator". The `contest_coordinators`
-      // row says it, and that is what `/api/auth/od-approver/login` and
-      // `/api/od/approver/me` read to put her on the coordinator dashboard.
-      const login = await call(null, "/api/auth/od-approver/login", {
-        method: "POST",
-        body: JSON.stringify({ email, password: "1234" }),
-      });
-      expect(login.status).toBe(200);
-      expect(login.body.approver.role).toBe("contest_coordinator");
-      expect(login.body.approver.department).toBe(DEPARTMENT);
-      expect(login.body.user.role).toBe("staff");
-
-      // And she can action the coordinator stage, because the directory row -- not the
-      // role -- is what the check reads.
-      expect((await decide("od-priya-1", "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
-      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_HOD);
-
-      expect(priya.email).toBe(email.toLowerCase());
     });
 
     /*
@@ -1695,6 +1779,301 @@ const itAuthId = await env.DB
         .bind("2K36CS001")
         .first<{ mentor_email: string | null }>();
       expect(row?.mentor_email).toBeNull();
+    });
+  });
+
+  /* ================================ one contest coordinator per department */
+
+  /*
+   * These run last, and deliberately so.
+   *
+   * A department has exactly one contest coordinator, so a case that appoints somebody for
+   * one has to be the only one -- and this file's `beforeAll` gives ECE a coordinator that
+   * every other case in it relies on. Two of the cases below also rewrite
+   * `contest_coordinators`, and the whole suite shares one database and runs in file order,
+   * so anything placed after them would be testing a directory this file had edited.
+   */
+  describe("one contest coordinator per department", () => {
+    /**
+     * Files a request and returns its id.
+     *
+     * The chain suite has its own `startRequest`, but it is declared inside that `describe`
+     * and so is not in scope here. This is the same three lines: give the student a mentor,
+     * stub the mail, file.
+     */
+    async function startRequest(): Promise<string> {
+      await giveMentor();
+      stubEmail();
+      const { status, body } = await fileOd();
+      expect(status, JSON.stringify(body)).toBe(200);
+      return body.request.od_request_id;
+    }
+
+    /** The ECE coordinator rows, oldest first. */
+    async function coordinatorsIn(department: string) {
+      const { results } = await env.DB
+        .prepare(
+          "SELECT coordinator_id, coordinator_name, email, department, auth_user_id FROM contest_coordinators WHERE department = ? ORDER BY coordinator_id",
+        )
+        .bind(department)
+        .all<Record<string, any>>();
+      return results ?? [];
+    }
+
+    it("refuses a second coordinator for a department that already has one", async () => {
+      const email = "second.coordinator@kiot.ac.in";
+      await makeStaff("908", "Second Coordinator", email, DEPARTMENT, "od-coord-second");
+
+      const before = await coordinatorsIn(DEPARTMENT);
+      expect(before).toHaveLength(1);
+
+      const { status, body } = await asAdmin("/api/admin/contest-coordinators", {
+        method: "POST",
+        body: JSON.stringify({
+          rows: [{ coordinator_name: "Second Coordinator", email, department: DEPARTMENT }],
+        }),
+      });
+
+      /*
+       * A refusal, on the field the admin has to change, and not a second row.
+       *
+       * The department is the whole of the conflict here -- the address is new, the name is
+       * new and the account was reused rather than created -- so the error has to name the
+       * department or the dashboard can only say "something was wrong".
+       */
+      expect(status, JSON.stringify(body)).toBe(400);
+      expect(body.success).toBe(false);
+      expect(body.code).toBe("import-validation-failed");
+      expect(body.details.invalid[0].errors.map((e: any) => e.field)).toContain("department");
+      expect(body.details.invalid[0].errors[0].message).toContain(DEPARTMENT);
+
+      // The directory is untouched: still one row, still the person appointed first, and
+      // nothing written for the refused appointment.
+      expect(await coordinatorsIn(DEPARTMENT)).toEqual(before);
+    });
+
+    /*
+     * The counterpart to the case above, and the reason a coordinator can be anybody on
+     * staff at all.
+     *
+     * A coordinator is appointed out of a department's staff roster, so the person being
+     * appointed already has an `auth_users` row -- with the role `staff`, created by the
+     * staff import. `auth_users.user_name` is UNIQUE, so a second account for the same
+     * address is impossible; the appointment has to reuse the one that is there.
+     *
+     * Reusing it is only safe because authority never came from the role. It comes from the
+     * directory row: `verifyApprover` matches the caller's own address against
+     * `contest_coordinators` beside the student's department, and this suite's own
+     * refusal above proves the role is not what is checked. So this walks the whole path
+     * -- appoint, keep the staff login, decide the coordinator stage -- because the
+     * failure mode being guarded against is a coordinator who is appointed successfully
+     * and then cannot act.
+     *
+     * It is here, at the end, because a department has one coordinator seat and this file
+     * has already spent ECE's on the fixture. The refusal above is the invariant in action;
+     * moving the incumbent to a department that has nobody is the supported way to spend the
+     * seat on somebody else, and both are exercised.
+     */
+    it("frees the seat, then lets a member of staff appointed as coordinator decide that stage", async () => {
+      const id = await startRequest();
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+      await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+
+      const email = "priya.rao@kiot.ac.in";
+      const priya = await makeStaff("907", "Priya Rao", email, DEPARTMENT, "od-priya-1");
+
+      const before = await env.DB
+        .prepare("SELECT auth_user_id, role, pwd_hash FROM auth_users WHERE LOWER(email) = ?")
+        .bind(email.toLowerCase())
+        .first<{ auth_user_id: string; role: string; pwd_hash: string }>();
+
+      // The appointment, exactly as the dashboard makes it -- refused first, because the
+      // seat is taken, and refused for the reason the rule exists.
+      const refused = await asAdmin("/api/admin/contest-coordinators", {
+        method: "POST",
+        body: JSON.stringify({
+          rows: [{ coordinator_name: "Priya Rao", email, department: DEPARTMENT }],
+        }),
+      });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+      expect(refused.body.details.invalid[0].errors.map((e: any) => e.field)).toContain("department");
+
+      // Moving the incumbent is what the refusal asks for, and a department with nobody is
+      // exactly the case that is allowed.
+      const incumbent = (await coordinatorsIn(DEPARTMENT))[0];
+      const moved = await asAdmin(`/api/admin/contest-coordinators/${incumbent.coordinator_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ department: "EEE" }),
+      });
+      expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+      expect(moved.body.contest_coordinator.department).toBe("EEE");
+
+      const { status, body } = await asAdmin("/api/admin/contest-coordinators", {
+        method: "POST",
+        body: JSON.stringify({
+          rows: [{ coordinator_name: "Priya Rao", email, department: DEPARTMENT }],
+        }),
+      });
+      expect(status, JSON.stringify(body)).toBe(200);
+      expect(body.created).toBe(1);
+      expect(body.roleMismatches).toEqual([]);
+      // Her account existed, so nothing was created and nothing was reused as new work.
+      expect(body.authAccountsCreated).toBe(0);
+      expect(body.authAccountsReused).toBe(1);
+
+      // The account is untouched: same id, same role, same password. One row, not two.
+      const after = await env.DB
+        .prepare("SELECT auth_user_id, role, pwd_hash FROM auth_users WHERE LOWER(email) = ?")
+        .bind(email.toLowerCase())
+        .first<{ auth_user_id: string; role: string; pwd_hash: string }>();
+      expect(after?.auth_user_id).toBe(before!.auth_user_id);
+      expect(after?.role).toBe("staff");
+      expect(after?.pwd_hash).toBe(before!.pwd_hash);
+
+      const accountCount = await env.DB
+        .prepare("SELECT COUNT(*) AS n FROM auth_users WHERE LOWER(email) = ?")
+        .bind(email.toLowerCase())
+        .first<{ n: number }>();
+      expect(accountCount?.n).toBe(1);
+
+      // The coordinator row records which account it belongs to, which is what
+      // `/api/auth/od-approver/login` and `/api/od/approver/me` read.
+      const row = await env.DB
+        .prepare(
+          "SELECT coordinator_name, department, auth_user_id FROM contest_coordinators WHERE LOWER(email) = ?",
+        )
+        .bind(email.toLowerCase())
+        .first<{ coordinator_name: string; department: string; auth_user_id: string | null }>();
+      expect(row?.coordinator_name).toBe("Priya Rao");
+      expect(row?.department).toBe(DEPARTMENT);
+      expect(row?.auth_user_id).toBe(before!.auth_user_id);
+
+      // She signs in to the approver routes, and they describe her as the
+      // coordinator she now is -- even though her *account* role is still
+      // `staff`, which the two assertions above prove has not changed.
+      //
+      // This is the whole reason role resolution reads the directory rather
+      // than the account: `auth_users.role` holds one value and hers has to stay
+      // `staff` or she loses her mentor and attendance access, so on the account
+      // alone there is nothing that says "coordinator". The `contest_coordinators`
+      // row says it, and that is what `/api/auth/od-approver/login` and
+      // `/api/od/approver/me` read to put her on the coordinator dashboard.
+      const login = await call(null, "/api/auth/od-approver/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password: "1234" }),
+      });
+      expect(login.status).toBe(200);
+      expect(login.body.approver.role).toBe("contest_coordinator");
+      expect(login.body.approver.department).toBe(DEPARTMENT);
+      expect(login.body.user.role).toBe("staff");
+
+      // And she can action the coordinator stage, because the directory row -- not the
+      // role -- is what the check reads.
+      expect((await decide("od-priya-1", "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_HOD);
+
+      expect(priya.email).toBe(email.toLowerCase());
+    });
+
+    /*
+     * The state the rule above prevents from being created, and which a department can still
+     * be in: two rows for one department.
+     *
+     * Nothing here deletes one. Deciding which of two coordinators is real is an
+     * administrative decision about a person's appointment -- it belongs to the college, not
+     * to a request that happened to be approved -- so the rows are left exactly as they are,
+     * and the workflow reports the ambiguity rather than resolving it.
+     *
+     * The alternative, picking one, is what this used to do: `ORDER BY coordinator_name
+     * LIMIT 1` made the alphabetically first name the recipient, silently, while
+     * `verifyApprover` accepted either of them. The person invited and the person authorised
+     * could then be different people, with nothing anywhere saying so.
+     */
+    it("leaves a duplicate pair alone and invites neither of them", async () => {
+      const email = "legacy.duplicate@kiot.ac.in";
+      const legacy = await makeStaff("909", "Legacy Duplicate", email, DEPARTMENT, "od-coord-legacy");
+
+      // Written straight into the table, because it cannot be created through the admin
+      // routes any more -- the case above is that refusal. Rows written before the rule
+      // existed are still rows.
+      await env.DB
+        .prepare(
+          "INSERT INTO contest_coordinators (coordinator_name, email, department, auth_user_id) VALUES (?, ?, ?, ?)",
+        )
+        .bind("Legacy Duplicate", email.toLowerCase(), DEPARTMENT, legacy.auth)
+        .run();
+
+      const before = await coordinatorsIn(DEPARTMENT);
+      expect(before).toHaveLength(2);
+
+      const id = await startRequest();
+      await decide("od-mentor-1", "MENTOR", id, "APPROVED");
+
+      /*
+       * It is the *class advisor's* approval that hands the request to the coordinator, so
+       * that is the decision whose notification cannot be sent -- and the log is written
+       * there. The spy has to be on for that one call, which is why it is not installed for
+       * the whole test.
+       */
+      sentMail = [];
+      const logged: string[] = [];
+      const spy = vi
+        .spyOn(console, "error")
+        .mockImplementation((...args: unknown[]) => void logged.push(args.map(String).join(" ")));
+
+      let decision: Awaited<ReturnType<typeof decide>>;
+      try {
+        decision = await decide("od-advisor-1", "CLASS_ADVISOR", id, "APPROVED");
+      } finally {
+        spy.mockRestore();
+      }
+
+      // The decision stands, and the request still moves on to the coordinator stage. An
+      // approval that has been recorded must not be discarded because the department it is
+      // waiting on is ambiguous.
+      expect(decision!.status).toBe(200);
+      expect(decision!.body.success).toBe(true);
+      expect(decision!.body.next_stage).toBe("Contest Coordinator");
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_CONTEST_COORDINATOR);
+
+      // The handoff did not happen, and the approver who just approved is told so: the
+      // route reports `notification_sent: false` and attaches the warning the dashboard
+      // shows. Without it the request would sit at the coordinator stage with nobody told.
+      expect(decision!.body.notification_sent).toBe(false);
+      expect(decision!.body.warning).toContain("notification email could not be sent");
+
+      // And nobody was invited. Not the alphabetically first name, not the other one.
+      expect(mailTo("priya.rao@kiot.ac.in")).toEqual([]);
+      expect(mailTo(email.toLowerCase())).toEqual([]);
+
+      // The ambiguity is reported, naming the department and how many rows there were, so
+      // it is actionable rather than a silent stall.
+      const ambiguity = logged.find((entry) => entry.includes("od_contest_coordinator_ambiguous"));
+      expect(ambiguity, logged.join("\n")).toBeDefined();
+      expect(JSON.parse(ambiguity!)).toMatchObject({
+        event: "od_contest_coordinator_ambiguous",
+        department: DEPARTMENT,
+        coordinators: 2,
+      });
+
+      // Both rows are still there, unchanged -- same ids, same names, same departments,
+      // same accounts. Nothing here decided that somebody had not been appointed.
+      expect(await coordinatorsIn(DEPARTMENT)).toEqual(before);
+
+      // Neither of them is locked out either: `verifyApprover` is unchanged, so a
+      // coordinator whose department holds two can still see and action the queue in
+      // person. The one question the directory cannot answer is who to *invite*, and that
+      // is what is reported instead of guessed.
+      const permission = await call("od-coord-legacy", `/api/od/requests/${id}/permission?stage=CONTEST_COORDINATOR`);
+      expect(permission.body.can_act).toBe(true);
+
+      // One of them acts, and the stage after theirs -- whose department holds exactly one
+      // HOD -- is handed over normally. The rule is about the coordinator, not about every
+      // directory the workflow reads.
+      expect((await decide("od-priya-1", "CONTEST_COORDINATOR", id, "APPROVED")).status).toBe(200);
+      expect(await currentStatus(id)).toBe(OD_STATUS.PENDING_HOD);
+      expect(mailTo(actors.hod.email).some((m) => m.subject.includes("OD approval needed"))).toBe(true);
     });
   });
 });

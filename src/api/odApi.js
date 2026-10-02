@@ -166,34 +166,22 @@ export function fetchApprovedApprovals(stage) {
  * `APPROVED` because an approver said so, it moves to whatever that approver's stage
  * hands it to, and the server decides what that is.
  *
- * `token` is for an approver arriving from an emailed approval link rather than from a
- * session. It is passed as a query parameter because that is where the decision route
- * reads it, and it changes nothing else: the same endpoint, the same two body fields, and
- * the same server-side authorisation. The browser still never names the approver, the
- * stage it is really acting at, or the request -- all three come from the token or from
- * the database.
+ * The approver is the session cookie and nothing else. This used to take a `token` for
+ * someone arriving from an emailed bearer approval link, but every approver role is a
+ * permanent authenticated user with a dashboard now, so there is no second way in: a
+ * forwarded mail cannot decide anything, because the server resolves the approver from
+ * the session and checks it against the directory for this request's department and stage.
+ *
+ * The browser still never names the approver or the stage it is really acting at -- the
+ * stage comes from the caller as a display hint and the database decides whether it is
+ * allowed.
  */
-export function submitApprovalDecision(requestId, stage, decision, comment, token) {
+export function submitApprovalDecision(requestId, stage, decision, comment) {
   return request(`/api/od/requests/${encodeURIComponent(requestId)}/decision`, {
     method: 'POST',
-    query: { stage, token },
+    query: { stage },
     body: { decision, ...(comment ? { comment } : {}) },
   })
-}
-
-/**
- * Resolves an emailed approval link into the one request it authorises.
- *
- * The counterpart of `submitApprovalDecision` for someone who arrived by mail: it is what
- * the approval page calls instead of `/api/od/requests`, which needs a session. The token
- * identifies the request, the stage and the approver, so nothing has to be passed besides
- * the token itself.
- *
- * Returns only what the approval page renders. A bad, expired or already-spent link
- * throws, and the server says the same thing for all three.
- */
-export function fetchEmailApproval(token) {
-  return request(`/api/od/email-approval/${encodeURIComponent(token)}`)
 }
 
 /** Whether the signed-in approver may action a request, for showing the buttons. */

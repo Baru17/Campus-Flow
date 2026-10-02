@@ -1,6 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import bcrypt from "bcryptjs";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashToken } from "../src/utils/auth";
 import migration0001 from "../migrations/0001_initial-schema.sql?raw";
 import migration0002 from "../migrations/0002_auth_sessions.sql?raw";
@@ -24,6 +24,8 @@ const NEW_PASSWORD = "brand-new-password-9";
 
 const STUDENT_ID = "CFTEST01";
 const STUDENT_AUTH_ID = "pw-reset-student";
+/** Must match the address seeded into `auth_users` and the student row below. */
+const STUDENT_EMAIL = "cftest01@kiot.ac.in";
 const STAFF_EMAIL = "staff.reset@kiot.ac.in";
 const STAFF_AUTH_ID = "pw-reset-staff";
 
@@ -34,6 +36,70 @@ const ISO = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
 
 /* Captured in beforeAll so each test starts from the seeded password. */
 let originalPwdHash = "";
+
+/**
+ * Every reset mail this suite caused, captured rather than sent.
+ *
+ * This file had no mail stub at all, so `POST /api/auth/reset-password` -> `issueResetToken`
+ * -> `sendPasswordResetEmail` (`api/passwordReset.ts:124`) reached the real
+ * `sendBrevoEmail`, which does a live `fetch` to `api.brevo.com` (`utils/email.ts:91`). The
+ * integration key is a placeholder string rather than an absent binding, so the request is
+ * actually attempted instead of being short-circuited by `EmailNotConfiguredError`, and the
+ * route sat waiting on a DNS lookup and a TLS handshake inside a 20s test budget. The
+ * handler catches the failure, so the assertions still held -- they just ran late, and the
+ * suite intermittently failed on timeouts rather than on anything it asserts.
+ */
+interface SentMail {
+	to: string;
+	subject: string;
+	html: string;
+	text: string;
+}
+
+let sentMail: SentMail[] = [];
+
+/**
+ * Replaces `fetch` only for the Brevo endpoint and delegates everything else.
+ *
+ * Delegating matters: `SELF.fetch` is how this suite calls the Worker, so a blanket stub
+ * would break every request under test. `sendBrevoEmail` sees a 201 and resolves, exactly as
+ * it would against a working provider, and the caller cannot tell the difference.
+ */
+function stubEmail(): void {
+	const originalFetch = globalThis.fetch;
+	vi.stubGlobal("fetch", async (input: any, init?: any) => {
+		const url = typeof input === "string" ? String(input) : String(input?.url ?? "");
+		if (!url.includes("api.brevo.com")) {
+			return originalFetch(input, init);
+		}
+		const payload = JSON.parse(String(init?.body ?? "{}"));
+		sentMail.push({
+			to: payload.to?.[0]?.email ?? "",
+			subject: payload.subject ?? "",
+			html: payload.htmlContent ?? "",
+			text: payload.textContent ?? "",
+		});
+		return new Response(JSON.stringify({ messageId: "<test@brevo>" }), {
+			status: 201,
+			headers: { "Content-Type": "application/json" },
+		});
+	});
+}
+
+/** The reset mail addressed to one account, if any was sent. */
+function mailTo(address: string): SentMail | undefined {
+	return sentMail.find((message) => message.to === address.toLowerCase());
+}
+
+beforeEach(() => {
+	sentMail = [];
+	stubEmail();
+});
+
+afterEach(() => {
+	vi.unstubAllGlobals();
+	sentMail = [];
+});
 
 async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
 	const response = await SELF.fetch(`https://example.com${path}`, {
@@ -134,6 +200,35 @@ describe("password reset over one-time tokens", () => {
 		expect(rows.results).toHaveLength(1);
 		expect((rows.results[0] as any).auth_user_id).toBe(STUDENT_AUTH_ID);
 		expect((rows.results[0] as any).used_at).toBeNull();
+
+		/*
+		 * The mail is now captured rather than sent, so the thing that was previously
+		 * unverifiable -- that the stored token is the one the link in the mail actually
+		 * carries -- can be asserted instead of assumed.
+		 *
+		 * The link's token is compared against `token_hash`, which is a SHA-256 of the raw
+		 * token, so this proves the emailed link opens the row that was written rather than
+		 * some other one. It also pins the two expiry facts the reset flow depends on: the
+		 * row carries the 30-minute window, and the mail quotes the same window in minutes.
+		 */
+		const mail = mailTo(STUDENT_EMAIL);
+		expect(mail, "a reset mail should have been sent to the student").toBeDefined();
+		const link = mail!.html.match(/href="([^"]+)"/)?.[1] ?? "";
+		expect(link).toContain("/reset-password?token=");
+		const emailedToken = new URL(link).searchParams.get("token");
+		expect(emailedToken).toBeTruthy();
+		expect(hashToken(emailedToken as string)).toBe((rows.results[0] as any).token_hash);
+
+		// The same 30 minutes, stated the same way in both places.
+		const expiresAt = await env.DB.prepare(
+			"SELECT expires_at FROM password_reset_tokens WHERE auth_user_id = ?"
+		).bind(STUDENT_AUTH_ID).first<{ expires_at: string }>();
+		const minutes = Math.round(
+			(new Date(expiresAt!.expires_at).getTime() - Date.now()) / 60000
+		);
+		expect(minutes).toBeGreaterThan(28);
+		expect(minutes).toBeLessThanOrEqual(30);
+		expect(mail!.text).toContain("30");
 	});
 
 	/*

@@ -1764,6 +1764,37 @@ interface DirectorySpec {
    */
   provisionFromStaff?: boolean;
   /**
+   * Set for a directory that holds exactly one person per department, which is contest
+   * coordinators and nothing else.
+   *
+   * The workflow treats the coordinator for a department as a single addressee: the
+   * approval mail is sent to one coordinator, their dashboard is one queue, and the
+   * coordinator stage is one step in a fixed chain. Two rows for one department make all
+   * three untrue at once, and no ordering of the rows makes it true again -- somebody is
+   * always the coordinator and somebody is never told about it.
+   *
+   * So the second appointment is refused rather than resolved:
+   *
+   *   - on create, a row whose department is already held joins the `invalid` list, with
+   *     the error on the `department` field, so a bulk import still imports the rows that
+   *     are fine and reports this one instead of dropping it;
+   *   - on edit, moving an entry into an occupied department is a 409, exactly as moving
+   *     it onto a taken email is. Re-saving it in the department it already holds is not
+   *     a conflict, because the entry being edited is excluded from the check.
+   *
+   * The check is deliberately the row's own uniqueness, not a database constraint. There
+   * is no `UNIQUE` on `department` in any migration, and adding one to a deployed table
+   * is a change to production data rather than to this feature; if duplicates already
+   * exist, a constraint would refuse to be created and this rule would keep the directory
+   * from growing any more. Nothing here deletes or rewrites an existing row: cleaning up
+   * a department that already holds two is an administrative decision, not a side effect
+   * of saving a form.
+   *
+   * Head of department leaves this unset. Nothing in the workflow or the dashboard
+   * depends on there being only one HOD, so the rule is not extended to it here.
+   */
+  onePerDepartment?: boolean;
+  /**
    * The row validator, in its own column vocabulary.
    *
    * Typed against only the two fields both directories share, so each concrete
@@ -1825,6 +1856,83 @@ function validateDirectoryId(value: string | undefined): number | null {
 }
 
 /**
+ * The departments in `departments` that `table` already holds somebody for.
+ *
+ * Used only by the one-per-department rule, and it answers a question about existing data
+ * rather than about the submitted rows -- so the check has to be against the table, not
+ * against the validated input, or re-uploading a file that is already there would report
+ * its own rows as conflicts.
+ *
+ * `table` is a literal from the `DirectorySpec` above and never anything a request
+ * supplied, which is why it is interpolated; the department values come from the request
+ * and are bound, so the statement cannot be steered by them. The `IN` list is built from
+ * request data, so it goes through `selectInChunks` like every other such lookup -- a
+ * file can name far more rows than D1 will bind.
+ */
+async function occupiedDepartments(
+  db: D1Database,
+  table: string,
+  departments: readonly string[]
+): Promise<Set<string>> {
+  const rows = await selectInChunks<{ department: string }>(
+    db,
+    {
+      parametersPerRow: 1,
+      buildSql: (part) =>
+        `SELECT DISTINCT department FROM ${table} WHERE department IN (${part.map(() => "?").join(",")})`,
+      bindValues: (part) => part.map((row) => row.department),
+    },
+    Array.from(new Set(departments), (department) => ({ department }))
+  );
+  return new Set(rows.map((row) => row.department));
+}
+
+/**
+ * The rows of `rows` whose department is still free, with the rest reported as errors.
+ *
+ * "Free" means no row on the table holds it -- and, because a single request can claim the
+ * same department twice, no earlier row in this request took it either. The first row to
+ * claim a department wins and the rest are refused, which is the same rule the in-file
+ * duplicate check above applies to an address.
+ *
+ * Errors are appended to `invalid` rather than returned, so a row rejected for a
+ * department the directory already fills is reported in the same shape, on the same list
+ * and with the same 1-based row number, as a row rejected for a malformed address.
+ */
+async function withoutOccupiedDepartments(
+  c: any,
+  spec: DirectorySpec,
+  table: string,
+  rows: readonly { row: number; value: DirectoryInput }[],
+  invalid: { row: number; errors: { field: string; message: string }[] }[]
+): Promise<{ row: number; value: DirectoryInput }[]> {
+  const taken = await occupiedDepartments(
+    c.env.DB,
+    table,
+    rows.map((entry) => entry.value.department)
+  );
+
+  const free: { row: number; value: DirectoryInput }[] = [];
+  for (const entry of rows) {
+    if (taken.has(entry.value.department)) {
+      invalid.push({
+        row: entry.row,
+        errors: [
+          {
+            field: "department",
+            message: `${entry.value.department} already has a ${spec.label.toLowerCase()}, and there is exactly one per department.`,
+          },
+        ],
+      });
+      continue;
+    }
+    taken.add(entry.value.department);
+    free.push(entry);
+  }
+  return free;
+}
+
+/**
  * Registers the list, create and edit routes for one directory.
  *
  * The three routes are generated from a literal spec rather than written out per
@@ -1835,7 +1943,7 @@ function validateDirectoryId(value: string | undefined): number | null {
  */
 function registerDirectoryRoutes(spec: DirectorySpec): void {
   const validateDirectoryRow = directoryValidator(spec, spec.validateRow);
-  const { table, idColumn, nameColumn, provisionFromStaff = false } = spec;
+  const { table, idColumn, nameColumn, provisionFromStaff = false, onePerDepartment = false } = spec;
 
   /* ------------------------------------------------------------------- list */
 
@@ -1970,8 +2078,8 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
 
       if (toInsert.length === 0) {
         // Every row was already present or duplicated. Nothing is written, and the
-        // reason is reported per row rather than as a failure, because re-uploading
-        // an unchanged file is a legitimate thing to do.
+        // reason is reported per row rather than as a failure, because re-uploading an
+        // unchanged file is a legitimate thing to do.
         return c.json({
           success: true,
           created: 0,
@@ -1984,7 +2092,31 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         });
       }
 
-      const accountLookups = toInsert.map((entry) => ({
+      /*
+       * One appointment per department, for the directory that has one.
+       *
+       * This runs *after* the email check on purpose. A row that is already on the table
+       * is a no-op whoever its department is -- re-uploading the same file has to stay a
+       * no-op -- so only rows that would actually be written are held to the rule. Running
+       * it earlier would report every already-saved coordinator as a conflict with
+       * themselves, which is both wrong and enough to make an admin stop trusting the
+       * report.
+       *
+       * The rejected rows are reported the same way validation failures are: on the
+       * `invalid` list, with the error on `department`, keeping the row number the
+       * dashboard highlights. A file whose other rows are fine still imports them.
+       */
+      const insertable = onePerDepartment
+        ? await withoutOccupiedDepartments(c, spec, table, toInsert, invalid)
+        : toInsert;
+
+      if (insertable.length === 0) {
+        // Nothing survived, and the reason is the row's department rather than its shape.
+        // The same 400 the all-invalid file gets, so the dashboard reads one refusal.
+        return fail(c, 400, "No valid rows to import", "import-validation-failed", { invalid });
+      }
+
+      const accountLookups = insertable.map((entry) => ({
         key: emailUserName(entry.value.email),
         email: entry.value.email,
       }));
@@ -2022,8 +2154,8 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
        * every account does not pay for a hash it discards.
        */
       const roleMismatches: { row: number; reason: string }[] = [];
-      const linkable: typeof toInsert = [];
-      toInsert.forEach((entry) => {
+      const linkable: typeof insertable = [];
+      insertable.forEach((entry) => {
         const found =
           byKey.get(emailUserName(entry.value.email).toLowerCase()) ??
           byEmail.get(entry.value.email.toLowerCase());
@@ -2238,6 +2370,34 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         );
       }
 
+      /*
+       * One appointment per department, for the directory that has one.
+       *
+       * The same rule the create route applies, and it is checked against the table rather
+       * than against the stored value because the department being saved is the one under
+       * test. This entry is excluded from the lookup, which is what makes re-saving a
+       * coordinator without touching its department -- the ordinary edit, and the one that
+       * repairs a missing `auth_user_id` -- not a conflict with itself.
+       *
+       * 409 with `duplicate-department`, beside the email conflict above, because it is the
+       * same kind of failure: the row the admin asked for cannot exist next to the one that
+       * is already there.
+       */
+      if (onePerDepartment) {
+        const departmentClash = await c.env.DB
+          .prepare(`SELECT ${idColumn} FROM ${table} WHERE department = ? AND ${idColumn} <> ? LIMIT 1`)
+          .bind(value.department, id)
+          .first<Record<string, number>>();
+        if (departmentClash) {
+          return fail(
+            c,
+            409,
+            `${value.department} already has a ${spec.label.toLowerCase()}`,
+            "duplicate-department"
+          );
+        }
+      }
+
       const previousEmail = (existing.email ?? "").toLowerCase();
       const emailChanged = value.email.toLowerCase() !== previousEmail;
 
@@ -2413,6 +2573,12 @@ registerDirectoryRoutes(
     // being added belongs to somebody who already has a `staff` account. Reuse it.
     provisionFromStaff: true,
     validateRow: validateContestCoordinatorRow,
+    /*
+     * A department has exactly one contest coordinator. It is the single addressee the OD
+     * workflow hands a request to, so a second one cannot be resolved to anybody in
+     * particular; see `spec.onePerDepartment` for why it is refused rather than ordered.
+     */
+    onePerDepartment: true,
   }
 );
 

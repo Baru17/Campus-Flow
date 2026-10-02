@@ -30,7 +30,7 @@
  */
 
 import { env, SELF } from "cloudflare:test";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { hashToken } from "../src/utils/auth";
 import {
 	DEFAULT_INITIAL_PASSWORD,
@@ -194,6 +194,9 @@ const DIRECTORIES = [
 		 * an address that already holds an account of another role is a conflict and
 		 * stays refused. Mirrors the server's `spec.provisionFromStaff`. */
 		provisionFromStaff: false,
+		/* Nothing in the workflow or the dashboard depends on there being only one HOD, so
+		 * the directory carries no such rule. Mirrors the server's `spec.onePerDepartment`. */
+		onePerDepartment: false,
 		/* Suffixed per directory: this suite runs twice from one table, and
 		 * `auth_users.auth_user_id` is UNIQUE, so a shared literal would collide. */
 		authIdSuffix: "10",
@@ -221,6 +224,9 @@ const DIRECTORIES = [
 		 * being added belongs to somebody who already has a `staff` account. That account
 		 * is reused rather than refused. Mirrors the server's `spec.provisionFromStaff`. */
 		provisionFromStaff: true,
+		/* A department has exactly one contest coordinator, and the create and edit routes
+		 * refuse a second. Mirrors the server's `spec.onePerDepartment`. */
+		onePerDepartment: true,
 		authIdSuffix: "20",
 		makeRow: (email: string, department: string, name: string) => ({
 			coordinator_name: name,
@@ -286,6 +292,28 @@ describe("HOD and contest coordinator management", () => {
 			.bind(STAFF_TOKEN_USER, "directory.staff", "not-a-real-hash", "staff", "directory.staff@kiot.ac.in")
 			.run();
 		await createAuthSession(STAFF_TOKEN_USER, STAFF_TOKEN);
+	});
+
+	/*
+	 * Every case starts with an empty coordinator directory.
+	 *
+	 * `contest_coordinators` holds exactly one row per department, so a case that appoints
+	 * somebody -- which almost all of them do, because that is what these routes are for --
+	 * consumes the only seat its department has. Without a reset the cases would be ordered
+	 * around four departments rather than around behaviour, and every one of them after the
+	 * fourth would be asserting the *refusal* rather than the appointment.
+	 *
+	 * Clearing the table is what turns the invariant into the thing under test instead of a
+	 * precondition of the test: each case appoints whoever it needs, and the cases that care
+	 * about the rule create their own second row on purpose. `hods` carries no such rule and
+	 * is deliberately left alone -- its cases still accumulate, which is how the directory
+	 * with no uniqueness constraint is shown to behave unchanged.
+	 *
+	 * These are this file's own rows in this file's own isolated database; nothing here
+	 * touches a deployed one.
+	 */
+	beforeEach(async () => {
+		await env.DB.prepare("DELETE FROM contest_coordinators").run();
 	});
 
 	describe("authorization", () => {
@@ -762,6 +790,12 @@ describe("HOD and contest coordinator management", () => {
 
 			describe("list", () => {
 				it("lists the directory", async () => {
+					// The coordinator directory is cleared between cases, so the listing is
+					// given something to list. For an HOD the rows are left over from the
+					// create cases above, which is the point: the response is the same shape
+					// whether or not the table has just been emptied.
+					await createOne(directory, unique("listed"), "IT", "Listed Person");
+
 					const { status, body } = await api(directory.path);
 					expect(status).toBe(200);
 					expect(Array.isArray(body[directory.listKey])).toBe(true);
@@ -778,12 +812,16 @@ describe("HOD and contest coordinator management", () => {
 				});
 
 				it("narrows to one department when asked", async () => {
+					await createOne(directory, unique("narrowed"), "CSE", "Narrowed Person");
+
 					const { status, body } = await api(`${directory.path}?department=CSE`);
 					expect(status).toBe(200);
 					expect(body.department).toBe("CSE");
 					expect(
 						body[directory.listKey].every((row: any) => row.department === "CSE"),
 					).toBe(true);
+					// Not vacuously true: something was actually returned.
+					expect(body[directory.listKey].length).toBeGreaterThan(0);
 				});
 
 				it("refuses an unsupported department", async () => {
@@ -1062,6 +1100,283 @@ describe("HOD and contest coordinator management", () => {
 			});
 		});
 	}
+
+	/*
+	 * The rule that makes the OD workflow answerable: a department has exactly one contest
+	 * coordinator.
+	 *
+	 * Everything else about these two directories is shared, so this is the one behaviour
+	 * asserted for the coordinator alone. It is asserted through the API rather than through
+	 * the validator, because the answer has to come from the table: the same person
+	 * re-uploaded, a different person, a second row inside one file, and an edit that moves
+	 * somebody into a department that is already filled are four different requests, and
+	 * three of them have to be refused for reasons that are not the same.
+	 */
+	describe("one contest coordinator per department", () => {
+		const directory = DIRECTORIES[1];
+		const PATH = directory.path;
+		const TABLE = directory.table;
+
+		/** Every row the directory holds for one department. */
+		async function rowsFor(department: string): Promise<Record<string, string>[]> {
+			const { results } = await env.DB
+				.prepare(
+					`SELECT ${directory.nameColumn}, email FROM ${TABLE} WHERE department = ? ORDER BY ${directory.idColumn}`,
+				)
+				.bind(department)
+				.all<Record<string, string>>();
+			return results ?? [];
+		}
+
+		async function coordinatorIdFor(email: string): Promise<number> {
+			const row = await env.DB
+				.prepare(`SELECT ${directory.idColumn} FROM ${TABLE} WHERE email = ?`)
+				.bind(email.toLowerCase())
+				.first<Record<string, number>>();
+			return row?.[directory.idColumn] as number;
+		}
+
+		it("appoints one coordinator for a department that has none", async () => {
+			const { status, body } = await createOne(directory, freshEmail("solo"), "ECE", "First For Ece");
+
+			expect(status).toBe(200);
+			expect(body.created).toBe(1);
+			expect(body.invalid).toEqual([]);
+			expect(await rowsFor("ECE")).toHaveLength(1);
+		});
+
+		it("refuses a second coordinator for a department that already has one", async () => {
+			await createOne(directory, freshEmail("held"), "CSE", "The Incumbent");
+
+			const { status, body } = await createOne(directory, freshEmail("challenger"), "CSE", "The Challenger");
+
+			/*
+			 * A refusal, not a second row and not a silent skip.
+			 *
+			 * The error is on `department` because that is the field the admin has to
+			 * change, and it is on the per-row `invalid` list rather than in the message
+			 * alone so the dashboard can point at the input and say which row it was.
+			 */
+			expect(status).toBe(400);
+			expect(body.success).toBe(false);
+			expect(body.code).toBe("import-validation-failed");
+			expect(body.details.invalid).toHaveLength(1);
+			expect(body.details.invalid[0].row).toBe(1);
+			expect(body.details.invalid[0].errors.map((e: any) => e.field)).toContain("department");
+			expect(body.details.invalid[0].errors[0].message).toContain("CSE");
+
+			// Still one row, and still the person appointed first.
+			const rows = await rowsFor("CSE");
+			expect(rows).toHaveLength(1);
+			expect(rows[0][directory.nameColumn]).toBe("The Incumbent");
+		});
+
+		it("still appoints one for each of the four departments", async () => {
+			// The rule is one *per department*, not one in total: a file covering all four
+			// has to import all four.
+			const departments = ["IT", "CSE", "ECE", "EEE"];
+			const { status, body } = await api(PATH, {
+				method: "POST",
+				body: JSON.stringify({
+					rows: departments.map((department) =>
+						directory.makeRow(freshEmail(`each-${department}`), department, `Coordinator ${department}`),
+					),
+				}),
+			});
+
+			expect(status).toBe(200);
+			expect(body.created).toBe(4);
+			expect(body.invalid).toEqual([]);
+			for (const department of departments) {
+				expect(await rowsFor(department), department).toHaveLength(1);
+			}
+		});
+
+		it("reports the second of two rows in one file that claim the same department", async () => {
+			const { status, body } = await api(PATH, {
+				method: "POST",
+				body: JSON.stringify({
+					rows: [
+						directory.makeRow(freshEmail("first"), "IT", "First In File"),
+						directory.makeRow(freshEmail("second"), "IT", "Second In File"),
+					],
+				}),
+			});
+
+			// The first row is appointed and the second is reported by its 1-based row
+			// number, so a file is never silently short a row.
+			expect(status).toBe(200);
+			expect(body.created).toBe(1);
+			expect(body.invalid).toHaveLength(1);
+			expect(body.invalid[0].row).toBe(2);
+			expect(body.invalid[0].errors.map((e: any) => e.field)).toContain("department");
+
+			const rows = await rowsFor("IT");
+			expect(rows).toHaveLength(1);
+			expect(rows[0][directory.nameColumn]).toBe("First In File");
+		});
+
+		it("imports the rest of a file whose other row takes an occupied department", async () => {
+			await createOne(directory, freshEmail("occupied"), "EEE", "The Incumbent");
+
+			const { status, body } = await api(PATH, {
+				method: "POST",
+				body: JSON.stringify({
+					rows: [
+						directory.makeRow(freshEmail("blocked"), "EEE", "Blocked"),
+						directory.makeRow(freshEmail("allowed"), "IT", "Allowed"),
+					],
+				}),
+			});
+
+			expect(status).toBe(200);
+			expect(body.created).toBe(1);
+			expect(body.invalid).toHaveLength(1);
+			expect(await rowsFor("EEE")).toHaveLength(1);
+			expect(await rowsFor("IT")).toHaveLength(1);
+		});
+
+		it("treats re-uploading an unchanged file as a no-op rather than a conflict", async () => {
+			const rows = [directory.makeRow(freshEmail("idem"), "CSE", "Reuploaded")];
+			const first = await api(PATH, { method: "POST", body: JSON.stringify({ rows }) });
+			expect(first.body.created).toBe(1);
+
+			const second = await api(PATH, { method: "POST", body: JSON.stringify({ rows }) });
+
+			/*
+			 * Skipped, because the row is already there -- and emphatically not rejected,
+			 * which would tell an admin that their own saved coordinator conflicts with
+			 * itself. The department check runs after the address check for exactly this
+			 * reason.
+			 */
+			expect(second.status).toBe(200);
+			expect(second.body.created).toBe(0);
+			expect(second.body.skipped).toBe(1);
+			expect(second.body.invalid).toEqual([]);
+			expect(await rowsFor("CSE")).toHaveLength(1);
+		});
+
+		it("creates no login account for the refused appointment", async () => {
+			const challenger = freshEmail("rejected");
+			await createOne(directory, freshEmail("holder"), "ECE", "The Incumbent");
+
+			const accountsBefore = await countRows("auth_users");
+			const { status } = await createOne(directory, challenger, "ECE", "The Challenger");
+			expect(status).toBe(400);
+
+			// A refused row provisions nothing: no directory row and no account, so the
+			// refused person has not been handed a login they cannot use.
+			expect(await accountFor(challenger)).toBeNull();
+			expect(await countRows("auth_users")).toBe(accountsBefore);
+			expect(await rowsFor("ECE")).toHaveLength(1);
+		});
+
+		it("refuses to move a coordinator into a department that already has one", async () => {
+			const moving = freshEmail("moving");
+			await createOne(directory, moving, "IT", "Moving Person");
+			await createOne(directory, freshEmail("staying"), "CSE", "Staying Person");
+
+			const { status, body } = await api(`${PATH}/${await coordinatorIdFor(moving)}`, {
+				method: "PATCH",
+				body: JSON.stringify({ department: "CSE" }),
+			});
+			expect(status).toBe(409);
+			expect(body.code).toBe("duplicate-department");
+
+			// And the refused move left both rows exactly where they were.
+			expect(await rowsFor("IT")).toHaveLength(1);
+			expect(await rowsFor("CSE")).toHaveLength(1);
+		});
+
+		it("allows a coordinator to be moved into a free department", async () => {
+			const moving = freshEmail("move-free");
+			await createOne(directory, moving, "IT", "Moving Person");
+
+			const { status, body } = await api(`${PATH}/${await coordinatorIdFor(moving)}`, {
+				method: "PATCH",
+				body: JSON.stringify({ department: "EEE" }),
+			});
+			expect(status).toBe(200);
+			expect(body[directory.responseKey].department).toBe("EEE");
+			expect(await rowsFor("IT")).toHaveLength(0);
+			expect(await rowsFor("EEE")).toHaveLength(1);
+		});
+
+		it("is not a conflict with itself when the department is not being changed", async () => {
+			const email = freshEmail("self");
+			await createOne(directory, email, "IT", "Unchanged Person");
+
+			// The ordinary edit, and the one that repairs a missing `auth_user_id`: the row
+			// being saved is excluded from the department check, so it cannot conflict with
+			// the very department it is in.
+			const { status } = await api(`${PATH}/${await coordinatorIdFor(email)}`, {
+				method: "PATCH",
+				body: JSON.stringify({ [directory.nameColumn]: "Renamed Person" }),
+			});
+			expect(status).toBe(200);
+
+			const rows = await rowsFor("IT");
+			expect(rows).toHaveLength(1);
+			expect(rows[0][directory.nameColumn]).toBe("Renamed Person");
+		});
+
+		it("leaves a duplicate pair it did not create exactly as it found it", async () => {
+			/*
+			 * Two rows for one department, written straight into the table because that is
+			 * the only way they can come to exist. Nothing here is allowed to resolve that
+			 * by deleting one of them: which of two coordinators is real is an
+			 * administrative decision about a person's appointment, so an unrelated save
+			 * must leave both rows -- and both people -- alone.
+			 */
+			const legacy = [
+				[freshEmail("legacy-a"), "Legacy One"],
+				[freshEmail("legacy-b"), "Legacy Two"],
+			] as const;
+			for (const [email, name] of legacy) {
+				await env.DB
+					.prepare(
+						`INSERT INTO ${TABLE} (${directory.nameColumn}, email, department, auth_user_id)
+						 VALUES (?, ?, ?, NULL)`,
+					)
+					.bind(name, email.toLowerCase(), "IT")
+					.run();
+			}
+
+			// An appointment for a different department, then a save that touches nothing
+			// about the pair.
+			await createOne(directory, freshEmail("unrelated"), "ECE", "Unrelated Appointment");
+			await api(`${PATH}/${await coordinatorIdFor(legacy[0][0])}`, {
+				method: "PATCH",
+				body: JSON.stringify({ [directory.nameColumn]: "Legacy One" }),
+			});
+
+			const rows = await rowsFor("IT");
+			expect(rows).toHaveLength(2);
+			expect(rows.map((row) => row.email).sort()).toEqual([legacy[0][0].toLowerCase(), legacy[1][0].toLowerCase()]);
+		});
+
+		it("does not apply the rule to heads of department", async () => {
+			// Nothing in the workflow or the dashboard depends on there being only one HOD, so
+			// the rule is not extended to the directory beside it. Pinned here because the
+			// failure mode this guards against is the rule quietly becoming "one row per
+			// directory" and starting to refuse heads of department too.
+			const hod = DIRECTORIES[0];
+			for (const email of [freshEmail("hod-a"), freshEmail("hod-b")]) {
+				const { status, body } = await api(hod.path, {
+					method: "POST",
+					body: JSON.stringify({ rows: [hod.makeRow(email, "IT", "Head Of Department")] }),
+				});
+				expect(status, email).toBe(200);
+				expect(body.created, email).toBe(1);
+			}
+
+			const { results } = await env.DB
+				.prepare("SELECT COUNT(*) AS n FROM hods WHERE department = ?")
+				.bind("IT")
+				.all<{ n: number }>();
+			expect(Number(results?.[0]?.n)).toBeGreaterThan(1);
+		});
+	});
 
 	/*
 	 * The property the whole feature is least likely to get right by accident: the

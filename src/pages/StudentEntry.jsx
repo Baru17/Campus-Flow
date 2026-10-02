@@ -65,7 +65,7 @@ const ACTIONS = [
 export default function StudentEntry() {
   const navigate = useNavigate()
   const clock = useClock()
-  const { logout } = useAuth()
+  const { logout, student: authStudent, loading: authLoading } = useAuth()
 
   const [me, setMe] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -83,17 +83,43 @@ export default function StudentEntry() {
     }
   }, [])
 
+  /*
+   * Wait for the session to settle before asking who this is.
+   *
+   * `AuthProvider` restores the session on mount, and this page used to issue
+   * `/api/student/me` at the same time rather than after it. That is the pattern every
+   * other dashboard in the app already follows -- `AdvisorDashboard` gates its first
+   * authenticated call on `if (!staff) return` -- and this page was the one place that
+   * did not, so on a cold load it fired a second, redundant request whose failure surfaced
+   * as an error banner before the first one had finished.
+   *
+   * Gating on `authLoading` also stops the request firing at all for somebody who is
+   * genuinely signed out: the redirect below takes them to role selection first, which is
+   * the honest answer, rather than asking an authenticated endpoint and rendering whatever
+   * it refused with.
+   *
+   * Nothing on the server changed. `/api/student/me` still requires a session *and* the
+   * student role; this only stops asking before we know who is asking.
+   */
   useEffect(() => {
+    if (authLoading) return
+    if (!authStudent) {
+      navigate('/role-selection', { replace: true })
+      return
+    }
     load()
-  }, [load])
+  }, [authLoading, authStudent, load, navigate])
 
   const handleLogout = async () => {
     await logout()
     navigate('/role-selection', { replace: true })
   }
 
-  const student = me?.student
+  // The provider's own answer is enough to render the shell, so a session that has
+  // resolved does not sit behind a spinner while the duplicate fetch repeats it.
+  const student = me?.student ?? authStudent
   const hasMentor = Boolean(student?.mentor_email)
+  const busy = authLoading || loading
 
   return (
     <div className="app-shell">
@@ -113,14 +139,16 @@ export default function StudentEntry() {
 
         {error && <StatusMessage variant="danger">{error}</StatusMessage>}
 
-        {loading && (
+        {busy && (
           <div className="cf-empty">
             <span className="cf-spinner" role="status" aria-hidden="true" />
-            <p className="text-sm text-slate-500">Loading your details…</p>
+            <p className="text-sm text-slate-500">
+              {authLoading ? 'Checking your session…' : 'Loading your details…'}
+            </p>
           </div>
         )}
 
-        {!loading && !error && student && (
+        {!busy && !error && student && (
           <div className="page-enter">
             {/*
               Who the session belongs to, read from the server.
