@@ -1,0 +1,133 @@
+﻿
+> backend@0.0.0 test:integration
+> vitest --config vitest.integration.config.mts --run
+
+
+ RUN  v4.1.11 C:/Users/bdhar/Desktop/Campus-Flow/backend
+
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+ Γ¥» test/password-reset.integration.spec.ts (19 tests | 2 failed) 45653ms
+     ├ù issues a token and reports success for a real student 20059ms
+     ├ù returns an identical response for an unknown student 20035ms
+node.exe : stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > walks all 
+four stages and ends APPROVED
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (stderr | test/s...d ends APPROVED:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > the approval chain > walks all four stages 
+and ends APPROVED
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > tells a 
+browser not to cache the page the token is in
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > tells a 
+browser not to cache the page the token is in
+{"event":"od_submission_email_failed","odRequestId":"2115c6fc-2153-49d2-8edb-cc75d399c46c","outcome":"email_not_sent"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > tells a 
+browser not to cache the page the token is in
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/odEmailApproval.integration.spec.ts > OD approval by emailed link > resolving a valid link > tells a 
+browser not to cache the page the token is in
+{"event":"mentor_assignment_email_failed","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > lists only the requests 
+waiting on the signed-in approver
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > lists only the requests 
+waiting on the signed-in approver
+{"event":"od_submission_email_failed","odRequestId":"5c878f3d-1ce7-4bc6-beba-a5db7c70db56","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > reports whether the 
+signed-in approver may act
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > reports whether the 
+signed-in approver may act
+{"event":"od_submission_email_failed","odRequestId":"574af5ef-11cf-4598-8962-240cf088fb5c","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the coordinator in that coordinator's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the coordinator in that coordinator's queue
+{"event":"od_submission_email_failed","odRequestId":"fd6d64d5-a3a4-491d-8358-8a087eb77e90","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > puts a request waiting 
+on the HOD in that HOD's queue
+{"event":"od_submission_email_failed","odRequestId":"d16ede97-e5dd-4558-9a88-92535a4c1cc6","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > scopes an advisor's 
+queue to their own cohort
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > scopes an advisor's 
+queue to their own cohort
+{"event":"od_submission_email_failed","odRequestId":"3505ffb7-7667-40a7-b471-36cfaaa814e0","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request 
+in a queue for a stage it has already passed
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > approver sign-in > does not put a request 
+in a queue for a stage it has already passed
+{"event":"od_submission_email_failed","odRequestId":"3f3bcdc4-abca-4b35-89bf-a5c3cdd34e13","outcome":"email_not_sent"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > student history > reports a rejection with 
+its stage and reason
+{"event":"email_rejected","status":401,"code":"unauthorized","message":"Key not found"}
+
+stderr | test/studentOd.integration.spec.ts > student OD and mentor flow > student history > reports a rejection with 
+its stage and reason
+{"event":"od_submission_email_failed","odRequestId":"99dc15b0-1095-4e64-bec8-33d9cf675ec2","outcome":"email_not_sent"}
+
+ Γ¥» test/studentOd.integration.spec.ts (59 tests | 22 failed) 53368ms
+       ├ù stores the mentor's own address, not one from the browser 20040ms
+       ├ù refuses to change an existing mentor without confirmation 20051ms
+       ├ù walks all four stages and ends APPROVED 109ms
+       ├ù stops the workflow on a rejection and tells only the student 84ms
+       ├ù stops on a rejection at any later stage too 120ms
+       ├ù records the decision and advances even when nothing is notified 85ms
+       ├ù emails the final approval exactly once, when the HOD says yes 88ms
+       ├ù refuses a mentor who is not this student's mentor 111ms
+       ├ù refuses a coordinator from another department 109ms
+       ├ù refuses an HOD from another department 151ms
+       ├ù refuses to approve twice 83ms
+       ├ù refuses to act on a request that was already rejected 97ms
+       ├ù refuses to act on a fully approved request 164ms
+       ├ù requires a reason to reject 83ms
+       ├ù lets a member of staff appointed as coordinator decide that stage 90ms
+       ├ù lists only the requests waiting on the signed-in approver 369ms
+       ├ù reports whether the signed-in approver may act 339ms
+       ├ù puts a request waiting on the coordinator in that coordinator's queue 378ms
+       ├ù puts a request waiting on the HOD in that HOD's queue 386ms
+       ├ù scopes an advisor's queue to their own cohort 422ms
+       ├ù does not put a request in a queue for a stage it has already passed 531ms
+       ├ù reports a rejection with its stage and reason 355ms

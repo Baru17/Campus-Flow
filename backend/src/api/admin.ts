@@ -1750,17 +1750,50 @@ interface DirectorySpec {
    *      `verifyApprover` matches the caller's own address against this directory --
    *      so keeping the `staff` role is what lets them action their own OD queue.
    *
-   *   2. The row records `auth_user_id`. A coordinator created with no account to
-   *      reuse gets a `contest_coordinator` account, and both
-   *      `/api/auth/od-approver/login` and `/api/approver/me` resolve an approver by
-   *      that column -- so without it such a coordinator could not sign in at all.
+*   2. The row records `auth_user_id`, the account this appointment belongs to. Both roles
+   *      are permanent users of the existing authentication architecture, and both
+   *      approver routes resolve a signed-in session through that column rather than
+   *      through the address -- `/api/auth/od-approver/login` and `/api/approver/me` --
+   *      so a row without it cannot be signed in as. For a coordinator it is the reused
+   *      staff account's own id, so the two roles share one login and one password.
    *
-   * Head of department leaves this unset and is unaffected by both: an HOD is appointed
-   * *to* a department, is not expected to already be staff, and an address holding
-   * another kind of account really is a different person. Its rows are written exactly
-   * as before.
+   * Head of department leaves this unset and is unaffected by the first point: an HOD is
+   * appointed *to* a department, is not expected to already be staff, and an address
+   * holding another kind of account really is a different person. Its rows are written
+   * exactly as before.
    */
   provisionFromStaff?: boolean;
+  /**
+   * Set for a directory that holds exactly one person per department, which is contest
+   * coordinators and nothing else.
+   *
+   * The workflow treats the coordinator for a department as a single addressee: the
+   * approval mail is sent to one coordinator, their dashboard is one queue, and the
+   * coordinator stage is one step in a fixed chain. Two rows for one department make all
+   * three untrue at once, and no ordering of the rows makes it true again -- somebody is
+   * always the coordinator and somebody is never told about it.
+   *
+   * So the second appointment is refused rather than resolved:
+   *
+   *   - on create, a row whose department is already held joins the `invalid` list, with
+   *     the error on the `department` field, so a bulk import still imports the rows that
+   *     are fine and reports this one instead of dropping it;
+   *   - on edit, moving an entry into an occupied department is a 409, exactly as moving
+   *     it onto a taken email is. Re-saving it in the department it already holds is not
+   *     a conflict, because the entry being edited is excluded from the check.
+   *
+   * The check is deliberately the row's own uniqueness, not a database constraint. There
+   * is no `UNIQUE` on `department` in any migration, and adding one to a deployed table
+   * is a change to production data rather than to this feature; if duplicates already
+   * exist, a constraint would refuse to be created and this rule would keep the directory
+   * from growing any more. Nothing here deletes or rewrites an existing row: cleaning up
+   * a department that already holds two is an administrative decision, not a side effect
+   * of saving a form.
+   *
+   * Head of department leaves this unset. Nothing in the workflow or the dashboard
+   * depends on there being only one HOD, so the rule is not extended to it here.
+   */
+  onePerDepartment?: boolean;
   /**
    * The row validator, in its own column vocabulary.
    *
@@ -1823,6 +1856,83 @@ function validateDirectoryId(value: string | undefined): number | null {
 }
 
 /**
+ * The departments in `departments` that `table` already holds somebody for.
+ *
+ * Used only by the one-per-department rule, and it answers a question about existing data
+ * rather than about the submitted rows -- so the check has to be against the table, not
+ * against the validated input, or re-uploading a file that is already there would report
+ * its own rows as conflicts.
+ *
+ * `table` is a literal from the `DirectorySpec` above and never anything a request
+ * supplied, which is why it is interpolated; the department values come from the request
+ * and are bound, so the statement cannot be steered by them. The `IN` list is built from
+ * request data, so it goes through `selectInChunks` like every other such lookup -- a
+ * file can name far more rows than D1 will bind.
+ */
+async function occupiedDepartments(
+  db: D1Database,
+  table: string,
+  departments: readonly string[]
+): Promise<Set<string>> {
+  const rows = await selectInChunks<{ department: string }>(
+    db,
+    {
+      parametersPerRow: 1,
+      buildSql: (part) =>
+        `SELECT DISTINCT department FROM ${table} WHERE department IN (${part.map(() => "?").join(",")})`,
+      bindValues: (part) => part.map((row) => row.department),
+    },
+    Array.from(new Set(departments), (department) => ({ department }))
+  );
+  return new Set(rows.map((row) => row.department));
+}
+
+/**
+ * The rows of `rows` whose department is still free, with the rest reported as errors.
+ *
+ * "Free" means no row on the table holds it -- and, because a single request can claim the
+ * same department twice, no earlier row in this request took it either. The first row to
+ * claim a department wins and the rest are refused, which is the same rule the in-file
+ * duplicate check above applies to an address.
+ *
+ * Errors are appended to `invalid` rather than returned, so a row rejected for a
+ * department the directory already fills is reported in the same shape, on the same list
+ * and with the same 1-based row number, as a row rejected for a malformed address.
+ */
+async function withoutOccupiedDepartments(
+  c: any,
+  spec: DirectorySpec,
+  table: string,
+  rows: readonly { row: number; value: DirectoryInput }[],
+  invalid: { row: number; errors: { field: string; message: string }[] }[]
+): Promise<{ row: number; value: DirectoryInput }[]> {
+  const taken = await occupiedDepartments(
+    c.env.DB,
+    table,
+    rows.map((entry) => entry.value.department)
+  );
+
+  const free: { row: number; value: DirectoryInput }[] = [];
+  for (const entry of rows) {
+    if (taken.has(entry.value.department)) {
+      invalid.push({
+        row: entry.row,
+        errors: [
+          {
+            field: "department",
+            message: `${entry.value.department} already has a ${spec.label.toLowerCase()}, and there is exactly one per department.`,
+          },
+        ],
+      });
+      continue;
+    }
+    taken.add(entry.value.department);
+    free.push(entry);
+  }
+  return free;
+}
+
+/**
  * Registers the list, create and edit routes for one directory.
  *
  * The three routes are generated from a literal spec rather than written out per
@@ -1833,7 +1943,7 @@ function validateDirectoryId(value: string | undefined): number | null {
  */
 function registerDirectoryRoutes(spec: DirectorySpec): void {
   const validateDirectoryRow = directoryValidator(spec, spec.validateRow);
-  const { table, idColumn, nameColumn, provisionFromStaff = false } = spec;
+  const { table, idColumn, nameColumn, provisionFromStaff = false, onePerDepartment = false } = spec;
 
   /* ------------------------------------------------------------------- list */
 
@@ -1968,8 +2078,8 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
 
       if (toInsert.length === 0) {
         // Every row was already present or duplicated. Nothing is written, and the
-        // reason is reported per row rather than as a failure, because re-uploading
-        // an unchanged file is a legitimate thing to do.
+        // reason is reported per row rather than as a failure, because re-uploading an
+        // unchanged file is a legitimate thing to do.
         return c.json({
           success: true,
           created: 0,
@@ -1982,7 +2092,31 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         });
       }
 
-      const accountLookups = toInsert.map((entry) => ({
+      /*
+       * One appointment per department, for the directory that has one.
+       *
+       * This runs *after* the email check on purpose. A row that is already on the table
+       * is a no-op whoever its department is -- re-uploading the same file has to stay a
+       * no-op -- so only rows that would actually be written are held to the rule. Running
+       * it earlier would report every already-saved coordinator as a conflict with
+       * themselves, which is both wrong and enough to make an admin stop trusting the
+       * report.
+       *
+       * The rejected rows are reported the same way validation failures are: on the
+       * `invalid` list, with the error on `department`, keeping the row number the
+       * dashboard highlights. A file whose other rows are fine still imports them.
+       */
+      const insertable = onePerDepartment
+        ? await withoutOccupiedDepartments(c, spec, table, toInsert, invalid)
+        : toInsert;
+
+      if (insertable.length === 0) {
+        // Nothing survived, and the reason is the row's department rather than its shape.
+        // The same 400 the all-invalid file gets, so the dashboard reads one refusal.
+        return fail(c, 400, "No valid rows to import", "import-validation-failed", { invalid });
+      }
+
+      const accountLookups = insertable.map((entry) => ({
         key: emailUserName(entry.value.email),
         email: entry.value.email,
       }));
@@ -2020,8 +2154,8 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
        * every account does not pay for a hash it discards.
        */
       const roleMismatches: { row: number; reason: string }[] = [];
-      const linkable: typeof toInsert = [];
-      toInsert.forEach((entry) => {
+      const linkable: typeof insertable = [];
+      insertable.forEach((entry) => {
         const found =
           byKey.get(emailUserName(entry.value.email).toLowerCase()) ??
           byEmail.get(entry.value.email.toLowerCase());
@@ -2044,22 +2178,30 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         linkable.push(entry);
       });
 
-      /*
-       * `auth_user_id` is written on a staff-provisioned row, and only on those.
+/*
+       * `auth_user_id` is written on every directory row, for both directories.
        *
-       * A coordinator who was given a fresh `contest_coordinator` account cannot sign in
-       * without it: `/api/auth/od-approver/login` and `/api/approver/me` both resolve an
-       * approver by this column, so a row without it is a row nobody can act as.
+       * Both roles are permanent users of the existing authentication architecture, so a
+       * row has to be linked to the account that was provisioned alongside it -- the same
+       * link `staff` and the student tables carry, and the one the approver routes
+       * resolve by:
        *
-       * It is scoped to `provisionFromStaff` rather than applied to every directory
-       * because a head of department row has never carried the column, and writing it
-       * would be a change nobody asked for on a page nobody is editing. The column is
-       * nullable and its table has had it all along -- `auth.ts` reads
-       * `contest_coordinators.auth_user_id` on every approver sign-in -- so writing it
-       * here cannot introduce a column that was not there.
+       *   - `/api/auth/od-approver/login` looks the department up with
+       *     `WHERE auth_user_id = ?`, so a row without it is refused at sign-in with
+       *     `unlinked-approver`.
+       *   - `/api/od/approver/me` reads the same column for the name and department the
+       *     dashboard header renders.
+       *
+       * It is always safe to write, because `planAccounts` has already resolved this row's
+       * account by the time the INSERT is built. For a head of department that account was
+       * just created here; for a contest coordinator it is the staff account being reused,
+       * which is the appointment itself.
+       *
+       * The column itself arrives with `migrations/0018_directory-auth-user-id.sql`, which
+       * also backfills rows that predate it. It was previously written here without being
+       * migrated, which made every appointment a 500.
        */
-      const linkColumn = provisionFromStaff;
-
+      const linkColumn = true;
       const pwdHash = await hashDefaultPassword();
       const { plans } = planAccounts(
         linkable.map((entry) => ({
@@ -2077,14 +2219,14 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         statements.push(
           c.env.DB
             .prepare(
-              `INSERT INTO ${table} (${nameColumn}, email, department${linkColumn ? ", auth_user_id" : ""})
-               VALUES (?, ?, ?${linkColumn ? ", ?" : ""})`
+              `INSERT INTO ${table} (${nameColumn}, email, department, auth_user_id)
+               VALUES (?, ?, ?, ?)`
             )
             .bind(
               entry.value.name,
               entry.value.email,
               entry.value.department,
-              ...(linkColumn ? [plan.auth_user_id] : [])
+              plan.auth_user_id
             )
         );
       });
@@ -2149,10 +2291,10 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
    * *different* id is refused rather than ignored, so a caller is never told an
    * edit succeeded when it moved another row.
    *
-   * Unlike a student or a staff member, these rows carry no `auth_user_id`, so the
-   * linked account is found by address instead. That is the same handle the login
-   * route uses, which makes it the right one: an account whose `user_name` is the
-   * address can be found by nothing else.
+   * Unlike a student or a staff member, these rows carry no `auth_user_id` in the
+   * projection below, so the linked account is found by address instead. That is the same
+   * handle the login route uses, which makes it the right one: an account whose
+   * `user_name` is the address can be found by nothing else.
    *
    * When the address moves, the account moves with it and the password is not
    * touched. The same `auth_user_id` and the same `pwd_hash` are kept, so the
@@ -2160,6 +2302,12 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
    * left claiming the old address. `user_name` is only rewritten when it currently
    * *is* the old address; an account signed into by some other handle keeps that
    * handle, exactly as the staff edit does.
+   *
+   * The row's own `auth_user_id` is repaired here when it is missing. A directory row
+   * that predates `0018_directory-auth-user-id.sql`, or one whose account could not be
+   * matched at the time, carries NULL and cannot be signed in as. Re-saving it is the
+   * point at which the link is known, so it is written then rather than leaving the
+   * administrator to create a second entry.
    */
   app.patch(`${spec.path}/:${spec.idParam}`, requireAuth, requireAdmin, async (c) => {
     try {
@@ -2183,7 +2331,9 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
       }
 
       const existing = await c.env.DB
-        .prepare(`SELECT ${idColumn}, ${nameColumn}, email, department FROM ${table} WHERE ${idColumn} = ?`)
+        .prepare(
+          `SELECT ${idColumn}, ${nameColumn}, email, department, auth_user_id FROM ${table} WHERE ${idColumn} = ?`
+        )
         .bind(id)
         .first<Record<string, string>>();
       if (!existing) {
@@ -2220,24 +2370,58 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
         );
       }
 
+      /*
+       * One appointment per department, for the directory that has one.
+       *
+       * The same rule the create route applies, and it is checked against the table rather
+       * than against the stored value because the department being saved is the one under
+       * test. This entry is excluded from the lookup, which is what makes re-saving a
+       * coordinator without touching its department -- the ordinary edit, and the one that
+       * repairs a missing `auth_user_id` -- not a conflict with itself.
+       *
+       * 409 with `duplicate-department`, beside the email conflict above, because it is the
+       * same kind of failure: the row the admin asked for cannot exist next to the one that
+       * is already there.
+       */
+      if (onePerDepartment) {
+        const departmentClash = await c.env.DB
+          .prepare(`SELECT ${idColumn} FROM ${table} WHERE department = ? AND ${idColumn} <> ? LIMIT 1`)
+          .bind(value.department, id)
+          .first<Record<string, number>>();
+        if (departmentClash) {
+          return fail(
+            c,
+            409,
+            `${value.department} already has a ${spec.label.toLowerCase()}`,
+            "duplicate-department"
+          );
+        }
+      }
+
       const previousEmail = (existing.email ?? "").toLowerCase();
       const emailChanged = value.email.toLowerCase() !== previousEmail;
 
-      const account = emailChanged
-        ? await c.env.DB
-            .prepare(
-              `SELECT auth_user_id, user_name, role, email FROM auth_users
-               WHERE LOWER(user_name) = ? OR LOWER(email) = ? LIMIT 1`
-            )
-            .bind(previousEmail, previousEmail)
-            .first<{ auth_user_id: string; user_name: string; role: string; email: string | null }>()
-        : null;
+      /*
+       * The account that holds this row's current address.
+       *
+       * Read on every edit, not only when the address moves, because it is also what
+       * repairs the row's `auth_user_id`. A directory row that predates the migration, or
+       * one whose account could not be matched when it was created, carries NULL and
+       * cannot be signed in as; re-saving the entry is when the link becomes knowable.
+       */
+      const account = await c.env.DB
+        .prepare(
+          `SELECT auth_user_id, user_name, role, email FROM auth_users
+           WHERE LOWER(user_name) = ? OR LOWER(email) = ? LIMIT 1`
+        )
+        .bind(previousEmail, previousEmail)
+        .first<{ auth_user_id: string; user_name: string; role: string; email: string | null }>();
 
       /*
        * Sign-in is by address, so an address that moves must not already belong to
        * some other account or the same address would match two rows at login.
        */
-      if (account) {
+      if (account && emailChanged) {
         const clash = await c.env.DB
           .prepare(
             `SELECT auth_user_id FROM auth_users
@@ -2259,6 +2443,16 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
       const nameChanged = value.name !== existing[nameColumn];
       const departmentChanged = value.department !== existing.department;
 
+      /*
+       * The row is re-linked to the account that holds its address whenever the stored
+       * link is missing or names a different account. A missing link is a row nobody can
+       * act as; a link that has drifted would point one person's directory entry at
+       * another person's authority, and the address is the only thing that decides which
+       * account that is. Nothing is written when it already agrees.
+       */
+      const nextAuthUserId = account?.auth_user_id ?? null;
+      const linkChanged = nextAuthUserId !== null && nextAuthUserId !== (existing.auth_user_id ?? null);
+
       const statements: D1PreparedStatement[] = [];
 
       /*
@@ -2266,15 +2460,25 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
        * that saves the values it was given is a no-op rather than a write, so it
        * cannot churn `updated_at`-style bookkeeping or race another admin's edit.
        */
-      if (nameChanged || departmentChanged || emailChanged) {
+      if (nameChanged || departmentChanged || emailChanged || linkChanged) {
         statements.push(
           c.env.DB
-            .prepare(`UPDATE ${table} SET ${nameColumn} = ?, email = ?, department = ? WHERE ${idColumn} = ?`)
-            .bind(value.name, value.email, value.department, id)
+            .prepare(
+              `UPDATE ${table} SET ${nameColumn} = ?, email = ?, department = ?${
+                linkChanged ? ", auth_user_id = ?" : ""
+              } WHERE ${idColumn} = ?`
+            )
+            .bind(
+              value.name,
+              value.email,
+              value.department,
+              ...(linkChanged ? [nextAuthUserId] : []),
+              id
+            )
         );
       }
 
-      if (account) {
+      if (account && emailChanged) {
         const nextUserName =
           account.user_name.toLowerCase() === previousEmail
             ? emailUserName(value.email)
@@ -2369,6 +2573,12 @@ registerDirectoryRoutes(
     // being added belongs to somebody who already has a `staff` account. Reuse it.
     provisionFromStaff: true,
     validateRow: validateContestCoordinatorRow,
+    /*
+     * A department has exactly one contest coordinator. It is the single addressee the OD
+     * workflow hands a request to, so a second one cannot be resolved to anybody in
+     * particular; see `spec.onePerDepartment` for why it is refused rather than ordered.
+     */
+    onePerDepartment: true,
   }
 );
 

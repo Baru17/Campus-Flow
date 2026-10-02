@@ -14,22 +14,21 @@
  *    could notify a student about an approval that was rolled back, so the ordering
  *    is enforced by where these are called rather than by anything inside them.
  *
- * 2. **A message never carries a credential** -- with one deliberate, narrow exception.
- *    No password, no session token, no `auth_user_id`, no pwd_hash. What goes out is
- *    the student's name, ID, department, batch, year, section, the dates, the count, the
- *    reason and the request id: enough for an approver to recognise the request and act
- *    on it, and nothing an approver has no business seeing.
+ * 2. **A message never carries a credential.** No password, no session token, no
+ *    `auth_user_id`, no pwd_hash, and no bearer token. What goes out is the student's
+ *    name, ID, department, batch, year, section, the dates, the count, the reason and
+ *    the request id: enough for an approver to recognise the request and act on it,
+ *    and nothing an approver has no business seeing.
  *
- *    The exception is the *email-link* action a Contest Coordinator's and an HOD's mail
- *    carries, which does put a single-use approval token in the URL. That is the point
- *    of it: it is the only way those two roles reach the request at all, it expires, it
- *    is bound to one request and one stage, and it is spent by the first decision. It is
- *    never a password, a session or a standing credential, and knowing the path is not
- *    authorisation -- see `utils/odApprovalToken.ts`.
+ *    The "Review OD Request" button is a plain dashboard route for all four stages,
+ *    including the two that used to receive a signed approval link. Those roles are
+ *    permanent authenticated users now, so their mail points at a page they sign in to
+ *    like everyone else, and knowing the path authorises nothing. There is no longer
+ *    an exception to this rule, which is why it is stated as a flat rule rather than a
+ *    rule with a carve-out.
  */
 
 import { escapeHtml } from "./email";
-import { OD_APPROVAL_TOKEN_TTL_HOURS } from "./odApprovalToken";
 
 /** A rendered message, with the recipient left to the caller. */
 export interface OdMessage {
@@ -170,33 +169,30 @@ function buildShell(
 /**
  * What the "Review OD Request" button in an approver's mail does.
  *
- * Two kinds, and the difference is the whole point of `PART 7` of the OD brief:
+ * One kind, and it is a dashboard route for all four stages. A mentor is staff and has
+ * `/staff`; a class advisor has `/advisor`; and a Contest Coordinator and an HOD have
+ * `/coordinator` and `/hod` since they became permanent authenticated users. Every one of
+ * them signs in, and the server checks the session and the role before anything is decided.
  *
- *   - `dashboard`: a mentor and a class advisor have somewhere to go. They sign in at the
- *     link they already know how to reach, and the server checks their session. The link
- *     carries no credential of any kind.
- *   - `email-link`: a Contest Coordinator and an HOD have no dashboard anyone reaches from
- *     the role selection. Their link carries a single-use, expiring approval token and
- *     opens the approval page directly -- no sign-in form, and nothing in the URL that
- *     outlives the decision.
+ * There was a second kind once. A Contest Coordinator and an HOD used to be sent a signed,
+ * time-limited *bearer* link instead, because they had no account to sign in with: it opened
+ * the request directly with no sign-in step, and it expired. That is what this replaced, and
+ * the note below is worded to say so -- an approver reading this mail now always has to
+ * authenticate, which is the intended behaviour rather than a step to apologise for.
+ *
+ * The link carries no credential of any kind, so it cannot be forwarded into an approval.
  */
 export interface OdApprovalAction {
   url: string;
-  kind: "dashboard" | "email-link";
+  kind: "dashboard";
 }
 
-/** The closing copy under each kind of button. */
-const ACTION_NOTES: Record<OdApprovalAction["kind"], string> = {
-  dashboard:
-    "You will be asked to sign in. The link only takes you to the right dashboard — it cannot approve anything on its own.",
-  "email-link": `This link approves this one request only. It expires in ${OD_APPROVAL_TOKEN_TTL_HOURS} hours and stops working the moment you approve or reject it — you will not be asked to sign in.`,
-};
+/** The closing copy under the button. */
+const ACTION_NOTE =
+  "You will be asked to sign in. The link only takes you to the right dashboard — it cannot approve anything on its own.";
 
-/** The closing line under each kind of button. */
-const ACTION_FOOTERS: Record<OdApprovalAction["kind"], string> = {
-  dashboard: "Sign in to Campus-Flow to review and action this request.",
-  "email-link": "Nothing else is needed — the link above opens the request directly.",
-};
+/** The closing line under the button. */
+const ACTION_FOOTER = "Sign in to Campus-Flow to review and action this request.";
 
 /**
  * An approval *request*, addressed to the approver for one stage.
@@ -218,8 +214,8 @@ export function odApprovalRequestEmail(
     facts,
     {
       action: action.url,
-      actionNote: ACTION_NOTES[action.kind],
-      footer: ACTION_FOOTERS[action.kind],
+      actionNote: ACTION_NOTE,
+      footer: ACTION_FOOTER,
     }
   );
   return { subject, html, text };

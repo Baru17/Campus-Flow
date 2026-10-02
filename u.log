@@ -1,0 +1,22 @@
+﻿
+> backend@0.0.0 test
+> vitest
+
+
+ RUN  v4.1.11 C:/Users/bdhar/Desktop/Campus-Flow/backend
+
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+Using secrets defined in .dev.vars
+
+ Test Files  9 passed (9)
+      Tests  179 passed (179)
+   Start at  18:04:11
+   Duration  14.89s (transform 6.87s, setup 0ms, import 10.80s, tests 2.31s, environment 5ms)
+

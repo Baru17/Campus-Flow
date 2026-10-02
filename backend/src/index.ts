@@ -23,19 +23,17 @@ type Bindings = {
   DB: D1Database;
   ALLOWED_ORIGINS?: string;
   BREVO_API_KEY?: string;
-  /**
-   * Signs the single-use approval links a Contest Coordinator's and an HOD's OD mail
-   * carries.
+  /*
+   * `OD_APPROVAL_TOKEN_SECRET` used to live here, to sign the bearer approval links that a
+   * Contest Coordinator's and an HOD's OD mail carried. Both roles are permanent
+   * authenticated users with dashboards of their own, so those links are gone and the
+   * binding is no longer read by anything.
    *
-   * Optional in the type because it is a deployment secret, not a build-time constant:
-   * set it with `wrangler secret put OD_APPROVAL_TOKEN_SECRET`. When it is absent the
-   * Worker refuses to mint a link and logs `od_approval_link_failed` rather than issuing
-   * something signed with an empty key, so the failure is visible instead of producing
-   * forgeable approval links.
-   *
-   * See `utils/odApprovalToken.ts` for why this is a signed token rather than a table.
+   * The secret itself has been left in place rather than deleted from the deployed Worker:
+   * removing it is a deployment action, and an unused secret harms nothing. It is
+   * deliberately not referenced from `Bindings` any more, so nothing can depend on it by
+   * accident.
    */
-  OD_APPROVAL_TOKEN_SECRET?: string;
   NODE_ENV?: string;
 };
 

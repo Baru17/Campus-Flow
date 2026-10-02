@@ -40,11 +40,6 @@ import {
   type OdRequestFacts,
 } from "./odEmail";
 import {
-  OdApprovalTokenError,
-  issueApprovalToken,
-  type OdApprovalTokenBindings,
-} from "./odApprovalToken";
-import {
   OD_DECISION,
   OD_STATUS,
   STAGES,
@@ -63,11 +58,11 @@ import type { AuthenticatedStudent } from "./studentIdentity";
  * Everything the workflow needs from the Worker bindings.
  *
  * The email key is optional because mail is a side effect and a decision must still be
- * recorded without it. The approval-link secret is *not* optional in practice: a link
- * cannot be signed without it, and `issueApprovalToken` refuses rather than signing with
- * something weak.
+ * recorded without it. Nothing else is needed: the approval-link signing secret this used
+ * to require is gone with the bearer links themselves, since every stage now points at a
+ * dashboard the approver authenticates against rather than at a credential in a URL.
  */
-export type OdWorkflowEnv = EmailBindings & OdApprovalTokenBindings;
+export type OdWorkflowEnv = EmailBindings;
 
 /** A row of `od_requests`, as the routes read it. */
 export interface OdRequestRow {
@@ -612,6 +607,47 @@ export async function findNextApprover(
   const table = nextStage.table;
   const nameColumn = nextStage.nameColumn;
   if (!table || !nameColumn) return null;
+
+  /*
+   * A department has exactly one contest coordinator, and the admin routes refuse to
+   * appoint a second, so this resolves the stage only when the table agrees.
+   *
+   * It used to ask for a single row with `ORDER BY name LIMIT 1`, which answered the
+   * question by alphabet whenever a department held two: the alphabetically first name
+   * received every request while the other -- whom `verifyApprover` would accept just as
+   * readily -- was never told anything. Name order is not a statement about who the
+   * coordinator is; it is a tie-break that makes wrong data look deliberate, and the
+   * approver it invited and the approver it authorises can then be different people.
+   *
+   * So the row count decides instead. One row is the coordinator. Zero rows is the gap the
+   * caller already reports. More than one is that gap plus an ambiguity, and it is
+   * reported the same way -- nobody is guessed at, because notifying one of two people at
+   * random is worse than notifying neither and saying so.
+   *
+   * The duplicates are left exactly as they are. Deciding which of two coordinators is
+   * real, or deleting one, is an administrative decision about a person's appointment, and
+   * this function is not where it gets made.
+   */
+  if (nextStage.key === "CONTEST_COORDINATOR") {
+    const rows = await db
+      .prepare(`SELECT email, ${nameColumn} AS approver_name FROM ${table} WHERE department = ?`)
+      .bind(request.department)
+      .all<{ email: string; approver_name: string }>();
+    const matches = rows?.results ?? [];
+    if (matches.length > 1) {
+      console.error(
+        JSON.stringify({
+          event: "od_contest_coordinator_ambiguous",
+          odRequestId: request.od_request_id,
+          department: request.department,
+          coordinators: matches.length,
+        })
+      );
+    }
+    const match = matches.length === 1 ? matches[0] : null;
+    return match ? { email: match.email.toLowerCase(), name: match.approver_name } : null;
+  }
+
   const row = await db
     .prepare(
       `SELECT email, ${nameColumn} AS approver_name FROM ${table} WHERE department = ? ORDER BY ${nameColumn} LIMIT 1`
@@ -799,12 +835,13 @@ export async function applyDecision(
       const approver = await findNextApprover(db, updated, nextStage);
       if (approver) {
         /*
-         * The link is built before the mail, and a failure to build it is a failure to
-         * send: a coordinator handed the sign-in page instead of a link would be the exact
-         * regression this is fixing, so it is treated as one -- logged, reported through
-         * `notified`, and never silently downgraded to a worse link.
+         * The link is built before the mail, and it is always a dashboard route now, so
+         * there is no longer a signing step that can fail and no fallback that could quietly
+         * degrade a coordinator into a weaker link. The `action` null-check is kept because
+         * `stageAction` is the one place that knows how to build it, and a future stage
+         * added without a path must fail loudly rather than send a mail with no link.
          */
-        const action = await stageAction(db, env, appOrigin, updated, nextStage, approver.email);
+        const action = stageAction(appOrigin, nextStage);
         if (action) {
           notified = (await safeSend(env, approver.email, odApprovalRequestEmail(facts, nextStage.label, action), {
             event: "od_next_stage_email_failed",
@@ -815,11 +852,32 @@ export async function applyDecision(
           notified = false;
         }
       } else {
-        // No one holds the next role for this department. Recorded, logged, and the
-        // approval still stands -- an administrative gap is not a reason to discard a
-        // decision that has already been made.
+        /*
+         * Nobody holds the next role for this department.
+         *
+         * The approval still stands -- discarding a decision an approver was told was saved
+         * would be worse than the gap, and inventing a fallback recipient would hand one
+         * person's request to whoever happened to be first. What must not happen is silence:
+         * the request is now parked at a status nobody can ever action, so
+         *
+         *   - it is logged as an error, naming the status it is stranded at and the
+         *     department that has the gap, which is the actionable part;
+         *   - `notified` is forced false, which the route already turns into the `warning`
+         *     the approving user sees. So the person who just approved is told the handoff
+         *     did not happen, rather than the request quietly vanishing from every queue.
+         *
+         * The gap is administrative -- the department has no coordinator or HOD row -- so
+         * reporting it is the whole of the fix available without inventing workflow.
+         */
+        notified = false;
         console.error(
-          JSON.stringify({ event: "od_next_approver_missing", odRequestId: requestId, stage: nextStage.key })
+          JSON.stringify({
+            event: "od_next_approver_missing",
+            odRequestId: requestId,
+            stage: nextStage.key,
+            department: updated.department,
+            stalledAt: nextStatus,
+          })
         );
       }
     }
@@ -874,74 +932,41 @@ async function safeSend(
 /**
  * Where each stage's approver reviews its requests.
  *
- * A mentor is staff and already has a dashboard; a class advisor already has another.
- * Neither has to be told where to go, so the link goes straight to the thing they use,
- * and neither link carries a credential -- they sign in where they always do.
+ * All four are dashboard routes now. A mentor is staff and already has one; a class advisor
+ * has another; and a Contest Coordinator and an HOD have theirs since they became permanent
+ * authenticated users -- `/coordinator` and `/hod`, reached by signing in and having the
+ * backend confirm the role against the directory row.
  *
- * A Contest Coordinator and an HOD have no dashboard anyone reaches from the normal role
- * selection -- deliberately, since they exist only to action OD requests -- and their mail
- * is the only way anybody reaches them. So their link is not a destination but the
- * authorisation itself: a single-use, expiring token that opens the approval page for that
- * one request at that one stage, with no sign-in form in front of it. See
- * `utils/odApprovalToken.ts`.
+ * Which matters because of what this replaced. These two roles were once given an emailed
+ * *bearer* approval link instead, because they had no account to sign in with: a signed,
+ * time-limited token that opened one request at one stage with no sign-in step. That is gone
+ * now that they are normal Campus-Flow users, and with it the last reason this function had
+ * to mint anything. Every stage links to a page the approver authenticates against, so no
+ * approver mail carries a credential and none of them can expire into uselessness.
+ *
+ * The trade is deliberate and is the point of the change: an emailed link acted for whoever
+ * held it, whereas a dashboard route acts only for a verified session whose role and
+ * department the server re-checks on every decision. A forwarded mail now tells the next
+ * person there is work waiting; it cannot let them approve it.
  */
 const STAGE_DASHBOARD_PATH: Record<string, string> = {
   MENTOR: "/staff",
   CLASS_ADVISOR: "/advisor",
+  CONTEST_COORDINATOR: "/coordinator",
+  HOD: "/hod",
 };
-
-/** The route an emailed approval link opens. Never a login page. */
-export const OD_EMAIL_APPROVAL_PATH = "/od/approve";
 
 /**
  * The action link one approver of one request should be sent.
  *
- * Returns null when a signed link cannot be produced, and the caller treats that as a
- * failed notification rather than falling back to something weaker. There is no safe
- * fallback here: the previous behaviour, sending `/approver/login`, is exactly what a
- * coordinator with mail access but no password could not get past.
- *
- * `approverEmail` is the address the directory resolved for this department, so the token
- * is minted for the person the mail is addressed to. A link forwarded to another
- * coordinator is refused when they open it, because the token names the one it was issued
- * for and the decision is verified against the directory again at the moment it is taken.
+ * Every stage has a dashboard path, so this is total: there is no longer a case where a
+ * signed link has to be produced, and therefore no failure mode where an approver is handed
+ * nothing. It takes `appOrigin` rather than `env` because that is all a link now needs --
+ * the origin still comes from the shared allow-list in `appUrl.ts` and never from the
+ * browser, so the link cannot be pointed at an attacker's host.
  */
-async function stageAction(
-  db: D1Database,
-  env: OdWorkflowEnv,
-  appOrigin: string,
-  request: OdRequestRow,
-  stage: OdStage,
-  approverEmail: string
-): Promise<OdApprovalAction | null> {
-  const dashboardPath = STAGE_DASHBOARD_PATH[stage.key];
-  if (dashboardPath) {
-    return { url: appUrl(appOrigin, dashboardPath), kind: "dashboard" };
-  }
-
-  try {
-    const { token } = await issueApprovalToken(env, {
-      odRequestId: request.od_request_id,
-      stage,
-      approverEmail,
-    });
-    return { url: appUrl(appOrigin, `${OD_EMAIL_APPROVAL_PATH}/${token}`), kind: "email-link" };
-  } catch (error) {
-    /*
-     * The only expected cause is a missing or too-short signing secret. Logged by code
-     * only: the secret itself is never part of an error message, and neither is the
-     * request id being handed on.
-     */
-    console.error(
-      JSON.stringify({
-        event: "od_approval_link_failed",
-        odRequestId: request.od_request_id,
-        stage: stage.key,
-        code: error instanceof OdApprovalTokenError ? error.code : "od-approval-link-unexpected",
-      })
-    );
-    return null;
-  }
+function stageAction(appOrigin: string, stage: OdStage): OdApprovalAction {
+  return { url: appUrl(appOrigin, STAGE_DASHBOARD_PATH[stage.key]), kind: "dashboard" };
 }
 
 /** The link an approver of `stage` should follow, on a given app origin. */
@@ -968,9 +993,23 @@ export async function notifyMentorOfRequest(
   appOrigin: string
 ): Promise<boolean> {
   const mentor = (request.mentor_email ?? "").trim().toLowerCase();
-  if (!mentor) return false;
-  const action = await stageAction(db, env, appOrigin, request, STAGES[0], mentor);
-  if (!action) return false;
+  if (!mentor) {
+    /*
+     * Logged, not returned silently.
+     *
+     * `safeSend` already treats an empty recipient as a reportable outcome rather than a
+     * quiet no-op, and this is the same condition one step earlier: the request exists, it
+     * is sitting at PENDING_MENTOR, and nobody has been told. A student who never allocated
+     * a mentor is the likely cause, and that is fixable by an administrator -- but only if
+     * the stall is visible in the logs. Returning `false` alone left a workflow that hangs
+     * with no trace of why.
+     */
+    console.error(
+      JSON.stringify({ event: "od_no_mentor_to_notify", odRequestId: request.od_request_id })
+    );
+    return false;
+  }
+  const action = stageAction(appOrigin, STAGES[0]);
   return safeSend(env, mentor, odApprovalRequestEmail(toEmailFacts(request), "Mentor", action), {
     event: "od_submission_email_failed",
     odRequestId: request.od_request_id,
@@ -1070,4 +1109,98 @@ async function findDirectoryApprover(
     .bind(approverEmail)
     .first<{ department: string }>();
   return row ? { department: row.department } : null;
+}
+
+/**
+ * Requests this approver has already decided, newest first.
+ *
+ * The counterpart to `listRequestsForStage`: that one answers "what is waiting on me",
+ * this answers "what have I signed off". Both are needed, because the stage column is a
+ * single `status` that has already moved past this approver by the time they look -- an
+ * HOD's own decision is the last one, so the request leaves their pending queue
+ * immediately and the only record that they were the one who approved it is the decision
+ * columns.
+ *
+ * ## Why it filters on `*_decided_by`, not on status
+ *
+ * `od_requests` stores four independent decision column groups, each holding the verdict,
+ * the address of the approver who made it, when, and an optional comment. The address is
+ * the identity here for the same reason it is in `verifyApprover`: every one of these
+ * roles authenticates by address.
+ *
+ * So "approved by me at my stage" is `{stage.columnPrefix}_decided_by = ?`, and the
+ * department scope is applied on top. Filtering on status instead would return every
+ * request that reached `APPROVED`, which includes ones this approver never saw and ones
+ * they explicitly refused.
+ *
+ * The column name is derived from `decisionColumns(stage)` -- the same derivation
+ * `applyDecision` writes with -- so a stage cannot appear in a filter that does not
+ * correspond to a set of columns. No identifier here comes from a request.
+ */
+export async function listApprovedForStage(
+  db: D1Database,
+  stage: OdStage,
+  approverEmail: string,
+  advisorCohort: {
+    department: string;
+    batch: string;
+    year: number;
+    section: string;
+  } | null
+): Promise<OdRequestView[]> {
+  const email = approverEmail.trim().toLowerCase();
+  const columns = decisionColumns(stage);
+
+  if (stage.key === "MENTOR") {
+    // A mentor is scoped by the address snapshotted onto the request, exactly as in the
+    // pending list. They decide before the department is anybody else's business.
+    const { results = [] } = await db
+      .prepare(
+        `SELECT * FROM od_requests
+         WHERE LOWER(${columns.decidedBy}) = ?
+           AND ${columns.decision} = ?
+           AND LOWER(mentor_email) = ?
+         ORDER BY ${columns.decidedAt} DESC`
+      )
+      .bind(email, OD_DECISION.APPROVED, email)
+      .all<OdRequestRow>();
+    return results.map(toRequestView);
+  }
+
+  if (stage.key === "CLASS_ADVISOR") {
+    if (!advisorCohort) return [];
+    const { results = [] } = await db
+      .prepare(
+        `SELECT * FROM od_requests
+         WHERE LOWER(${columns.decidedBy}) = ?
+           AND ${columns.decision} = ?
+           AND department = ? AND batch = ? AND year = ? AND section = ?
+         ORDER BY ${columns.decidedAt} DESC`
+      )
+      .bind(
+        email,
+        OD_DECISION.APPROVED,
+        advisorCohort.department,
+        advisorCohort.batch,
+        advisorCohort.year,
+        advisorCohort.section
+      )
+      .all<OdRequestRow>();
+    return results.map(toRequestView);
+  }
+
+  const approver = await findDirectoryApprover(db, stage, email);
+  if (!approver) return [];
+
+  const { results = [] } = await db
+    .prepare(
+      `SELECT * FROM od_requests
+       WHERE LOWER(${columns.decidedBy}) = ?
+         AND ${columns.decision} = ?
+         AND department = ?
+       ORDER BY ${columns.decidedAt} DESC`
+    )
+    .bind(email, OD_DECISION.APPROVED, approver.department)
+    .all<OdRequestRow>();
+  return results.map(toRequestView);
 }

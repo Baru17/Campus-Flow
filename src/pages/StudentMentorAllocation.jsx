@@ -35,7 +35,7 @@ import {
  */
 export default function StudentMentorAllocation() {
   const navigate = useNavigate()
-  const { logout } = useAuth()
+  const { logout, student: authStudent, loading: authLoading } = useAuth()
 
   const [mentors, setMentors] = useState([])
   const [currentMentorEmail, setCurrentMentorEmail] = useState(null)
@@ -62,9 +62,20 @@ export default function StudentMentorAllocation() {
     }
   }, [])
 
+  /*
+   * The third student page that was firing an authenticated request before the session had
+   * settled. `/api/student/mentors` is behind the same `requireAuth, requireStudent` gate
+   * as `/api/student/me`, so it gets the same treatment: wait for `AuthProvider`, redirect
+   * a genuinely signed-out visitor, and only then ask.
+   */
   useEffect(() => {
+    if (authLoading) return
+    if (!authStudent) {
+      navigate('/role-selection', { replace: true })
+      return
+    }
     load()
-  }, [load])
+  }, [authLoading, authStudent, load, navigate])
 
   const options = useMemo(
     () =>

@@ -39,6 +39,12 @@ import {
  * The value is a path, not a stage. Sending a role to a stage would mean a mentor's whole
  * approval journey lived under `/approver/od/MENTOR` while the same mentor, signing in at
  * `/staff/login`, saw nothing -- two homes for one queue.
+ *
+ * The key is `result.approver.role`, which is the role the *server* resolved from the
+ * caller's directory row -- not `auth_users.role`. That distinction is what puts a
+ * coordinator on the coordinator dashboard: their account role is `staff`, because they
+ * were appointed out of the staff roster and reuse that login, so routing on the account
+ * role would send them to the staff dashboard and away from the queue they exist for.
  */
 const HOME_BY_ROLE = {
   staff: '/staff',
@@ -69,7 +75,8 @@ export default function ApproverLogin() {
       const result = await approverLogin(email.trim(), password)
 
       /*
-       * The role comes from the account, not from anything chosen on this page.
+       * The role comes from the directory the server resolved, not from anything chosen on
+       * this page and not from the account role.
        *
        * A mentor or a class advisor goes to the dashboard they already use. That provider
        * mounted before this page did and has already settled on "signed out", so it is
@@ -77,13 +84,15 @@ export default function ApproverLogin() {
        * and the same cookie as every other role, and without this refresh they would land
        * on a dashboard that immediately signs them back out.
        *
-       * A coordinator or an HOD has no staff context to refresh; their dashboard reads
-       * the approver session itself.
+       * A coordinator is the case this exists for. Their account role is `staff`, so
+       * refreshing the staff context is what keeps their *staff* dashboard working -- it is
+       * simply not where their coordinator queue is. An HOD has no staff context to
+       * refresh; their dashboard reads the approver session itself.
        */
       const role = result.approver?.role
       const home = HOME_BY_ROLE[role]
 
-      if (role === 'staff' || role === 'class_advisor') {
+      if (role === 'staff' || role === 'class_advisor' || role === 'contest_coordinator') {
         await refresh()
       }
 

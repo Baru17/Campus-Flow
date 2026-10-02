@@ -134,12 +134,29 @@ export function fetchMyOdRequests() {
 /**
  * Requests waiting on one stage of the chain.
  *
- * `stage` is the role's place in the order -- MENTOR, CONTEST_COORDINATOR,
- * CLASS_ADVISOR or HOD -- and the server matches it against the fixed chain rather
- * than trusting it, so a value that is not one of those four is refused.
+ * `stage` is the role's place in the order -- MENTOR, CLASS_ADVISOR, CONTEST_COORDINATOR
+ * or HOD -- and the server matches it against the fixed chain rather than trusting it, so
+ * a value that is not one of those four is refused.
  */
 export function fetchPendingApprovals(stage) {
-  return request('/api/od/requests', { query: { stage } })
+  return request('/api/od/requests', { query: { stage, view: 'pending' } })
+}
+
+/**
+ * Requests this approver has already approved at their own stage, newest decision first.
+ *
+ * A separate call rather than a parameter on the pending one, so the two questions an
+ * approver has -- "what is waiting on me" and "what have I signed off" -- are named
+ * separately at the call site and cannot be confused for one another.
+ *
+ * It has to be a separate question rather than a filter on the pending list: by the time
+ * an approver looks, the request has already left their pending queue, so the record that
+ * they approved it is their own decision on it. An HOD's decision is the last one, which
+ * means *every* request they have ever approved is, from that moment, invisible to the
+ * pending view.
+ */
+export function fetchApprovedApprovals(stage) {
+  return request('/api/od/requests', { query: { stage, view: 'approved' } })
 }
 
 /**
@@ -149,34 +166,22 @@ export function fetchPendingApprovals(stage) {
  * `APPROVED` because an approver said so, it moves to whatever that approver's stage
  * hands it to, and the server decides what that is.
  *
- * `token` is for an approver arriving from an emailed approval link rather than from a
- * session. It is passed as a query parameter because that is where the decision route
- * reads it, and it changes nothing else: the same endpoint, the same two body fields, and
- * the same server-side authorisation. The browser still never names the approver, the
- * stage it is really acting at, or the request -- all three come from the token or from
- * the database.
+ * The approver is the session cookie and nothing else. This used to take a `token` for
+ * someone arriving from an emailed bearer approval link, but every approver role is a
+ * permanent authenticated user with a dashboard now, so there is no second way in: a
+ * forwarded mail cannot decide anything, because the server resolves the approver from
+ * the session and checks it against the directory for this request's department and stage.
+ *
+ * The browser still never names the approver or the stage it is really acting at -- the
+ * stage comes from the caller as a display hint and the database decides whether it is
+ * allowed.
  */
-export function submitApprovalDecision(requestId, stage, decision, comment, token) {
+export function submitApprovalDecision(requestId, stage, decision, comment) {
   return request(`/api/od/requests/${encodeURIComponent(requestId)}/decision`, {
     method: 'POST',
-    query: { stage, token },
+    query: { stage },
     body: { decision, ...(comment ? { comment } : {}) },
   })
-}
-
-/**
- * Resolves an emailed approval link into the one request it authorises.
- *
- * The counterpart of `submitApprovalDecision` for someone who arrived by mail: it is what
- * the approval page calls instead of `/api/od/requests`, which needs a session. The token
- * identifies the request, the stage and the approver, so nothing has to be passed besides
- * the token itself.
- *
- * Returns only what the approval page renders. A bad, expired or already-spent link
- * throws, and the server says the same thing for all three.
- */
-export function fetchEmailApproval(token) {
-  return request(`/api/od/email-approval/${encodeURIComponent(token)}`)
 }
 
 /** Whether the signed-in approver may action a request, for showing the buttons. */
