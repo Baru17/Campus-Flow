@@ -78,6 +78,7 @@ export default defineConfig({
 			"test/adminNoMigration.integration.spec.ts",
 			"test/adminBulkImport.integration.spec.ts",
 			"test/adminDirectory.integration.spec.ts",
+			"test/adminContestCoordinators.integration.spec.ts",
 			"test/studentOd.integration.spec.ts",
 			"test/odEmailApproval.integration.spec.ts",
 			"test/staffBatches.integration.spec.ts",

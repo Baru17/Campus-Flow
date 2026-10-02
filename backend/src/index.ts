@@ -4,6 +4,7 @@ import auth from "./api/auth";
 import passwordReset from "./api/passwordReset";
 import attendance, { finalizeSession } from "./api/attendance";
 import admin from "./api/admin";
+import adminContestCoordinators from "./api/adminContestCoordinators";
 import studentOd from "./api/studentOd";
 import odApprovals from "./api/odApprovals";
 import { requireAuth, requireClassAdvisor, requireStaff } from "./middleware/auth";
@@ -108,6 +109,18 @@ app.use("/api/*", async (c, next) => {
 app.route("/api/auth", auth);
 app.route("/api/auth", passwordReset);
 app.route("/api/attendance", attendance);
+
+/*
+ * Mounted ahead of the general admin routes, and deliberately so.
+ *
+ * Contest coordinators are provisioned from an existing staff member rather than from
+ * a typed name and address, so their list, create and edit routes are a separate module.
+ * Hono matches in registration order, so mounting this first means
+ * `/api/admin/contest-coordinators` can only ever be answered by the staff-derived
+ * implementation. The HOD surface, and every other admin route, is unchanged and still
+ * comes from `admin`.
+ */
+app.route("/api/admin", adminContestCoordinators);
 app.route("/api/admin", admin);
 
 /*
