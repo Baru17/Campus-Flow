@@ -175,7 +175,7 @@ export default function AdminContestCoordinatorManagement() {
             </button>
           </div>
 
-          <div className="cf-card p-3 md:p-4">
+          <div className="cf-card admin-directory-card p-3 md:p-4">
             <div className="cf-card-header">
               <div>
                 <h2 className="section-title">Contest coordinators</h2>
@@ -185,7 +185,12 @@ export default function AdminContestCoordinatorManagement() {
                     : `${filtered.length} coordinator${filtered.length === 1 ? '' : 's'} found`}
                 </p>
               </div>
-              <div className="cf-input-group-custom w-full max-w-[260px]">
+              {/*
+                 Full width on a phone, so it wraps onto its own row under the title
+                 rather than competing with it. `sm:` restores the fixed 260px beside
+                 the title from tablet width upwards, which is how it has always looked.
+               */}
+              <div className="cf-input-group-custom w-full sm:max-w-[260px]">
                 <span className="cf-input-icon" aria-hidden="true">
                   <SearchIcon size={16} />
                 </span>
