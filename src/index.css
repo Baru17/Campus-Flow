@@ -365,31 +365,8 @@ a {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  /*
-   * Wrapping, so a header whose trailing control cannot fit beside the title drops it
-   * onto its own row instead of overflowing.
-   *
-   * This is not cosmetic. A flex item does not shrink below its content width by
-   * default, so a search box marked `w-full` inside a non-wrapping row demands the
-   * whole header width *alongside* the heading. On a phone that pushed the heading into
-   * a two-word-per-line column and clipped the input off the right edge of the card --
-   * which is what the admin HOD and Contest Coordinator lists were showing, and what the
-   * student, staff and subject lists had been showing on the same width.
-   *
-   * It only changes anything when the row genuinely does not fit: at desktop widths the
-   * title and the control sit side by side exactly as before.
-   */
-  flex-wrap: wrap;
   gap: 1rem;
   margin-bottom: 1.25rem;
-}
-
-/*
- * A heading in a card header must be allowed to shrink, or a long title sets the row's
- * minimum width and the overflow moves to the heading instead of the control.
- */
-.cf-card-header > :first-child {
-  min-width: 0;
 }
 
 .cf-card-header .section-title {
@@ -2786,46 +2763,6 @@ input[type="date"].cf-select {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   cursor: pointer;
   transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease, border-color 0.25s ease;
-}
-
-.admin-option-card-heading {
-  min-width: 0;
-}
-
-.admin-option-card-heading h2 {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.admin-directory-card {
-  width: 100%;
-  min-width: 0;
-}
-
-.admin-directory-card .overflow-x-auto {
-  max-width: 100%;
-  /*
-   * Layout/paint containment on the scroll wrapper.
-   *
-   * `overflow-x: auto` alone is NOT enough here. A `<table>` is a special replaced-ish
-   * layout box: its used width is its min-content width, so on a narrow viewport this
-   * 6-column table resolved to 677px. Its scroll container clipped it visually
-   * (clientWidth 324 / scrollWidth 677, scrolling correctly), yet the table still
-   * contributed its overflow to the *document's* scrollable area.
-   *
-   * The result was a document 641px wide inside a 390px viewport: the whole page scrolled
-   * 251px sideways into blank space, so the shell/navbar/card read as a narrow column on
-   * the left with a large empty area on the right, and no amount of container padding
-   * could fix it (root, .app-shell, .container-cf and .cf-card were all already 100% of
-   * the viewport at every breakpoint).
-   *
-   * `contain: paint` (which implies layout containment) stops the descendants from
-   * contributing to outside layout, so the overflow stops at this wrapper and is handled
-   * by the wrapper's own scrolling -- which is the intended behaviour. The table keeps
-   * its natural column widths and stays fully readable by scrolling inside the card;
-   * `overflow: hidden` on the card does not achieve this and was not used.
-   */
-  contain: paint;
 }
 
 .admin-option-card:hover {

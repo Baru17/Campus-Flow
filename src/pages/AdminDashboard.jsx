@@ -94,7 +94,7 @@ export default function AdminDashboard() {
             >
               <div className={`admin-option-icon admin-option-icon-${card.tone}`}>{card.icon}</div>
               <div className="min-w-0 flex-1">
-                <div className="admin-option-card-heading flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2">
                   <h2 className="text-xl font-extrabold tracking-tight text-slate-900 group-hover:text-blue-700">
                     {card.title}
                   </h2>

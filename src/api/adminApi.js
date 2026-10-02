@@ -247,24 +247,8 @@ export function createAdminHods(rows) {
   return request('/api/admin/hods', { method: 'POST', body: { rows } })
 }
 
-/**
- * Makes a contest coordinator out of an existing member of staff.
- *
- * The body is one field. A contest coordinator is somebody already on a department's
- * staff roster, so their name, email and department are read from the staff record by
- * the server rather than sent from here -- there is deliberately no name, email or
- * department parameter to pass, because a value this function could send is a value a
- * caller could get wrong.
- *
- * `department` is advisory: it is the department the admin was looking at, and the
- * server refuses the request if it disagrees with the staff record, which is what
- * catches a dropdown that had not finished reloading.
- */
-export function createAdminContestCoordinators({ staff_id, department } = {}) {
-  return request('/api/admin/contest-coordinators', {
-    method: 'POST',
-    body: { staff_id, ...(department ? { department } : {}) },
-  })
+export function createAdminContestCoordinators(rows) {
+  return request('/api/admin/contest-coordinators', { method: 'POST', body: { rows } })
 }
 
 /**
@@ -283,17 +267,9 @@ export function updateAdminHod(hodId, fields) {
   })
 }
 
-/**
- * Points an existing contest coordinator at a different member of staff.
- *
- * Same one-field contract as creating one: `staff_id`, plus the advisory `department`.
- * The name, email and department are re-derived from the new staff record, so this
- * cannot half-move a coordinator -- and if the new staff member carries a different
- * address, the existing login account moves with it without its password changing.
- */
-export function updateAdminContestCoordinator(coordinatorId, { staff_id, department } = {}) {
+export function updateAdminContestCoordinator(coordinatorId, fields) {
   return request(`/api/admin/contest-coordinators/${encodeURIComponent(coordinatorId)}`, {
     method: 'PATCH',
-    body: { staff_id, ...(department ? { department } : {}) },
+    body: fields,
   })
 }

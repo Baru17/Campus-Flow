@@ -1,14 +1,11 @@
 /**
- * Heads of department, end to end against a real D1.
+ * Heads of department and contest coordinators, end to end against a real D1.
  *
- * A head of department is appointed to a department rather than already being on its
- * roster, so the identity is typed: a name, an address and a department per row, with a
- * login account created alongside. Contest coordinators used to be driven from this same
- * table-driven suite, and are still the same *kind* of record, but they are no longer
- * the same *contract*: a coordinator is provisioned from an existing staff member, so
- * the client sends `staff_id` and the server derives the other three fields. Those
- * cases moved to `adminContestCoordinators.integration.spec.ts`, which also re-checks
- * that the coordinator routes answer to the same admin gate.
+ * Both directories are the same feature under two names -- a person, an address and
+ * a department, in a single department-keyed table, with a login account created
+ * alongside -- so they are driven from one table-driven suite rather than written
+ * twice. That also means a regression in one is a regression in both, which is the
+ * property worth pinning.
  *
  * The failures that matter here are the quiet ones, not "the form did not save":
  *
@@ -21,8 +18,8 @@
  *   3. A duplicate account. Re-uploading a file, or an address that already has an
  *      account of some other role, must not create a second `auth_users` row and
  *      must not reset an existing password.
- *   4. An id that moved. `hod_id` is a database-generated autoincrement key; a body
- *      naming a different one is refused, not ignored.
+ *   4. An id that moved. `hod_id` and `coordinator_id` are database-generated
+ *      autoincrement keys; a body naming a different one is refused, not ignored.
  *   5. An edit that strands a login. The address is the sign-in handle, so changing
  *      it has to move the *existing* account with it and leave `pwd_hash` alone.
  *   6. Collateral damage. The student, staff and subject tables, and `auth_users`
@@ -180,17 +177,6 @@ async function countRows(table: string): Promise<number> {
  * `path`, `table`, `idColumn`, `nameColumn`, `role`, `label`, `plural`, `listKey`
  * and `responseKey` mirror the server's own spec, so a suite case is written once
  * and reads the same for an HOD as for a coordinator.
- *
- * Only the HOD is listed here now. Contest coordinators stopped being a
- * free-form directory on the same day: they are provisioned from an existing
- * staff member, so their identity is derived from the `staff` record and the
- * create/edit bodies carry `staff_id` rather than a name, an address and a
- * department. That contract has nothing in common with the cases below, which
- * are entirely about typed identity, so covering it here would mean asserting
- * behaviour that no longer exists. Its own suite is
- * `adminContestCoordinators.integration.spec.ts`, which also re-asserts the
- * authorization cases for the coordinator routes so the two directories stay
- * held to the same gate.
  */
 const DIRECTORIES = [
 	{
@@ -216,15 +202,28 @@ const DIRECTORIES = [
 			department,
 		}),
 	},
+	{
+		label: "Coordinator",
+		path: "/api/admin/contest-coordinators",
+		table: "contest_coordinators",
+		idColumn: "coordinator_id",
+		nameColumn: "coordinator_name",
+		role: "contest_coordinator",
+		plural: "Coordinators",
+		listKey: "contest_coordinators",
+		responseKey: "contest_coordinator",
+		codeStem: "coordinator",
+		invalidId: "invalid-coordinator-id",
+		notFound: "coordinator-not-found",
+		immutable: "coordinator-id-immutable",
+		authIdSuffix: "20",
+		makeRow: (email: string, department: string, name: string) => ({
+			coordinator_name: name,
+			email,
+			department,
+		}),
+	},
 ] as const;
-
-/**
- * The coordinator routes, spelled out rather than reached through `DIRECTORIES`.
- *
- * Only the authorization sweep below needs them, and it needs them for a path that
- * the parameterised table no longer carries.
- */
-const COORDINATOR_PATH = "/api/admin/contest-coordinators";
 
 /**
  * Creates one entry and returns its response, so a suite case can go on to assert
@@ -242,7 +241,7 @@ async function createOne(
 	});
 }
 
-describe("HOD management", () => {
+describe("HOD and contest coordinator management", () => {
 	beforeAll(async () => {
 		for (const migration of APPLY_ORDER) {
 			await applyMigration(migration);
@@ -1004,11 +1003,10 @@ describe("HOD management", () => {
 			};
 
 			await createOne(DIRECTORIES[0], "regression.hod@kiot.ac.in", "IT", "Regression HOD");
+			await createOne(DIRECTORIES[1], "regression.coord@kiot.ac.in", "IT", "Regression Coord");
 
-			// `auth_users` is expected to grow by exactly one -- one account per new
-			// entry. Everything else must be identical. (The coordinator route used to
-			// be exercised here too; it now provisions from a staff row and is covered
-			// by its own suite.)
+			// `auth_users` is expected to grow by exactly two -- one account per new
+			// entry. Everything else must be identical.
 			expect(await countRows("staff")).toBe(before.staff);
 			expect(await countRows("subjects")).toBe(before.subjects);
 			expect(await countRows("academic_batches")).toBe(before.academicBatches);
@@ -1016,7 +1014,7 @@ describe("HOD management", () => {
 			expect(
 				await env.DB.prepare("SELECT COUNT(*) AS n FROM CSE_Students_2026_2030").first<{ n: number }>(),
 			).toEqual({ n: before.students });
-			expect(await countRows("auth_users")).toBe(before.authUsers + 1);
+			expect(await countRows("auth_users")).toBe(before.authUsers + 2);
 		});
 
 		it("still serves the existing admin endpoints", async () => {
@@ -1043,7 +1041,7 @@ describe("HOD management", () => {
 				"/api/admin/subjects",
 				"/api/admin/staff?department=CSE",
 				DIRECTORIES[0].path,
-				COORDINATOR_PATH,
+				DIRECTORIES[1].path,
 			]) {
 				const response = await SELF.fetch(`https://example.com${path}`, {
 					headers: { Cookie: staffCookie() },

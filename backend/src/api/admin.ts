@@ -63,6 +63,7 @@ import {
   type ExistingAccount,
 } from "../utils/accountProvisioning";
 import {
+  validateContestCoordinatorRow,
   validateHodRow,
   validateStaffId,
   validateStaffRow,
@@ -2262,19 +2263,6 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
  * key for an edit, so `hods` -> `hod` and `contest-coordinators` ->
  * `contest-coordinator`, matching how the dashboard reads a saved record.
  */
-/*
- * Heads of department are registered from the shared implementation, because a head of
- * department is appointed to a department rather than already being on its roster: the
- * name, address and department are all the admin's to supply.
- *
- * Contest coordinators are *not* registered here. They are provisioned from an existing
- * staff member, so their identity is derived from the `staff` record rather than typed,
- * and they live in `adminContestCoordinators.ts`. That module owns the list, create and
- * edit routes for `/contest-coordinators`, and it is mounted in `index.ts` ahead of this
- * one so the paths cannot both answer.
- *
- * Nothing about the HOD surface below changed.
- */
 registerDirectoryRoutes(
   {
     path: "/hods",
@@ -2287,6 +2275,21 @@ registerDirectoryRoutes(
     listKey: "hods",
     codeStem: "hod",
     validateRow: validateHodRow,
+  }
+);
+
+registerDirectoryRoutes(
+  {
+    path: "/contest-coordinators",
+    table: "contest_coordinators",
+    idColumn: "coordinator_id",
+    nameColumn: "coordinator_name",
+    idParam: "coordinatorId",
+    role: "contest_coordinator",
+    label: "Coordinator",
+    listKey: "contest_coordinators",
+    codeStem: "coordinator",
+    validateRow: validateContestCoordinatorRow,
   }
 );
 
