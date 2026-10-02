@@ -365,8 +365,25 @@ a {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  /*
+   * Wrapping, so a header whose trailing control cannot fit beside the title drops it
+   * onto its own row instead of overflowing. A flex item does not shrink below its
+   * content width by default, so a `w-full` search box beside a heading demands the
+   * heading's width *as well*. On a phone that squeezed the heading into a
+   * two-word-per-line column and squeezed the input down to ~124px.
+   *
+   * Only takes effect when the row genuinely does not fit: from `sm` upwards the title
+   * and control sit side by side exactly as before.
+   */
+  flex-wrap: wrap;
   gap: 1rem;
   margin-bottom: 1.25rem;
+}
+
+/* The heading must be allowed to shrink, or a long title sets the row's minimum width
+   and the overflow moves to the heading instead of the control. */
+.cf-card-header > :first-child {
+  min-width: 0;
 }
 
 .cf-card-header .section-title {
@@ -2218,6 +2235,13 @@ a {
   }
 }
 
+@media (max-width: 639.98px) {
+  /* Phones get ~16px of gutter so the content can fill nearly the whole viewport. */
+  .container-cf {
+    padding-inline: 1rem;
+  }
+}
+
 @media (min-width: 992px) {
   .container-cf {
     padding-inline: 2rem;
@@ -2643,6 +2667,30 @@ input[type="date"].cf-select {
 }
 
 .advisor-table {
+  /*
+   * DO NOT REMOVE: `position: relative` is the fix for the whole page scrolling sideways
+   * on a phone, not a style tweak.
+   *
+   * Every table sits in an `overflow-x-auto` wrapper, and that wrapper does scroll the
+   * table correctly (clientWidth 324 / scrollWidth 822 on a 390px viewport). The problem
+   * was the `sr-only` "Actions" span in the header: Tailwind's `.sr-only` is
+   * `position: absolute`, and no ancestor inside the table established a containing
+   * block, so its containing block was the *initial* containing block. An absolutely
+   * positioned box is only clipped by an `overflow` ancestor when that ancestor is in
+   * its containing-block chain -- so the span escaped the scroll wrapper and pushed the
+   * document out to 805px wide inside a 390px viewport.
+   *
+   * A document 805px wide inside a 390px viewport is the whole reported symptom at once:
+   * body / #root / .app-shell / .container-cf are all `width: 100%`, so they painted as a
+   * narrow column on the left with blank space to the right, the navbar came along, and
+   * no amount of container padding could help.
+   *
+   * Relatively positioning the table puts it back in the containing-block chain, so the
+   * scroll wrapper clips the span again. The table keeps its natural column widths and
+   * its own scroll behaviour; nothing about its layout changes. `overflow: clip` does
+   * not work here -- the escape is about the containing block, not about clipping.
+   */
+  position: relative;
   width: 100%;
   border-collapse: collapse;
   font-size: 0.9rem;
