@@ -5,7 +5,21 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 
 export default [
-  { ignores: ['dist'] },
+  {
+    /*
+     * Build output, never source.
+     *
+     * `dist` is this project's own bundle. `.wrangler` is the backend's: `wrangler dev`
+     * writes a bundled copy of the Worker into `backend/.wrangler/tmp/` on every start,
+     * so anyone who runs the backend locally gets a few thousand lines of minified,
+     * generated JavaScript that the linter then reads as if it were hand-written code --
+     * and fails on, among other things, patterns only a bundler emits.
+     *
+     * Both are gitignored, so this is about not linting artefacts, not about hiding them
+     * from review.
+     */
+    ignores: ['dist', '**/.wrangler/**'],
+  },
   {
     files: ['**/*.{js,jsx}'],
     languageOptions: {

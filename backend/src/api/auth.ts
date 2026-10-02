@@ -195,6 +195,142 @@ app.post("/staff/login", async (c) => {
   }
 });
 
+/*
+ * Sign-in for the people who action OD requests.
+ *
+ * The OD workflow has four approver roles and none of them is the admin: a mentor and
+ * a class advisor are staff, and a contest coordinator and a head of department are
+ * the two roles the admin dashboard provisions. Three of those four could already sign
+ * in -- staff through `/staff/login` -- but the coordinator and HOD could not, because
+ * no route accepted their role. This closes that gap without touching the routes that
+ * already work.
+ *
+ * What is deliberately *not* changed:
+ *
+ *   - `/api/auth/login` still accepts students only, and `/api/auth/staff/login` still
+ *     accepts staff and class advisors only. A coordinator cannot reach either, so
+ *     nothing about how a student or a lecturer signs in moves.
+ *   - `requireStaff` still authorises on `staff` or `class_advisor`, so a session
+ *     created here grants no access to the subject catalog, the batch picker or the
+ *     attendance generator. A coordinator who signs in here can do exactly one thing:
+ *     action OD requests.
+ *   - The session is the established one -- `auth_sessions`, the same token hashing,
+ *     the same cookie.
+ *
+ * So this adds a way in for two roles rather than widening any door. The OD routes
+ * authorise on the directory the request names, not on the role alone, so a valid
+ * session here still has to be matched against a real coordinator or HOD row for the
+ * student's department before it can decide anything.
+ */
+
+const OD_APPROVER_ROLES = ["staff", "class_advisor", "contest_coordinator", "hod"] as const;
+
+app.post("/od-approver/login", async (c) => {
+  try {
+    const body = await parseBody(c);
+    const email = typeof body.email === "string" ? body.email : "";
+    const password = typeof body.password === "string" ? body.password : "";
+
+    if (!email || !password) {
+      return c.json(
+        { success: false, error: "Email and password are required", code: "missing_credentials" },
+        400
+      );
+    }
+
+    const resolvedEmail = email.trim().toLowerCase();
+    const user = (await c.env.DB
+      .prepare("SELECT id, auth_user_id, user_name, pwd_hash, role FROM auth_users WHERE user_name = ? OR email = ? LIMIT 1")
+      .bind(resolvedEmail, resolvedEmail)
+      .first()) as
+      | { id: number; auth_user_id: string; user_name: string; pwd_hash: string; role: string }
+      | null;
+
+    if (!user) {
+      return c.json({ success: false, error: "Invalid credentials", code: "invalid_credentials" }, 401);
+    }
+
+    const validPassword = await bcrypt.compare(password, user.pwd_hash);
+    if (!validPassword) {
+      return c.json({ success: false, error: "Invalid credentials", code: "invalid_credentials" }, 401);
+    }
+
+    const role = user.role.trim().toLowerCase().replace(/[ -]+/g, "_");
+    if (!(OD_APPROVER_ROLES as readonly string[]).includes(role)) {
+      // A student account must not be able to sign in here, or the student session
+      // would be a second way to reach the approver routes.
+      return c.json({ success: false, error: "Invalid credentials", code: "invalid_credentials" }, 401);
+    }
+
+    /*
+     * The role has to correspond to a real record before a session is created, so an
+     * account whose role was set but whose row is missing cannot sign in to an empty
+     * inbox. The table is chosen from the role, which is a literal from the list
+     * above -- never from the request.
+     */
+    let record:
+      | { table: "staff" | "contest_coordinators" | "hods"; nameColumn: string; department: string | null }
+      | null;
+
+    if (role === "staff" || role === "class_advisor") {
+      const staff = await c.env.DB
+        .prepare("SELECT department FROM staff WHERE auth_user_id = ? LIMIT 1")
+        .bind(user.auth_user_id)
+        .first<{ department: string }>();
+      record = staff
+        ? { table: "staff", nameColumn: "staff_name", department: staff.department }
+        : null;
+    } else if (role === "contest_coordinator") {
+      const coordinator = await c.env.DB
+        .prepare("SELECT department FROM contest_coordinators WHERE auth_user_id = ? LIMIT 1")
+        .bind(user.auth_user_id)
+        .first<{ department: string }>();
+      record = coordinator
+        ? { table: "contest_coordinators", nameColumn: "coordinator_name", department: coordinator.department }
+        : null;
+    } else {
+      const hod = await c.env.DB
+        .prepare("SELECT department FROM hods WHERE auth_user_id = ? LIMIT 1")
+        .bind(user.auth_user_id)
+        .first<{ department: string }>();
+      record = hod ? { table: "hods", nameColumn: "hod_name", department: hod.department } : null;
+    }
+
+    if (!record) {
+      return c.json(
+        {
+          success: false,
+          error: "Your account is not linked to an approver record. Contact the administrator.",
+          code: "unlinked-approver",
+        },
+        403
+      );
+    }
+
+    const token = generateToken();
+    const tokenHash = hashToken(token);
+    const expiresAt = getSessionExpiry();
+
+    await c.env.DB
+      .prepare("INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)")
+      .bind(tokenHash, user.auth_user_id, expiresAt)
+      .run();
+
+    setSessionCookie(c, token);
+
+    return c.json({
+      success: true,
+      user: safeUser(user),
+      approver: { role, department: record.department },
+    });
+  } catch (error) {
+    if (error instanceof InvalidJsonError) {
+      return c.json({ success: false, error: "Invalid JSON body", code: "invalid_json" }, 400);
+    }
+    return serverError(c, error, "Login failed", "login_failed");
+  }
+});
+
 async function deleteCurrentSession(c: any): Promise<void> {
   const token = getSessionCookie(c);
   if (!token) return;

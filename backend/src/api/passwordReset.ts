@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import bcrypt from "bcryptjs";
 import { generateToken, hashToken, clearSessionCookie } from "../utils/auth";
 import { isTransientD1Error } from "../utils/databaseErrors";
+import { appUrl, resolveAppOrigin } from "../utils/appUrl";
 import { assertAllowedStudentTable, listAllowedStudentTables } from "../utils/tableResolver";
 import {
   sendPasswordResetEmail,
@@ -44,10 +45,6 @@ const RESET_REQUESTED_MESSAGE =
 const INVALID_TOKEN_MESSAGE = "This password reset link is invalid or has expired.";
 
 const PASSWORD_UPDATED_MESSAGE = "Your password has been updated.";
-
-const PRODUCTION_APP_URL = "https://campus-flow-cdl.pages.dev";
-
-const LOCAL_APP_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
 
 class InvalidJsonError extends Error {}
 
@@ -95,22 +92,9 @@ function readToken(value: unknown): string {
   return TOKEN_PATTERN.test(token) ? token : "";
 }
 
-/*
- * The emailed link always points at a known origin. A `redirectTo` supplied by
- * the browser is ignored entirely, so the endpoint cannot be turned into an
- * open redirect that delivers a valid token to an attacker's site. Local dev
- * origins stay usable so the flow can be exercised on localhost.
- */
-function resolveAppOrigin(c: any): string {
-  const origin = c.req.header("Origin");
-  if (typeof origin === "string" && LOCAL_APP_ORIGINS.includes(origin.trim())) {
-    return origin.trim();
-  }
-  return PRODUCTION_APP_URL;
-}
 
 function buildResetLink(appOrigin: string, token: string): string {
-  return `${appOrigin}/reset-password?token=${encodeURIComponent(token)}`;
+  return appUrl(appOrigin, `/reset-password?token=${encodeURIComponent(token)}`);
 }
 
 async function loadRole(db: D1Database, authUserId: string): Promise<string | null> {

@@ -1,6 +1,12 @@
 /*
  * Brevo transactional email over the REST API.
  *
+ * This module owns the transport: the endpoint, the API key binding, the sender,
+ * and the two error types every caller sees. The OD workflow's messages are built in
+ * `utils/odEmail.ts` and sent through `sendBrevoEmail` here, so there is one POST,
+ * one key, one sender and one failure shape in the project rather than one per
+ * feature.
+ *
  * The API key is read from the Worker secret binding and is never returned,
  * logged, or included in an error message. The reset link embeds the raw
  * one-time token, so neither the link nor the token is ever logged either.
@@ -43,13 +49,83 @@ export class EmailDeliveryError extends Error {
   }
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/** One message, already rendered, on its way to one recipient. */
+export interface OutboundEmail {
+  to: string;
+  toName?: string | null;
+  subject: string;
+  html: string;
+  text: string;
+}
+
+/**
+ * The single point at which a mail leaves the Worker.
+ *
+ * Narrow on purpose. A caller supplies a recipient and a rendered body and cannot
+ * reach the key, the endpoint or the sender, so adding a new kind of message means
+ * adding a builder rather than another place that talks to the provider.
+ *
+ * Nothing here knows what the message is *about*, which is what lets the reset mail
+ * and the OD mail share it without either one learning about the other.
+ */
+export async function sendBrevoEmail(env: EmailBindings, message: OutboundEmail): Promise<void> {
+  const apiKey = env.BREVO_API_KEY?.trim();
+  if (!apiKey) {
+    throw new EmailNotConfiguredError();
+  }
+
+  const recipient = message.to.trim().toLowerCase();
+  if (!recipient || !recipient.includes("@")) {
+    throw new EmailDeliveryError(400);
+  }
+
+  const response = await fetch(BREVO_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "api-key": apiKey,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      sender: { name: FROM_NAME, email: FROM_EMAIL },
+      to: [{ email: recipient, name: message.toName?.trim() || FROM_NAME }],
+      subject: message.subject,
+      htmlContent: message.html,
+      textContent: message.text,
+    }),
+  });
+
+  if (!response.ok) {
+    /*
+     * Brevo names the offending field in `code`/`message`, which is what makes
+     * a rejected payload diagnosable. Any URL is redacted first so a reset link
+     * can never reach the log, and the key is never part of either value.
+     */
+    let code: string | null = null;
+    let message: string | null = null;
+    try {
+      const parsed = (await response.json()) as { code?: unknown; message?: unknown };
+      if (typeof parsed?.code === "string") code = parsed.code.slice(0, 64);
+      if (typeof parsed?.message === "string") {
+        message = parsed.message.replace(/https?:\/\/\S+/g, "[redacted-url]").slice(0, 160);
+      }
+    } catch {
+      code = null;
+    }
+    console.error(
+      JSON.stringify({ event: "email_rejected", status: response.status, code, message })
+    );
+    throw new EmailDeliveryError(response.status);
+  }
 }
 
 function buildHtml({ toName, resetUrl, expiresInMinutes }: Required<PasswordResetMessage>): string {
@@ -98,59 +174,18 @@ export async function sendPasswordResetEmail(
   env: EmailBindings,
   message: PasswordResetMessage
 ): Promise<void> {
-  const apiKey = env.BREVO_API_KEY?.trim();
-  if (!apiKey) {
-    throw new EmailNotConfiguredError();
-  }
-
-  const recipient = message.to.trim().toLowerCase();
-  if (!recipient || !recipient.includes("@")) {
-    throw new EmailDeliveryError(400);
-  }
-
   const normalized: Required<PasswordResetMessage> = {
-    to: recipient,
+    to: message.to.trim().toLowerCase(),
     toName: message.toName?.trim() || null,
     resetUrl: message.resetUrl,
     expiresInMinutes: message.expiresInMinutes ?? RESET_EXPIRY_MINUTES,
   };
 
-  const response = await fetch(BREVO_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "api-key": apiKey,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      sender: { name: FROM_NAME, email: FROM_EMAIL },
-      to: [{ email: normalized.to, name: normalized.toName ?? FROM_NAME }],
-      subject: RESET_SUBJECT,
-      htmlContent: buildHtml(normalized),
-      textContent: buildText(normalized),
-    }),
+  await sendBrevoEmail(env, {
+    to: normalized.to,
+    toName: normalized.toName,
+    subject: RESET_SUBJECT,
+    html: buildHtml(normalized),
+    text: buildText(normalized),
   });
-
-  if (!response.ok) {
-    /*
-     * Brevo names the offending field in `code`/`message`, which is what makes
-     * a rejected payload diagnosable. Any URL is redacted first so a reset link
-     * can never reach the log, and the key is never part of either value.
-     */
-    let code: string | null = null;
-    let message: string | null = null;
-    try {
-      const parsed = (await response.json()) as { code?: unknown; message?: unknown };
-      if (typeof parsed?.code === "string") code = parsed.code.slice(0, 64);
-      if (typeof parsed?.message === "string") {
-        message = parsed.message.replace(/https?:\/\/\S+/g, "[redacted-url]").slice(0, 160);
-      }
-    } catch {
-      code = null;
-    }
-    console.error(
-      JSON.stringify({ event: "password_reset_email_rejected", status: response.status, code, message })
-    );
-    throw new EmailDeliveryError(response.status);
-  }
 }

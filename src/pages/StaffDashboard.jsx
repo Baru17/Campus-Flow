@@ -6,6 +6,7 @@ import StatChip from '../components/StatChip'
 import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
+import OdApprovalPanel from '../components/od/OdApprovalPanel'
 import SearchableSelect from '../components/SearchableSelect'
 import OTPDisplay from '../components/OTPDisplay'
 import { finalizeAttendanceSession, generateOtp } from '../api/attendanceApi'
@@ -660,6 +661,22 @@ const [section, setSection] = useState('')
               </div>
             )}
           </div>
+        </div>
+
+        {/*
+          A mentor's OD requests, inside the dashboard they already use.
+
+          Approval is one of the things a mentor is here to do, so it belongs on this page
+          rather than behind another sign-in and another page. The queue is scoped to the
+          mentor's own address on the server, so a mentor sees their students' requests and
+          nobody else's, and every Approve and Reject is re-checked there.
+        */}
+        <div className="mt-4">
+          <OdApprovalPanel
+            stage="MENTOR"
+            title="OD requests from your mentees"
+            emptyText="No OD requests are waiting on you. A request arrives as soon as a student who has you as their mentor submits one."
+          />
         </div>
       </main>
     </div>

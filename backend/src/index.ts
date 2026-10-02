@@ -4,6 +4,9 @@ import auth from "./api/auth";
 import passwordReset from "./api/passwordReset";
 import attendance, { finalizeSession } from "./api/attendance";
 import admin from "./api/admin";
+import adminContestCoordinators from "./api/adminContestCoordinators";
+import studentOd from "./api/studentOd";
+import odApprovals from "./api/odApprovals";
 import { requireAuth, requireClassAdvisor, requireStaff } from "./middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "./utils/databaseErrors";
 import {
@@ -21,6 +24,19 @@ type Bindings = {
   DB: D1Database;
   ALLOWED_ORIGINS?: string;
   BREVO_API_KEY?: string;
+  /**
+   * Signs the single-use approval links a Contest Coordinator's and an HOD's OD mail
+   * carries.
+   *
+   * Optional in the type because it is a deployment secret, not a build-time constant:
+   * set it with `wrangler secret put OD_APPROVAL_TOKEN_SECRET`. When it is absent the
+   * Worker refuses to mint a link and logs `od_approval_link_failed` rather than issuing
+   * something signed with an empty key, so the failure is visible instead of producing
+   * forgeable approval links.
+   *
+   * See `utils/odApprovalToken.ts` for why this is a signed token rather than a table.
+   */
+  OD_APPROVAL_TOKEN_SECRET?: string;
   NODE_ENV?: string;
 };
 
@@ -93,7 +109,30 @@ app.use("/api/*", async (c, next) => {
 app.route("/api/auth", auth);
 app.route("/api/auth", passwordReset);
 app.route("/api/attendance", attendance);
+
+/*
+ * Mounted ahead of the general admin routes, and deliberately so.
+ *
+ * Contest coordinators are provisioned from an existing staff member rather than from
+ * a typed name and address, so their list, create and edit routes are a separate module.
+ * Hono matches in registration order, so mounting this first means
+ * `/api/admin/contest-coordinators` can only ever be answered by the staff-derived
+ * implementation. The HOD surface, and every other admin route, is unchanged and still
+ * comes from `admin`.
+ */
+app.route("/api/admin", adminContestCoordinators);
 app.route("/api/admin", admin);
+
+/*
+ * The student OD and mentor routes, and the approver half of the workflow.
+ *
+ * Mounted at their own prefixes rather than folded into `/api/admin` or the student
+ * attendance routes: these are student-facing rather than administrative, and the
+ * approver half is neither. Each keeps its own `requireStudent` / `requireAuth` gate
+ * so a session of one role cannot reach the other's surface.
+ */
+app.route("/api/student", studentOd);
+app.route("/api/od", odApprovals);
 
 app.get("/api/class-advisors", requireAuth, requireClassAdvisor, async (c) => {
   const staffId = c.req.query("staff_id");

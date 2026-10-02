@@ -3,14 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
-import AddDirectoryModal from '../components/admin/AddDirectoryModal'
-import EditDirectoryRecordModal from '../components/admin/EditDirectoryRecordModal'
+import AddContestCoordinatorModal from '../components/admin/AddContestCoordinatorModal'
 import {
   createAdminContestCoordinators,
   fetchAdminContestCoordinators,
   updateAdminContestCoordinator,
 } from '../api/adminApi'
-import { COORDINATOR_COLUMNS, validateContestCoordinatorRows } from '../utils/adminImport'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
   ChevronLeftIcon,
@@ -29,10 +27,27 @@ import {
  * as an input group in the card header, sortable `advisor-table` headers, and
  * pagination at 15 rows.
  *
- * A contest coordinator is a person, an address and a department, exactly as a head
- * of department is, in a single department-keyed table -- so both pages share the
- * add dialog and the edit dialog rather than duplicating them, and differ only in
- * the words and the column they are about.
+ * ## What is different from the HOD page, and why
+ *
+ * A head of department is *appointed* to a department, so their name, address and
+ * department are all the admin's to supply and the CSV dialog is the right tool. A
+ * contest coordinator is not: they are somebody already on a department's staff roster,
+ * and letting an admin type a third address beside the one on their staff record is how
+ * you end up with a coordinator the OD workflow -- which authorises on
+ * `contest_coordinators.email` -- can never match.
+ *
+ * So this page adds and edits by choosing a staff member, not by filling in a form.
+ * `AddContestCoordinatorModal` asks for a department, then a person from that
+ * department, then shows their staff record read-only, and posts only `staff_id`. The
+ * server derives the same three values from the same row.
+ *
+ * ## The list
+ *
+ * Reads name, email and department from the staff record where one matches, so what
+ * is shown here is the staff member's current identity rather than a copy that could
+ * have drifted. A row with no matching staff record is flagged instead of hidden: it
+ * is a coordinator who predates this flow, or whose staff email has since changed, and
+ * an admin needs to see it in order to fix it.
  *
  * The coordinator id is database-generated and immutable, so it is displayed but
  * never offered as an input.
@@ -130,7 +145,7 @@ export default function AdminContestCoordinatorManagement() {
         <DashboardHero
           icon={<CompassIcon size={26} />}
           title="Contest Coordinators"
-          subtitle="Browse contest coordinators, or import new records with their login accounts."
+          subtitle="Appoint existing staff members as contest coordinators. Their name, email and department come from the staff record."
         />
 
         {notice && (
@@ -160,7 +175,7 @@ export default function AdminContestCoordinatorManagement() {
             </button>
           </div>
 
-          <div className="cf-card p-3 md:p-4">
+          <div className="cf-card admin-directory-card p-3 md:p-4">
             <div className="cf-card-header">
               <div>
                 <h2 className="section-title">Contest coordinators</h2>
@@ -170,7 +185,12 @@ export default function AdminContestCoordinatorManagement() {
                     : `${filtered.length} coordinator${filtered.length === 1 ? '' : 's'} found`}
                 </p>
               </div>
-              <div className="cf-input-group-custom w-full max-w-[260px]">
+              {/*
+                 Full width on a phone, so it wraps onto its own row under the title
+                 rather than competing with it. `sm:` restores the fixed 260px beside
+                 the title from tablet width upwards, which is how it has always looked.
+               */}
+              <div className="cf-input-group-custom w-full sm:max-w-[260px]">
                 <span className="cf-input-icon" aria-hidden="true">
                   <SearchIcon size={16} />
                 </span>
@@ -241,7 +261,22 @@ export default function AdminContestCoordinatorManagement() {
                         <td className="advisor-table-reg">
                           {coordinator.coordinator_id ?? '—'}
                         </td>
-                        <td className="font-bold">{coordinator.coordinator_name}</td>
+                        <td className="font-bold">
+                          {coordinator.coordinator_name}
+                          {/*
+                            A coordinator whose address matches no staff record: created
+                            before this flow existed, or whose staff email has since been
+                            edited. Shown rather than hidden, because an admin has to be
+                            able to see it in order to re-point it at the right person --
+                            and because the values on this row then come from the
+                            coordinator table alone, not from staff.
+                          */}
+                          {coordinator.unlinked ? (
+                            <span className="mt-1 block text-xs font-semibold text-amber-700">
+                              No matching staff record — re-select this coordinator
+                            </span>
+                          ) : null}
+                        </td>
                         <td className="advisor-table-reg">{coordinator.email}</td>
                         <td>{coordinator.department || '—'}</td>
                         <td className="advisor-table-num">
@@ -290,22 +325,16 @@ export default function AdminContestCoordinatorManagement() {
         </div>
 
         {showAdd && (
-          <AddDirectoryModal
+          <AddContestCoordinatorModal
             title="Add Contest Coordinator"
-            nameKey="coordinator_name"
-            nameLabel="Coordinator name"
-            rowLabel="Coordinator"
-            pluralNoun="Coordinators"
-            pluralUnit="coordinator"
-            csvColumns={COORDINATOR_COLUMNS}
-            validateRows={validateContestCoordinatorRows}
+            submitLabel="Add Coordinator"
             onSubmit={createAdminContestCoordinators}
             onClose={() => setShowAdd(false)}
-            onImported={(result) => {
+            onSaved={(result) => {
               setShowAdd(false)
               load()
               setNotice(
-                `Added ${result.created || 0} coordinator${result.created === 1 ? '' : 's'}${
+                `Added ${result.coordinator?.coordinator_name || 'coordinator'}${
                   result.authAccountsCreated > 0
                     ? ` and ${result.authAccountsCreated} login account${
                         result.authAccountsCreated === 1 ? '' : 's'
@@ -318,20 +347,16 @@ export default function AdminContestCoordinatorManagement() {
         )}
 
         {editing && (
-          <EditDirectoryRecordModal
+          <AddContestCoordinatorModal
+            title="Change Staff Member"
+            submitLabel="Save Coordinator"
             record={editing}
-            idField="coordinator_id"
-            nameField="coordinator_name"
-            idLabel="Coordinator ID"
-            nameLabel="Coordinator name"
-            title={`Edit coordinator — ${editing.coordinator_name}`}
-            responseKey="contest_coordinator"
-            onSubmit={updateAdminContestCoordinator}
+            onSubmit={(selection) => updateAdminContestCoordinator(editing.coordinator_id, selection)}
             onClose={() => setEditing(null)}
-            onSaved={(saved) => {
+            onSaved={(result) => {
               setEditing(null)
               load()
-              setNotice(`Updated ${saved?.coordinator_name || editing.coordinator_name}.`)
+              setNotice(`Updated ${result.coordinator?.coordinator_name || editing.coordinator_name}.`)
             }}
           />
         )}

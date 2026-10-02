@@ -6,6 +6,7 @@ import StatChip from '../components/StatChip'
 import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
+import OdApprovalPanel from '../components/od/OdApprovalPanel'
 import {
   getAdvisorAssignment,
   getClassStudents,
@@ -65,6 +66,10 @@ export default function AdvisorDashboard() {
   const [copied, setCopied] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [excelStatus, setExcelStatus] = useState(null)
+
+  // Whether the OD Requests section is open. Starts closed so the attendance report,
+  // which is what this dashboard is mostly for, is what an advisor lands on.
+  const [odOpen, setOdOpen] = useState(false)
 
   useEffect(() => {
     if (!loading && !staff) {
@@ -610,6 +615,57 @@ export default function AdvisorDashboard() {
                   </div>
                 </div>
               )}
+
+              {/*
+                OD Requests for this advisor's own class.
+
+                A class advisor already has a dashboard for their class, so their approval
+                queue is a section of it rather than a separate page and a separate
+                sign-in -- approving OD is one of the things the role is for, not a second
+                job with its own door.
+
+                It is behind a heading button and starts closed, because this dashboard is
+                primarily an attendance report: an always-open queue with a full set of
+                fields per request pushed the thing the advisor came for below the fold.
+                The heading carries the pending count, so a closed section still shows that
+                something is waiting.
+
+                The cohort -- department, batch, year, section -- is read from the advisor
+                columns on the advisor's own staff row on the server, so the queue cannot
+                be widened by anything sent from the browser.
+              */}
+              <div className="lg:col-span-12">
+                <div className="cf-card p-3 md:p-4">
+                  <button
+                    type="button"
+                    onClick={() => setOdOpen((open) => !open)}
+                    aria-expanded={odOpen}
+                    aria-controls="advisor-od-requests"
+                    className="cf-card-header w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                  >
+                    <div>
+                      <h2 className="section-title">OD Requests</h2>
+                      <p className="text-muted-2 text-sm mb-0">
+                        On-duty requests from your class, awaiting your approval.
+                      </p>
+                    </div>
+                    <span className="cf-icon-badge violet">
+                      <CalendarIcon size={22} />
+                    </span>
+                  </button>
+
+                  {odOpen && (
+                    <div id="advisor-od-requests" className="mt-4">
+                      <OdApprovalPanel
+                        stage="CLASS_ADVISOR"
+                        title="Awaiting your approval"
+                        collapsible
+                        emptyText="No OD requests are waiting on you. A request arrives once the student's mentor and the contest coordinator have approved it."
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </>
         )}

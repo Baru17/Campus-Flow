@@ -10,5 +10,26 @@
 			"database_id": "00000000-0000-0000-0000-000000000001",
 			"migrations_dir": "migrations"
 		}
-	]
+	],
+
+	/**
+	 * Test-only placeholders, not credentials.
+	 *
+	 * `BREVO_API_KEY` has to be non-empty for `sendBrevoEmail` to reach its `fetch` at
+	 * all -- it refuses before the request when the key is blank. Without it here, every
+	 * outbound mail dies in the Worker and the suites can never observe who a decision
+	 * tried to notify, which is exactly what the OD email tests need to assert. Nothing
+	 * ever leaves the box: each suite stubs `fetch`, so this value is only ever compared
+	 * for emptiness and then handed to a stub.
+	 *
+	 * `OD_APPROVAL_TOKEN_SECRET` is the same idea: the emailed approval links are signed,
+	 * and minting one fails closed when the secret is absent. A fixed value keeps the
+	 * tests deterministic.
+	 *
+	 * This file is never used by `wrangler dev` or `wrangler deploy`.
+	 */
+	"vars": {
+		"BREVO_API_KEY": "integration-test-key",
+		"OD_APPROVAL_TOKEN_SECRET": "integration-test-approval-secret"
+	}
 }
