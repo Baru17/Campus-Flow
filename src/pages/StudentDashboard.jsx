@@ -18,6 +18,7 @@ import {
   StudentIcon,
   BookIcon,
   CalendarIcon,
+  ChevronLeftIcon,
   FingerprintIcon,
   ClockIcon,
 } from '../components/Icons'
@@ -113,6 +114,24 @@ export default function StudentDashboard() {
     <div className="app-shell">
       <Navbar title="Student Dashboard" subtitle="Mark your attendance using OTP" />
       <main className="container-cf py-4 lg:py-5 page-enter">
+        {/*
+          Back to the student dashboard this page was opened from.
+
+          Same markup, spacing and hover treatment as the OD and mentor pages, and the
+          same destination: `/student/entry` is the dashboard whose "Mark Attendance"
+          card opens this page, so going back lands on the card rather than leaving the
+          student with the "Done -> role selection" dead end below. It is a push, not
+          `navigate(-1)`, so it behaves the same whether or not there is history to pop.
+        */}
+        <button
+          type="button"
+          onClick={() => navigate('/student/entry')}
+          className="mb-4 inline-flex items-center gap-1.5 text-sm font-semibold text-slate-500 transition-colors hover:text-blue-600"
+        >
+          <ChevronLeftIcon size={16} />
+          Back
+        </button>
+
         {!BACKEND_CONFIGURED && (
           <div className="mb-4">
             <StatusMessage variant={notConfiguredMessage().variant}>
@@ -225,7 +244,7 @@ export default function StudentDashboard() {
                 there was never a security value here -- only a field that asked a
                 signed-in student to retype something the request already carried.
               */}
-              <div className="mb-2">
+              <div className="mb-2 otp-attendance-input">
                 <label className="cf-form-label">OTP</label>
                 <OTPInput
                   value={otp}

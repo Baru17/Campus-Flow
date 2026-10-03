@@ -2705,6 +2705,51 @@ a {
   cursor: not-allowed;
 }
 
+/* OTP input boxes, student attendance page.
+
+   The shared `.otp-auth-box` sits on a dark auth screen, where its `--cf-border`
+   edge reads fine. On the attendance card the same edge washes out against the
+   light page, so the six boxes read as almost nothing until you hover them. These
+   rules restate the box in higher contrast.
+
+   Scoped under `.otp-attendance-input` so the sign-in flow's own boxes keep their
+   existing look, and placed after the base block so the filled, error and disabled
+   states below stay authoritative over it. Only colour, border weight and shadow
+   change -- width, height, gap and the small-screen sizes are all left to the base
+   rules and their 479.98px media query, so nothing shifts on mobile. */
+.otp-attendance-input .otp-auth-box {
+  background: var(--cf-surface);
+  border: 2px solid var(--cf-border-strong);
+  box-shadow: var(--cf-shadow-sm);
+}
+
+.otp-attendance-input .otp-auth-box:hover:not(:disabled) {
+  border-color: var(--cf-primary-light);
+}
+
+.otp-attendance-input .otp-auth-box:focus {
+  border-color: var(--cf-primary);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.16), 0 8px 18px rgba(37, 99, 235, 0.14);
+}
+
+.otp-attendance-input .otp-auth-box-filled {
+  border-color: var(--cf-primary);
+  background: var(--cf-primary-soft);
+  color: var(--cf-primary-dark);
+}
+
+.otp-attendance-input .otp-auth-box-error {
+  border-color: rgba(220, 38, 38, 0.55);
+  background: var(--cf-danger-soft);
+}
+
+.otp-attendance-input .otp-auth-box:disabled {
+  background: var(--cf-surface-muted);
+  border-color: var(--cf-border);
+  box-shadow: none;
+  opacity: 0.8;
+}
+
 /* Success check draw */
 .success-check-draw path {
   stroke-dasharray: 40;
