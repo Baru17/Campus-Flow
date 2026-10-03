@@ -11,14 +11,17 @@ import StudentLogin from '../components/StudentLogin'
 import { verifyAttendanceOTP } from '../api/attendanceApi'
 import { getAdvisorAssignment } from '../api/classAdvisorApi'
 import { getCurrentStudent, getCurrentUser } from '../api/authApi'
+import { approverLogin } from '../api/odApi'
 import { OTP_LENGTH } from '../constants'
 import { useAuth } from '../hooks/useAuth'
+import { useStaffAuth } from '../hooks/useStaffAuth'
 import { isValidOTP } from '../utils/validation'
 import { verifyOtpErrorMessage } from '../utils/messages'
 
 export default function AuthPage() {
   const navigate = useNavigate()
   const { student: authenticatedStudent } = useAuth()
+  const { refresh: refreshStaffSession } = useStaffAuth()
   const [step, setStep] = useState('roles')
   const [otp, setOtp] = useState('')
   const [verifying, setVerifying] = useState(false)
@@ -40,6 +43,55 @@ export default function AuthPage() {
       throw new Error('This account is not assigned as a Class Advisor. Please contact the administrator.')
     }
     navigate('/advisor')
+  }
+
+  /*
+   * A contest coordinator and a head of department authenticate through the existing
+   * approver endpoint rather than the staff one.
+   *
+   * `/api/auth/staff/login` would accept a coordinator -- their account role *is* `staff`,
+   * because they are appointed out of the staff roster and reuse that login -- but it
+   * refuses an HOD, whose role is `hod` and who has no staff record at all. Rather than
+   * special-case one of the two, both go through `/api/auth/od-approver/login`, which is the
+   * endpoint `/approver/login` already uses, issues the same session cookie as every other
+   * login, and checks the caller's directory row on the server. This is a change of which
+   * existing door they knock on, not a new authentication mechanism.
+   */
+  const authenticateAsApprover = (identifier, password) => approverLogin(identifier, password)
+
+  /*
+   * Where each of the two lands, and the check that decides it.
+   *
+   * The role comes from `result.approver.role`, which is the role the *server* resolved from
+   * the caller's directory row -- not the button that was pressed and not `auth_users.role`.
+   * That distinction is what puts a coordinator on the coordinator dashboard: their account
+   * role is `staff`, so routing on the account role would send them to the staff dashboard
+   * and away from the queue they exist for.
+   *
+   * So an HOD who signs in on the coordinator form is refused here, with a sentence saying
+   * why, rather than being carried to a screen that would tell them it is not theirs. The
+   * server already refuses anything that is not a coordinator at all; this closes the gap
+   * between "some approver" and "this approver".
+   */
+  const handleApproverLogin = (expectedRole, home, expectedLabel) => async (result) => {
+    const role = result?.approver?.role
+    if (role !== expectedRole) {
+      throw new Error(`This account is not a ${expectedLabel}. Please contact the administrator.`)
+    }
+
+    /*
+     * A coordinator is on the staff roster as well, so their staff dashboard has to keep
+     * working -- they keep the `staff` account and the staff login it goes with. That
+     * provider mounted before this page and has already settled on "signed out", so it is
+     * asked to re-read the session first; without this they would land on a dashboard that
+     * signs them straight back out. An HOD has no staff context to refresh: their dashboard
+     * reads the approver session itself.
+     */
+    if (expectedRole === 'contest_coordinator') {
+      await refreshStaffSession()
+    }
+
+    navigate(home)
   }
 
   /*
@@ -129,6 +181,40 @@ export default function AuthPage() {
         )
       case 'student-login':
         return <StudentLogin key="sid" onBack={goRoles} onContinue={handleStudentContinue} />
+      case 'coordinator-login':
+        return (
+          <StaffLogin
+            key="coordinator"
+            title="Contest Coordinator Login"
+            subtitle="Sign in to review the OD requests waiting on your department."
+            authenticate={authenticateAsApprover}
+            identifier={{
+              label: 'Email address',
+              placeholder: 'e.g. vinothkumar@kiot.ac.in',
+              hint: 'Sign in with the staff email you were appointed on.',
+              requiredMessage: 'Please enter your email address.',
+            }}
+            onBack={goRoles}
+            onLogin={handleApproverLogin('contest_coordinator', '/coordinator', 'Contest Coordinator')}
+          />
+        )
+      case 'hod-login':
+        return (
+          <StaffLogin
+            key="hod"
+            title="HOD Login"
+            subtitle="Sign in to give the final approval on your department's OD requests."
+            authenticate={authenticateAsApprover}
+            identifier={{
+              label: 'Email address',
+              placeholder: 'e.g. hod.name@kiot.ac.in',
+              hint: 'Sign in with the email address your administrator registered for this role.',
+              requiredMessage: 'Please enter your email address.',
+            }}
+            onBack={goRoles}
+            onLogin={handleApproverLogin('hod', '/hod', 'Head of Department')}
+          />
+        )
       case 'otp':
         return (
           <div key="otp" className="stage-enter flex flex-col">
@@ -253,6 +339,8 @@ export default function AuthPage() {
                 onStaff={() => setStep('staff-login')}
                 onStudent={() => setStep('student-login')}
                 onAdvisor={() => setStep('advisor-login')}
+                onCoordinator={() => setStep('coordinator-login')}
+                onHod={() => setStep('hod-login')}
                 onAdmin={() => navigate('/admin')}
               />
             ) : (

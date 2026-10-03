@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import StatusMessage from '../StatusMessage'
 import { fetchApprovedApprovals, fetchPendingApprovals, submitApprovalDecision } from '../../api/odApi'
-import { CheckIcon, ChevronRightIcon, ClockIcon, XIcon } from '../Icons'
+import { CheckIcon, ChevronRightIcon, ClockIcon, SearchIcon, XIcon } from '../Icons'
 
 /**
  * The OD requests waiting on one approver, with the two buttons.
@@ -47,6 +47,24 @@ import { CheckIcon, ChevronRightIcon, ClockIcon, XIcon } from '../Icons'
  * that dashboard is primarily an attendance report, and a queue of requests with a full
  * set of fields each would bury the thing the advisor actually opened the page for.
  *
+ * The contest coordinator and the head of department turn it on for the same reason, and
+ * one step further: a coordinator whose queue is twenty requests long should see twenty
+ * one-line rows, not one screen of fields. Collapsed, a request is its summary line --
+ * who, which cohort, and where it has got to -- and nothing else. Nothing is expanded by
+ * default, including the newest one: which request an approver opens is their decision,
+ * and auto-opening the first one would make "expanded" mean "first" rather than "chosen".
+ *
+ * ## Searching
+ *
+ * `searchable` adds a box that narrows the list already in memory. It is deliberately not
+ * a query parameter: the list behind it is the whole of this approver's queue, correctly
+ * scoped to their department on the server, so filtering it in the browser is a view of
+ * data that has already arrived rather than a second, wider question asked of the
+ * database. A search box that issued its own request would be a second way to ask for
+ * records, and this feature does not need one.
+ *
+ * It is off for the mentor and the class advisor, whose cohorts are small enough to scan.
+ *
  * Nothing about authority changes between the two. The buttons are a convenience either
  * way: `submitApprovalDecision` re-checks on the server that this address holds this
  * stage of this request, so a student, another mentor, a coordinator from another
@@ -62,8 +80,11 @@ export default function OdApprovalPanel({
   title,
   subtitle,
   emptyText = 'Nothing is waiting on you. Requests appear here as soon as the previous stage approves them.',
+  noResultsText = 'No ODs found',
+  noResultsHint = 'Try a different student name or ID.',
   collapsible = false,
   view = 'pending',
+  searchable = false,
 }) {
   const isApprovedView = view === 'approved'
 
@@ -71,6 +92,21 @@ export default function OdApprovalPanel({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
+  const [query, setQuery] = useState('')
+
+  /*
+   * The search box's text, and what the list therefore shows.
+   *
+   * Held here rather than lifted into whichever dashboard embeds this panel, because the
+   * Pending and Approved lists are two separate instances of this component and a shared
+   * value would carry one tab's search into the other. It also resets for free: switching
+   * tabs swaps the instance, so the next list starts unsearched.
+   *
+   * The counts in the header follow `visible` rather than `requests`, so the number is
+   * never describing a list that is not the one on screen. With no search typed the two
+   * are the same array and nothing looks different.
+   */
+  const visible = useMemo(() => filterRequests(requests, query), [requests, query])
 
   // Which request's details are open, in collapsible mode.
   const [expanded, setExpanded] = useState(null)
@@ -80,6 +116,15 @@ export default function OdApprovalPanel({
   const [reason, setReason] = useState('')
   const [working, setWorking] = useState(null)
   const [decisionError, setDecisionError] = useState(null)
+
+  /*
+   * A decision empties the queue, so anything the approver had narrowed it by is no
+   * longer narrowing anything. Clearing the box stops a stale search from hiding the
+   * request they have just decided.
+   */
+  useEffect(() => {
+    setQuery('')
+  }, [requests])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -148,19 +193,45 @@ export default function OdApprovalPanel({
                 ? 'Loading requests…'
                 : subtitle ||
                   (isApprovedView
-                    ? `${requests.length} approved`
-                    : `${requests.length} waiting`)}
+                    ? `${visible.length} approved`
+                    : `${visible.length} waiting`)}
             </p>
           </div>
-          {!loading && requests.length > 0 && (
+          {!loading && visible.length > 0 && (
             <span className={isApprovedView ? 'cf-status-pill' : 'cf-status-pill active'}>
               {isApprovedView ? null : <span className="dot" aria-hidden="true" />}
               {isApprovedView
-                ? `${requests.length} approved`
-                : `${requests.length} waiting`}
+                ? `${visible.length} approved`
+                : `${visible.length} waiting`}
             </span>
           )}
         </div>
+
+        {searchable && (
+          /*
+           * The same input group the admin lists use, at the same width, so a search box
+           * looks like one everywhere in this product. Placed in the card rather than above
+           * the tabs because it narrows what is below it and nothing else -- switching tabs
+           * swaps this component, so a search never leaks from Pending into Approved.
+           *
+           * It is shown even with nothing in the list: an empty queue still answers "is
+           * there anything here", and a box that appears only once there are records makes
+           * the page look like it changed shape as data arrived.
+           */
+          <div className="cf-input-group-custom mt-3 w-full sm:max-w-[260px]">
+            <span className="cf-input-icon" aria-hidden="true">
+              <SearchIcon size={16} />
+            </span>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search student name or ID…"
+              className="cf-input pl-10"
+              aria-label={`Search ${isApprovedView ? 'approved' : 'pending'} OD requests`}
+            />
+          </div>
+        )}
 
         {loading ? (
           <div className="cf-empty">
@@ -168,10 +239,35 @@ export default function OdApprovalPanel({
             <p className="text-sm text-slate-500">Loading requests…</p>
           </div>
         ) : requests.length === 0 ? (
+          /*
+           * Nothing at all in this view. `emptyText` says what would bring one here, which
+           * is the useful thing to say when the queue is genuinely empty.
+           */
           <p className="mt-3 text-sm text-slate-500">{emptyText}</p>
+        ) : visible.length === 0 ? (
+          /*
+           * There *are* requests here, the search just does not match any of them. That is a
+           * different situation from an empty queue and gets its own words: telling someone
+           * with twelve pending requests that "no requests are waiting on you" would be
+           * telling them the opposite of the truth.
+           */
+          <div className="cf-empty mt-3">
+            <span className="cf-empty-icon">
+              <SearchIcon size={24} />
+            </span>
+            <p className="mt-2 text-sm font-semibold text-slate-700">{noResultsText}</p>
+            <p className="mt-1 text-sm text-slate-500">{noResultsHint}</p>
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              className="btn-cf-outline mt-3 px-3 py-1.5 text-sm"
+            >
+              Clear search
+            </button>
+          </div>
         ) : (
           <ul className="mt-3 space-y-3">
-            {requests.map((request) => {
+            {visible.map((request) => {
               const open = !collapsible || expanded === request.od_request_id
               return (
                 <li
@@ -188,7 +284,7 @@ export default function OdApprovalPanel({
                   />
 
                   {open && (
-                    <>
+                    <div className={collapsible ? 'od-expand' : undefined}>
                       <RequestDetails request={request} />
 
                       {/* Which stages have already said yes, so an approver is not asked to
@@ -236,7 +332,7 @@ export default function OdApprovalPanel({
                           busy={working === request.od_request_id}
                         />
                       )}
-                    </>
+                    </div>
                   )}
                 </li>
               )
@@ -253,6 +349,51 @@ export default function OdApprovalPanel({
         </p>
       )}
     </div>
+  )
+}
+
+/**
+ * Narrows a list of requests to those matching what somebody typed.
+ *
+ * Frontend-only and deliberately so. The list handed in is already the whole of this
+ * approver's queue, scoped to their department on the server, so this is a view of records
+ * that have arrived rather than a second question put to the database. Nothing here can
+ * widen what a coordinator or an HOD can see, because it can only remove rows from what
+ * they were already sent.
+ *
+ * ## What is searchable, and what is not
+ *
+ * The fields below are the ones the OD response carries as plain scalars and that somebody
+ * plausibly knows a request by: the student's name, their ID, and the cohort they are in.
+ * The department is one of them on purpose -- "IT" is how a lot of people look for their
+ * own queue -- even though the queue is already department-scoped, where searching it is
+ * simply a no-op rather than a leak.
+ *
+ * Register number is absent, and not by choice: `od_requests` snapshots the student id,
+ * name, department, batch, year and section, and the register number is not among them.
+ * There is nothing to search. See the same note on `RequestDetails`.
+ *
+ * Empty means "everything", so clearing the box is the same as never having typed one.
+ * Matching is case-insensitive and substring-based, which is what makes "barani" find
+ * "BARANIDHARAN S" and "2k24it" find "2K24IT008" without anybody having to type the whole
+ * identifier.
+ */
+function filterRequests(requests, query) {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return requests
+
+  const searchableOn = (request) =>
+    [
+      request.student_name,
+      request.student_id,
+      request.department,
+      request.batch,
+      request.year,
+      request.section,
+    ]
+
+  return requests.filter((request) =>
+    searchableOn(request).some((value) => String(value ?? '').toLowerCase().includes(needle))
   )
 }
 
@@ -303,10 +444,13 @@ function RequestSummary({ request, collapsible, open, onToggle }) {
       </span>
 
       {collapsible && (
-        <ChevronRightIcon
-          size={18}
-          className={`text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`}
-        />
+        <span className="flex shrink-0 items-center gap-1 text-xs font-semibold text-slate-500">
+          {open ? 'Hide details' : 'View details'}
+          <ChevronRightIcon
+            size={18}
+            className={`text-slate-400 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
+          />
+        </span>
       )}
     </>
   )

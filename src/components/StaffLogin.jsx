@@ -11,7 +11,44 @@ import {
 import { ApiError } from '../api/attendanceApi'
 import { useStaffAuth } from '../hooks/useStaffAuth'
 
-export default function StaffLogin({ onBack, onLogin, title = 'Staff Login', subtitle }) {
+/**
+ * The email-or-ID + password sign-in form, used by every role that signs in on this screen.
+ *
+ * Four roles use it now: a member of staff, a class advisor, a contest coordinator and a
+ * head of department. The first two have always used it; the second two are added with
+ * `authenticate` and `identifier` below, and both are optional with the original values as
+ * their defaults -- so the staff and class-advisor flows are byte-for-byte the same code
+ * path as before, and the two new roles reuse this form's layout, spacing, fields,
+ * validation and visual design rather than getting a second one.
+ *
+ * ## `authenticate`
+ *
+ * The function that actually checks the credentials, `(identifier, password) => Promise`.
+ * It defaults to the staff login in the staff context, which is the only thing that needs
+ * to change for a coordinator or an HOD:
+ *
+ *   - a coordinator's account role *is* `staff` -- they are appointed out of the staff
+ *     roster and reuse that login -- so `/api/auth/staff/login` would accept them.
+ *   - a head of department's account role is `hod`, which that route refuses.
+ *
+ * Rather than special-case that, both go through the existing approver endpoint,
+ * `/api/auth/od-approver/login`, which issues the same session cookie as every other login
+ * and checks the caller's directory row on the server. This is the same authentication
+ * `/approver/login` already uses, so there is no second mechanism.
+ *
+ * Whatever it returns is passed to `onLogin`, which is how the caller knows who signed in:
+ * the staff flow gets a staff record, and the approver flow gets the server's own answer
+ * about the role -- the caller must read the role from there and not assume the button that
+ * was pressed decided anything.
+ */
+export default function StaffLogin({
+  onBack,
+  onLogin,
+  title = 'Staff Login',
+  subtitle,
+  authenticate,
+  identifier,
+}) {
   const { login, resetPassword } = useStaffAuth()
   const [staffEmail, setStaffEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -25,11 +62,30 @@ export default function StaffLogin({ onBack, onLogin, title = 'Staff Login', sub
   const [forgotError, setForgotError] = useState(null)
   const [forgotLoading, setForgotLoading] = useState(false)
 
+  /*
+   * The label, placeholder and wording of the first field.
+   *
+   * Every one of these defaults to the staff wording, because for a member of staff that
+   * wording is correct and must not change. A contest coordinator signs in with the same
+   * staff address they already use, so they keep the same label. A head of department has
+   * no staff record at all, so theirs is named for what it actually is.
+   */
+  const identifierLabel = identifier?.label ?? 'Staff Email or Staff ID'
+  const identifierPlaceholder = identifier?.placeholder ?? 'e.g. arun.kumar@kiot.ac.in'
+  const identifierHint =
+    identifier?.hint ??
+    'Sign in with your staff email. Staff ID login is only available when your ID can be resolved securely.'
+  const identifierRequiredMessage =
+    identifier?.requiredMessage ?? 'Please enter your staff email or staff ID.'
+
+  // The staff login unless this role authenticates somewhere else.
+  const submitCredentials = authenticate || login
+
   const handleSubmit = async (event) => {
     event.preventDefault()
-    const identifier = staffEmail.trim()
-    if (!identifier) {
-      setError('Please enter your staff email or staff ID.')
+    const entered = staffEmail.trim()
+    if (!entered) {
+      setError(identifierRequiredMessage)
       return
     }
     if (!password) {
@@ -39,8 +95,8 @@ export default function StaffLogin({ onBack, onLogin, title = 'Staff Login', sub
     setError(null)
     setLoading(true)
     try {
-      const staff = await login(identifier, password)
-      await onLogin(staff)
+      const account = await submitCredentials(entered, password)
+      await onLogin(account)
     } catch (err) {
       setError(
         err instanceof ApiError
@@ -191,7 +247,7 @@ export default function StaffLogin({ onBack, onLogin, title = 'Staff Login', sub
           <div>
             <label htmlFor="staffEmail" className="cf-form-label">
               <KeyIcon size={14} className="text-muted-2" />
-              Staff Email or Staff ID
+              {identifierLabel}
             </label>
             <div className="relative">
               <span className="auth-input-icon" aria-hidden="true">
@@ -205,16 +261,13 @@ export default function StaffLogin({ onBack, onLogin, title = 'Staff Login', sub
                   setStaffEmail(e.target.value)
                   setError(null)
                 }}
-                placeholder="e.g. arun.kumar@kiot.ac.in"
+                placeholder={identifierPlaceholder}
                 className="auth-input"
                 autoComplete="username"
                 inputMode="email"
               />
             </div>
-            <p className="mt-2 text-xs text-slate-400">
-              Sign in with your staff email. Staff ID login is only available when your ID can be
-              resolved securely.
-            </p>
+            <p className="mt-2 text-xs text-slate-400">{identifierHint}</p>
           </div>
 
           <div>

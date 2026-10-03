@@ -42,16 +42,38 @@ import { ShieldIcon } from '../components/Icons'
  * approve, that request is gone from Pending -- without a second view there would be no
  * record on their screen of anything they ever approved.
  *
+ * The tabs are always both rendered, whatever the counts. A tab that only appeared once it
+ * had something on it would make an empty queue indistinguishable from a missing feature,
+ * and it would make the page change shape as requests arrived. A count of zero is shown as
+ * a count of zero, and the empty state below says what would fill it.
+ *
+ * They are centred because they are the switch between the two halves of this screen
+ * rather than a control that belongs to one of them, and because the page below them is a
+ * single centred column of cards -- a left-aligned switch over centred content reads as
+ * belonging to the left edge.
+ *
  * The counts are shown on the tabs, so the count is not the length of whichever list
  * happens to be open. They are read once when the tab set is first shown and refreshed
- * after each decision, from the same two endpoints the lists use.
+ * after each decision, from the same two endpoints the lists use. A count that could not
+ * be fetched leaves the tab without a badge rather than showing a wrong number.
+ *
+ * ## Compact requests, and finding one
+ *
+ * Both lists are collapsed and searchable, because these two roles have the longest queues
+ * in the product: a coordinator's is every OD in their department that cleared the class
+ * advisor, and an HOD's is everything that cleared the coordinator. A request is one
+ * summary line until asked otherwise, and the search box narrows what is already in the
+ * browser. Both behaviours live in `OdApprovalPanel`, which the mentor and class-advisor
+ * dashboards share, so all four approvers read the same way and there is one
+ * implementation rather than two.
  *
  * ## What the screen does not do
  *
  * It does not decide anything itself. The stage is baked in by which route was opened,
  * the queue is scoped by the department on the approver's own directory row, and every
  * Approve and Reject is re-checked on the server against the signed-in address. Rendering
- * a button here is not what authorises the decision.
+ * a button here is not what authorises the decision. Nor does searching change what the
+ * approver can see: it can only remove rows from a list the server already scoped to them.
  */
 export default function ApproverDashboard({
   stage,
@@ -174,6 +196,8 @@ export default function ApproverDashboard({
               view="pending"
               title="Pending"
               emptyText={emptyText}
+              collapsible
+              searchable
             />
           ) : (
             <OdApprovalPanel
@@ -181,6 +205,8 @@ export default function ApproverDashboard({
               view="approved"
               title="Approved"
               emptyText={`You have not approved any OD requests as the ${stageLabel} yet. Requests you approve appear here, newest first.`}
+              collapsible
+              searchable
             />
           )}
         </div>
@@ -237,7 +263,7 @@ function ViewTabs({ stage, view, onChange }) {
   ]
 
   return (
-    <div className="mb-1 flex flex-wrap gap-2" role="tablist" aria-label="OD request views">
+    <div className="mb-1 flex flex-wrap justify-center gap-2" role="tablist" aria-label="OD request views">
       {tabs.map((tab) => {
         const active = view === tab.id
         return (
