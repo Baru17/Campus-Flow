@@ -2441,7 +2441,56 @@ a {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
+/*
+ * The two approver roles that are not staff.
+ *
+ * A contest coordinator and a head of department are added to this list, so they need a
+ * colour of their own rather than borrowing a lecturer's or a student's: the two existing
+ * shades that read as "staff" and "student" on this screen would misdescribe both of them.
+ */
+.auth-role-icon-amber {
+  color: #d97706;
+  background: linear-gradient(135deg, #fffbeb, #fef3c7);
+  border: 1px solid rgba(217, 119, 6, 0.15);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.auth-role-icon-cyan {
+  color: #0891b2;
+  background: linear-gradient(135deg, #ecfeff, #cffafe);
+  border: 1px solid rgba(8, 145, 178, 0.15);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
 .auth-role-card:hover .auth-role-icon { transform: scale(1.06) rotate(-2deg); }
+
+/*
+ * An OD request opening its details.
+ *
+ * A short fade and a few pixels of rise, applied only to the details that were just
+ * mounted. Deliberately restrained: it runs once per expansion and is over in under a
+ * fifth of a second, so a coordinator working down a queue feels the card open rather than
+ * watches it animate. The chevron carries its own slower rotation, so the two together
+ * read as one gesture.
+ */
+@keyframes od-expand-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.od-expand {
+  animation: od-expand-in 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .od-expand { animation: none; }
+}
 
 /* Auth step header icon */
 .auth-step-icon {
