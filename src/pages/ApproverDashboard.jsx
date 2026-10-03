@@ -89,7 +89,7 @@ export default function ApproverDashboard({
 
   const handleLogout = async () => {
     await logout()
-    navigate('/approver/login', { replace: true })
+    navigate('/role-selection', { replace: true })
   }
 
   if (loading) {
