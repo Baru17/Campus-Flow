@@ -5,7 +5,9 @@ import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
 import AddDirectoryModal from '../components/admin/AddDirectoryModal'
 import EditDirectoryRecordModal from '../components/admin/EditDirectoryRecordModal'
-import { createAdminHods, fetchAdminHods, updateAdminHod } from '../api/adminApi'
+import DeleteRecordButton from '../components/admin/DeleteRecordButton'
+import DeleteRecordModal from '../components/admin/DeleteRecordModal'
+import { createAdminHods, deleteAdminHod, fetchAdminHods, updateAdminHod } from '../api/adminApi'
 import { HOD_COLUMNS, validateHodRows } from '../utils/adminImport'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
@@ -62,6 +64,8 @@ export default function AdminHodManagement() {
 
   const [showAdd, setShowAdd] = useState(false)
   const [editing, setEditing] = useState(null)
+  /* The row the confirmation dialog is open for; `null` means it is closed. */
+  const [deleting, setDeleting] = useState(null)
   const [notice, setNotice] = useState(null)
 
   const load = useCallback(async () => {
@@ -238,15 +242,22 @@ export default function AdminHodManagement() {
                         <td className="advisor-table-reg">{hod.email}</td>
                         <td>{hod.department || '—'}</td>
                         <td className="advisor-table-num">
-                          <button
-                            type="button"
-                            onClick={() => setEditing(hod)}
-                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
-                            aria-label={`Edit ${hod.hod_name}`}
-                          >
-                            <EditIcon size={14} />
-                            Edit
-                          </button>
+                          {/* One flex row so the actions column keeps a single width. */}
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setEditing(hod)}
+                              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
+                              aria-label={`Edit ${hod.hod_name}`}
+                            >
+                              <EditIcon size={14} />
+                              Edit
+                            </button>
+                            <DeleteRecordButton
+                              onClick={() => setDeleting(hod)}
+                              name={`HOD ${hod.hod_name}`}
+                            />
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -327,6 +338,30 @@ export default function AdminHodManagement() {
               // replaces the edited one is a fresh read of D1.
               load()
               setNotice(`Updated ${saved?.hod_name || editing.hod_name}.`)
+            }}
+          />
+        )}
+        {deleting && (
+          <DeleteRecordModal
+            title="Delete HOD?"
+            entityLabel="head of department"
+            name={deleting.hod_name}
+            details={[
+              deleting.hod_id != null ? `HOD ID ${deleting.hod_id}` : null,
+              deleting.email,
+              deleting.department,
+            ]}
+            warning={`${deleting.department || 'this'} department`}
+            note="OD requests they approved are kept. Their HOD login goes with the record unless another record still uses it."
+            onConfirm={() => deleteAdminHod(deleting.hod_id)}
+            onClose={() => setDeleting(null)}
+            onDeleted={() => {
+              const removedName = deleting.hod_name
+              setDeleting(null)
+              // `load` is the same fetch the page uses on mount, so the directory that
+              // replaces the deleted entry is a fresh read of D1.
+              load()
+              setNotice(`Deleted ${removedName}.`)
             }}
           />
         )}

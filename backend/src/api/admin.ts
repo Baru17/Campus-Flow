@@ -33,13 +33,49 @@
  * batch on such a request are a hint, not an authority: the table name still comes
  * from the registry and the row still has to be found in it, so a wrong cohort
  * answers 404 rather than editing a different student.
+ *
+ * ## Deletions
+ *
+ * The `DELETE` routes are the third half of the same contract, and they are held to
+ * one rule that the reads and writes above never had to think about: a directory
+ * record and the history that mentions it are not the same thing.
+ *
+ * Nothing in this schema declares a single `FOREIGN KEY`. Attendance rows record a
+ * `register_no`, `attendance_session` records a `created_by` staff id and a
+ * subject code, and `od_requests` records a `student_table`/`student_id` pair and
+ * four approver addresses -- all of them plain text, copied at the moment the event
+ * happened. So there is no cascade to suppress and no constraint to trip: deleting a
+ * roster row leaves every attendance mark, OD request and approval exactly where it
+ * was, which is the behaviour this application wants and the reason the delete is a
+ * single `DELETE FROM` rather than a fan-out.
+ *
+ * What does need care is the login account. Every directory row links to
+ * `auth_users` through `auth_user_id`, and an account left behind by a deleted row is
+ * a real problem for an appointment role: `/api/auth/od-approver/login` resolves the
+ * caller through that column, so a coordinator whose row is gone can no longer sign
+ * in even though their `auth_users` row still verifies. Deleting the account is not
+ * automatically right either -- a contest coordinator's account is usually a reused
+ * *staff* account that the `staff` roster also points at, and removing it would sign
+ * a colleague out of the very roster that still lists them. `planAccountRemoval`
+ * resolves that: it removes the account only when the role is one this directory
+ * issues and nothing else still references it, and otherwise leaves it untouched and
+ * says so in the response.
+ *
+ * Where a deletion would genuinely destroy the meaning of existing data, it is
+ * refused rather than performed. A subject that attendance already names is a 409,
+ * because the marks are filed under its code and a catalog entry is what makes them
+ * readable. A staff member who is currently a department's contest coordinator is a
+ * 409, because that appointment is a directory record in its own right and the
+ * coordinator roster is chosen from the staff roster.
  */
 
 import { Hono } from "hono";
 import { requireAuth, requireAdmin, type AuthUser } from "../middleware/auth";
 import { getErrorMessageForLog, isTransientD1Error } from "../utils/databaseErrors";
 import {
+  assertAllowedAttendanceTable,
   assertAllowedStudentTable,
+  buildTableNames,
   ensureBatchRegistry,
   invalidateBatchRegistry,
   listAllowedStudentTables,
@@ -295,6 +331,211 @@ async function findStudentCohort(
   if (matches.length === 0) return { ok: false, reason: "not-found" };
   if (matches.length > 1) return { ok: false, reason: "ambiguous" };
   return { ok: true, cohort: matches[0] };
+}
+
+/* ---------------------------------------------------------------- deletions */
+
+/**
+ * Every table that carries an `auth_user_id`, apart from the per-cohort student
+ * tables.
+ *
+ * Literals, all of them: `staff` and the two directory tables are named by the
+ * schema, not by a request. The student tables are absent because their names come
+ * from the registry, and they are read separately in `findCompetingAuthLink`.
+ */
+const AUTH_LINKED_TABLES = ["staff", "hods", "contest_coordinators"] as const;
+
+/** Identifies the row being removed, so it is not mistaken for a competing reference. */
+interface RemovedRow {
+  /** Literal table name. Never anything a request supplied. */
+  table: string;
+  /** Literal id column of that table. */
+  idColumn: string;
+  /** The id of the row the delete is removing. */
+  id: string | number;
+}
+
+/**
+ * The table that still points `authUserId` somewhere else, or `null`.
+ *
+ * An account is shared whenever two live records carry the same `auth_user_id`, and
+ * deleting a shared one signs the other record's owner out of a system they are
+ * still listed in. The two ways that happens in this schema are both checked:
+ *
+ *   - one person holding two roles. A contest coordinator is appointed out of a
+ *     department's staff roster, so their `coordinator_id` row and their `staff_id`
+ *     row point at the *same* account. Deleting the appointment must not take the
+ *     staff login with it.
+ *   - one record duplicated across cohorts, which the student tables are scanned
+ *     for the same reason.
+ *
+ * The row being deleted is excluded, because it is about to stop existing and would
+ * otherwise always be reported as its own competitor.
+ *
+ * Requires the batch registry to be hydrated, which every caller does through
+ * `ensureBatchRegistry` before reaching here.
+ */
+async function findCompetingAuthLink(
+  db: D1Database,
+  authUserId: string,
+  self: RemovedRow
+): Promise<string | null> {
+  for (const table of AUTH_LINKED_TABLES) {
+    if (table === self.table) {
+      const other = await db
+        .prepare(
+          `SELECT 1 AS hit FROM ${table} WHERE auth_user_id = ? AND ${self.idColumn} <> ? LIMIT 1`
+        )
+        .bind(authUserId, self.id)
+        .first<{ hit: number }>();
+      if (other) return table;
+      continue;
+    }
+    const holder = await db
+      .prepare(`SELECT 1 AS hit FROM ${table} WHERE auth_user_id = ? LIMIT 1`)
+      .bind(authUserId)
+      .first<{ hit: number }>();
+    if (holder) return table;
+  }
+
+  for (const tables of listAllowedStudentTables()) {
+    const studentTable = assertAllowedStudentTable(tables.studentTable);
+    // The student tables have no single id column in common, so the row being
+    // removed is excluded by the table it lives in rather than by a shared name.
+    const holder =
+      studentTable === self.table
+        ? await db
+            .prepare(
+              `SELECT 1 AS hit FROM ${studentTable}
+               WHERE auth_user_id = ? AND UPPER(student_id) <> UPPER(?) LIMIT 1`
+            )
+            .bind(authUserId, String(self.id))
+            .first<{ hit: number }>()
+        : await db
+            .prepare(`SELECT 1 AS hit FROM ${studentTable} WHERE auth_user_id = ? LIMIT 1`)
+            .bind(authUserId)
+            .first<{ hit: number }>();
+    if (holder) return studentTable;
+  }
+
+  return null;
+}
+
+type AccountRemoval = {
+  /** Statements to run in the same `DB.batch()` as the row's own delete. */
+  statements: D1PreparedStatement[];
+  /** Whether the account was removed. */
+  removed: boolean;
+  /** Why it was left alone, for the response and for the tests to assert on. */
+  keptReason: "shared" | "foreign-role" | "missing-link" | null;
+  /** The role the kept account has, so the dashboard can say what it left behind. */
+  keptRole: string | null;
+};
+
+/**
+ * Decides whether the account behind a deleted row goes with it, and returns the
+ * statements that would close it.
+ *
+ * An account is removed only when all three of these hold, and each one exists
+ * because the alternative is a real failure:
+ *
+ *   1. The row carries an `auth_user_id` at all. A row that predates the column, or
+ *      one whose account could not be matched when it was written, has nothing to
+ *      remove -- and nothing is invented to remove.
+ *   2. The account's role is one *this* directory issues. A coordinator's account is
+ *      usually the reused `staff` account, which belongs to the staff roster and
+ *      would sign a colleague out of it. An `admin` account behind any of these rows
+ *      belongs to the application, not to the person being removed.
+ *   3. Nothing else references it. See `findCompetingAuthLink`.
+ *
+ * The statements are returned rather than run so the caller can put them in one
+ * `DB.batch()` alongside the row's own delete. D1's batch is a transaction, which is
+ * what makes "the record and its login are gone together, or neither happened" true
+ * rather than aspirational.
+ *
+ * The session rows go with the account. `auth_sessions` has no foreign key either, so
+ * leaving them would not keep anybody signed in -- `requireAuth` joins `auth_users` --
+ * but it would leave rows nothing can ever match, which is what
+ * `/api/auth/reset-password` already avoids by deleting an account's sessions first.
+ */
+async function planAccountRemoval(
+  db: D1Database,
+  authUserId: string | null,
+  ownedRoles: readonly string[],
+  self: RemovedRow
+): Promise<AccountRemoval> {
+  if (!authUserId) {
+    return { statements: [], removed: false, keptReason: "missing-link", keptRole: null };
+  }
+
+  const account = await db
+    .prepare("SELECT auth_user_id, role FROM auth_users WHERE auth_user_id = ? LIMIT 1")
+    .bind(authUserId)
+    .first<{ auth_user_id: string; role: string }>();
+  if (!account) {
+    return { statements: [], removed: false, keptReason: "missing-link", keptRole: null };
+  }
+
+  if (!ownedRoles.includes(account.role)) {
+    return { statements: [], removed: false, keptReason: "foreign-role", keptRole: account.role };
+  }
+
+  const holder = await findCompetingAuthLink(db, authUserId, self);
+  if (holder) {
+    return { statements: [], removed: false, keptReason: "shared", keptRole: account.role };
+  }
+
+  return {
+    statements: [
+      db.prepare("DELETE FROM auth_sessions WHERE auth_user_id = ?").bind(authUserId),
+      db.prepare("DELETE FROM auth_users WHERE auth_user_id = ?").bind(authUserId),
+    ],
+    removed: true,
+    keptReason: null,
+    keptRole: null,
+  };
+}
+
+/**
+ * Whether an optional table exists.
+ *
+ * Only used for `od_requests`, which `migrations/0017_od_requests.sql` records as
+ * reviewed but *not applied to production*. A delete that reported how much history
+ * it preserved would therefore be a 500 on the deployed database for the want of one
+ * `SELECT`. The count is reported, never depended on for the deletion itself, so
+ * treating the table as absent is the safe way to be wrong: the row is still deleted
+ * and still reports the history it knows about.
+ */
+async function tableExists(db: D1Database, table: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
+    .bind(table)
+    .first<{ hit: number }>();
+  return Boolean(row);
+}
+
+/**
+ * How many OD requests mention this address in any decision column, and whether
+ * `od_requests` is deployed at all.
+ *
+ * Reported rather than acted on. `od_requests` records approvers as the addresses
+ * they signed in with, on purpose: an approval has to stay attached to the person who
+ * gave it, so removing a directory row must not remove what they decided. Zero is
+ * returned when the table is absent rather than pretending the history is empty.
+ */
+async function countOdDecisionsBy(
+  db: D1Database,
+  email: string,
+  columns: readonly string[]
+): Promise<number> {
+  if (columns.length === 0) return 0;
+  if (!(await tableExists(db, "od_requests"))) return 0;
+  const predicate = columns.map((column) => `LOWER(${column}) = ?`).join(" OR ");
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n FROM od_requests WHERE ${predicate}`)
+    .bind(...columns.map(() => email.toLowerCase()))
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 /* ------------------------------------------------------------------ batches */
@@ -1025,6 +1266,151 @@ app.patch("/students/:studentId", requireAuth, requireAdmin, async (c) => {
   }
 });
 
+/**
+ * Removes one student from its cohort's roster.
+ *
+ * The cohort is found exactly as the edit route finds it, from the registry rather
+ * than from the request, so `?department=` and `?batch=` stay a hint that is checked
+ * rather than an authority: a cohort that does not hold this student answers 404, and
+ * an id that exists in two cohorts answers 409 asking the admin to disambiguate
+ * instead of taking the first hit.
+ *
+ * ## What is preserved, and why nothing cascades
+ *
+ * No migration in this schema declares a `FOREIGN KEY`, and the two things that
+ * would otherwise have to be cleaned up are both stored as text:
+ *
+ *   - attendance marks record `register_no`, not `student_id`, and no index or
+ *     constraint ties the two together;
+ *   - `od_requests` records `student_table` + `student_id` as a snapshot, plus
+ *     `student_name`, `department`, `batch`, `year`, `section` and
+ *     `mentor_email`, all copied at submission and never re-read.
+ *
+ * So one `DELETE FROM` against the roster table leaves every mark and every OD
+ * request -- approved, rejected or still pending -- exactly as it was, which is the
+ * point: an academic record outlives the enrolment that produced it. The counts are
+ * returned under `preservedHistory` so the dashboard can say what was kept rather
+ * than the admin having to trust that it was.
+ *
+ * ## The login
+ *
+ * A student account is created for one student and used by nobody else:
+ * `auth_users.user_name` is the student id, and the import refuses an address that
+ * already holds an account of another role. So when the roster row carries a link,
+ * the account is removed with it, in the same `DB.batch()`, together with its
+ * sessions -- otherwise the person keeps a working password for a login that now
+ * resolves to no roster at all. `planAccountRemoval` still applies its role and
+ * sharing checks, so a row whose link points somewhere unexpected leaves that
+ * account alone rather than taking it out from under its real owner.
+ */
+app.delete("/students/:studentId", requireAuth, requireAdmin, async (c) => {
+  try {
+    const idCheck = validateStudentId(c.req.param("studentId"));
+    if (!idCheck.ok) {
+      return fail(c, 400, idCheck.errors[0].message, "invalid-student-id");
+    }
+    const studentId = idCheck.value;
+
+    await ensureBatchRegistry(c.env.DB);
+
+    // Read as a hint, and validated as one, for the same reason the edit route does.
+    const hintDepartment = c.req.query("department");
+    const hintBatch = c.req.query("batch");
+    let hint: { department?: string; batch?: string } | null = null;
+    if (hintDepartment !== undefined || hintBatch !== undefined) {
+      const department = normalizeDepartment(hintDepartment ?? "");
+      if (!department) {
+        return fail(c, 400, "Choose a supported department", "invalid-department");
+      }
+      const batchCheck = validateBatchInput(hintBatch);
+      if (!batchCheck.valid) {
+        return fail(c, 400, batchCheck.message, batchCheck.code);
+      }
+      hint = { department, batch: batchCheck.batch };
+    }
+
+    const lookup = await findStudentCohort(c.env.DB, studentId, hint);
+    if (!lookup.ok) {
+      if (lookup.reason === "ambiguous") {
+        return fail(
+          c,
+          409,
+          "That student ID exists in more than one cohort. Name the department and batch to delete.",
+          "student-ambiguous"
+        );
+      }
+      if (lookup.reason === "not-provisioned") {
+        return fail(
+          c,
+          400,
+          `That batch is not provisioned for ${hint?.department}. Create it first.`,
+          "batch-not-provisioned"
+        );
+      }
+      return fail(c, 404, "Student not found", "student-not-found");
+    }
+    const cohort = lookup.cohort;
+    const studentTable = assertAllowedStudentTable(cohort.studentTable);
+
+    const account = await planAccountRemoval(c.env.DB, cohort.student.auth_user_id, ["student"], {
+      table: studentTable,
+      idColumn: "student_id",
+      id: cohort.student.student_id,
+    });
+
+    // Roster row, sessions and account in one batch, which D1 runs as a
+    // transaction: a student is never left with a login and no roster, or the
+    // reverse.
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare(`DELETE FROM ${studentTable} WHERE student_id = ?`)
+        .bind(cohort.student.student_id),
+      ...account.statements,
+    ]);
+
+    // Derived rather than read, exactly as everywhere else a table name reaches
+    // SQL here: the department came out of the fixed allow-list and the batch out
+    // of the registry, so this cannot name a table the resolver would not produce.
+    const attendanceTable = assertAllowedAttendanceTable(
+      buildTableNames(cohort.department, cohort.batch).attendanceTable
+    );
+    const attendance = await c.env.DB
+      .prepare(`SELECT COUNT(*) AS n FROM ${attendanceTable} WHERE LOWER(register_no) = ?`)
+      .bind((cohort.student.register_no ?? "").toLowerCase())
+      .first<{ n: number }>();
+    const odRequests = (await tableExists(c.env.DB, "od_requests"))
+      ? await c.env.DB
+          .prepare(
+            `SELECT COUNT(*) AS n FROM od_requests
+             WHERE student_table = ? AND UPPER(student_id) = UPPER(?)`
+          )
+          .bind(studentTable, cohort.student.student_id)
+          .first<{ n: number }>()
+      : null;
+
+    return c.json({
+      success: true,
+      department: cohort.department,
+      batch: cohort.batch,
+      student: {
+        student_id: cohort.student.student_id,
+        register_no: cohort.student.register_no,
+        student_name: cohort.student.student_name,
+      },
+      authAccountRemoved: account.removed,
+      // Said plainly so the dashboard is not left implying a login was revoked when
+      // the account was somebody else's to begin with.
+      authAccountKept: account.keptReason,
+      preservedHistory: {
+        attendanceMarks: attendance?.n ?? 0,
+        odRequests: odRequests?.n ?? 0,
+      },
+    });
+  } catch (error) {
+    return serverError(c, error, "Could not delete that student", "student-delete-failed");
+  }
+});
+
 /* --------------------------------------------------------------------- staff */
 
 app.get("/staff", requireAuth, requireAdmin, async (c) => {
@@ -1514,6 +1900,142 @@ app.patch("/staff/:staffId", requireAuth, requireAdmin, async (c) => {
   }
 });
 
+/**
+ * Removes one staff member from the roster.
+ *
+ * ## What is preserved
+ *
+ * Everything that mentions a member of staff does so as text, so nothing cascades and
+ * nothing has to be cascaded deliberately:
+ *
+ *   - `attendance_session.created_by` holds the `staff_id` of whoever generated the
+ *     session, and `created_by_name` holds their name. A finalized session keeps both,
+ *     and the per-cohort marks tables are keyed by `attendance_id`, not by staff.
+ *   - `od_requests` records the mentor by `mentor_email` and the advisor by
+ *     `advisor_decided_by`, both copied at the moment of the decision.
+ *
+ * So a person who marked a term of attendance and approved a fortnight of OD can be
+ * removed from the roster, and the record of what they did stays readable. The
+ * counts come back under `preservedHistory`.
+ *
+ * ## The one dependency that blocks
+ *
+ * A contest coordinator is appointed out of a department's staff roster, so
+ * `contest_coordinators` rows share the address and often the account with a `staff`
+ * row. Removing the staff member first would leave an appointment whose subject is no
+ * longer on the roster -- and the coordinator picker only offers people who are, so
+ * the appointment could no longer be edited or renewed from the UI. That is a 409
+ * naming the appointment, rather than a deletion that quietly orphans it. Removing
+ * the appointment first is not a workaround the data loses anything by: nothing in
+ * `contest_coordinators` refers back to `staff`, and the freed department can be
+ * filled the moment the coordinator route has deleted the row.
+ *
+ * A class-advisor assignment is *not* a blocker, because it is a set of columns on
+ * this row rather than a separate record: it goes with the row, and the students it
+ * advised keep their attendance.
+ *
+ * ## The login
+ *
+ * A staff account is created for one member of staff and used by nobody else --
+ * `/api/auth/staff/login` matches `user_name` or `email` and both are theirs. So the
+ * account is removed with the row, in the same `DB.batch()`, along with its sessions.
+ * `planAccountRemoval` applies its role and sharing checks first, so an account whose
+ * role is not one the staff import issues is left alone rather than being taken away
+ * from whoever really holds it.
+ */
+app.delete("/staff/:staffId", requireAuth, requireAdmin, async (c) => {
+  try {
+    const idCheck = validateStaffId(c.req.param("staffId"));
+    if (!idCheck.ok) {
+      return fail(c, 400, idCheck.errors[0].message, "invalid-staff-id");
+    }
+    const staffId = idCheck.value;
+
+    const existing = await c.env.DB
+      .prepare(
+        `SELECT staff_id, staff_name, email, department, class_advisor,
+                advisor_year, advisor_section, advisor_batch, auth_user_id
+         FROM staff
+         WHERE staff_id = ?
+         LIMIT 1`
+      )
+      .bind(staffId)
+      .first<{
+        staff_id: string;
+        staff_name: string;
+        email: string;
+        department: string;
+        class_advisor: string | null;
+        auth_user_id: string | null;
+      }>();
+    if (!existing) {
+      return fail(c, 404, "Staff member not found", "staff-not-found");
+    }
+
+    // Matched on either handle, because the appointment may predate `0018` and carry
+    // no `auth_user_id` of its own -- in which case the address is the only thing the
+    // two records are known to share.
+    const appointment = await c.env.DB
+      .prepare(
+        `SELECT coordinator_id, department FROM contest_coordinators
+         WHERE LOWER(email) = ? OR (auth_user_id IS NOT NULL AND auth_user_id = ?)
+         LIMIT 1`
+      )
+      .bind(existing.email.toLowerCase(), existing.auth_user_id ?? "")
+      .first<{ coordinator_id: number; department: string }>();
+    if (appointment) {
+      return fail(
+        c,
+        409,
+        `${existing.staff_name} is currently the ${appointment.department} contest coordinator. Remove that appointment first.`,
+        "staff-appointment-conflict",
+        { coordinatorId: appointment.coordinator_id, department: appointment.department }
+      );
+    }
+
+    await ensureBatchRegistry(c.env.DB);
+
+    const account = await planAccountRemoval(
+      c.env.DB,
+      existing.auth_user_id,
+      ["staff", "class_advisor"],
+      { table: "staff", idColumn: "staff_id", id: existing.staff_id }
+    );
+
+    await c.env.DB.batch([
+      c.env.DB.prepare("DELETE FROM staff WHERE staff_id = ?").bind(existing.staff_id),
+      ...account.statements,
+    ]);
+
+    const sessions = await c.env.DB
+      .prepare("SELECT COUNT(*) AS n FROM attendance_session WHERE created_by = ?")
+      .bind(existing.staff_id)
+      .first<{ n: number }>();
+
+    return c.json({
+      success: true,
+      staff: {
+        staff_id: existing.staff_id,
+        staff_name: existing.staff_name,
+        email: existing.email,
+        department: existing.department,
+      },
+      authAccountRemoved: account.removed,
+      authAccountKept: account.keptReason,
+      authAccountKeptRole: account.keptRole,
+      preservedHistory: {
+        attendanceSessions: sessions?.n ?? 0,
+        odRequests: await countOdDecisionsBy(c.env.DB, existing.email, [
+          "mentor_email",
+          "advisor_decided_by",
+        ]),
+      },
+    });
+  } catch (error) {
+    return serverError(c, error, "Could not delete that staff member", "staff-delete-failed");
+  }
+});
+
 /* ----------------------------------------------------------------- subjects */
 
 app.get("/subjects", requireAuth, requireAdmin, async (c) => {
@@ -1702,6 +2224,98 @@ app.patch("/subjects/:subjectId", requireAuth, requireAdmin, async (c) => {
   }
 });
 
+/**
+ * Removes one catalog subject.
+ *
+ * ## This is the one deletion that can be refused, and it is refused on purpose
+ *
+ * `subjects` is a catalog: a code and a name, referenced by nothing at all -- no
+ * migration declares a foreign key onto it. Marks are stored under the subject's
+ * *code*, in `attendance_session` and in every `{DEPARTMENT}_Attendance_{BATCH}`
+ * table, and a class advisor can file a mark against a subject with no session at all
+ * (`POST /api/attendance/:table` resolves `subject_code` from `subject_id` on its
+ * own). So a subject that has been taught is named in rows that will outlive it.
+ *
+ * Deleting the catalog entry would not corrupt those rows -- they hold the code and
+ * the name as text, exactly as `attendance_session` was designed to snapshot them --
+ * but it would leave a code filed under in the marks of every student who sat it,
+ * with no catalog entry to explain what it was. That is a worse state than the one
+ * the admin is trying to reach, and it is not the admin's call to make by accident,
+ * so a subject anything references is a 409 that says so in those terms. A subject
+ * that has never been used deletes cleanly, which is the case an admin is actually
+ * in when they reach for this.
+ *
+ * The scan covers both places a code can appear: the session table, and the marks
+ * table of every cohort the registry knows about. Cohort tables are named through
+ * `assertAllowedAttendanceTable`, so the loop can only ever query a table the
+ * resolver already vouched for.
+ *
+ * There is no login to think about here. A subject has no `auth_user_id` and no
+ * account, so the delete is one statement against one table.
+ */
+app.delete("/subjects/:subjectId", requireAuth, requireAdmin, async (c) => {
+  try {
+    // Validated exactly as the edit route validates it: an INTEGER PRIMARY KEY in the
+    // path, so a non-numeric value is a client mistake rather than a missing record.
+    const subjectId = Number(c.req.param("subjectId"));
+    if (!Number.isInteger(subjectId) || subjectId <= 0) {
+      return fail(c, 400, "Invalid subject ID", "invalid-subject-id");
+    }
+
+    const existing = await c.env.DB
+      .prepare("SELECT subject_id, subject_code, subject_name FROM subjects WHERE subject_id = ?")
+      .bind(subjectId)
+      .first<{ subject_id: number; subject_code: string; subject_name: string }>();
+    if (!existing) {
+      return fail(c, 404, "Subject not found", "subject-not-found");
+    }
+
+    await ensureBatchRegistry(c.env.DB);
+
+    const sessions = await c.env.DB
+      .prepare("SELECT COUNT(*) AS n FROM attendance_session WHERE subject_code = ?")
+      .bind(existing.subject_code)
+      .first<{ n: number }>();
+
+    let marks = 0;
+    for (const tables of listAllowedStudentTables()) {
+      const attendanceTable = assertAllowedAttendanceTable(tables.attendanceTable);
+      const row = await c.env.DB
+        .prepare(`SELECT COUNT(*) AS n FROM ${attendanceTable} WHERE subject_code = ?`)
+        .bind(existing.subject_code)
+        .first<{ n: number }>();
+      marks += row?.n ?? 0;
+    }
+
+    const referenced = (sessions?.n ?? 0) + marks;
+    if (referenced > 0) {
+      return fail(
+        c,
+        409,
+        `Cannot delete ${existing.subject_code} because ${referenced} attendance record${
+          referenced === 1 ? "" : "s"
+        } reference it.`,
+        "subject-in-use",
+        { attendanceSessions: sessions?.n ?? 0, attendanceMarks: marks }
+      );
+    }
+
+    await c.env.DB.prepare("DELETE FROM subjects WHERE subject_id = ?").bind(subjectId).run();
+
+    return c.json({
+      success: true,
+      subject: {
+        subject_id: existing.subject_id,
+        subject_code: existing.subject_code,
+        subject_name: existing.subject_name,
+      },
+      preservedHistory: { attendanceSessions: 0, attendanceMarks: 0 },
+    });
+  } catch (error) {
+    return serverError(c, error, "Could not delete that subject", "subject-delete-failed");
+  }
+});
+
 /* ------------------------------------------ hods and contest coordinators */
 
 /**
@@ -1794,6 +2408,41 @@ interface DirectorySpec {
    * depends on there being only one HOD, so the rule is not extended to it here.
    */
   onePerDepartment?: boolean;
+  /**
+   * The account roles this directory is allowed to delete along with a row, and so the
+   * only roles `planAccountRemoval` will act on for it.
+   *
+   * The distinction is the whole reason this field exists, and it follows
+   * `provisionFromStaff` directly:
+   *
+   *   - a head of department is appointed to a department, so its account was created
+   *     for the appointment and belongs to nobody else. `["hod"]` -- when the row goes,
+   *     the login goes, or a person who is no longer a head of department keeps a
+   *     working password.
+   *   - a contest coordinator is appointed out of a department's staff roster, so the
+   *     account behind the address is the *reused staff account*, whose role is
+   *     `staff`. `["contest_coordinator"]` covers the case where one does exist -- an
+   *     address that already held a coordinator account -- and never touches the staff
+   *     one. Removing a coordinator must not sign a colleague off the staff roster.
+   *
+   * `planAccountRemoval` additionally refuses to remove an account that some other
+   * live row still references, so this is the first of two gates rather than the only
+   * one.
+   */
+  ownedAccountRoles?: readonly string[];
+  /**
+   * The `od_requests` columns this directory's members appear in, as *approvers*.
+   *
+   * `od_requests` records each of the four stages in its own column group rather than
+   * in a shared decisions table, so the answer differs per role and cannot be derived
+   * from `codeStem` without the next field in the spec quietly having to keep matching
+   * this one's naming. Stated here instead: `hod_decided_by` for a head of department,
+   * `coordinator_decided_by` for a coordinator.
+   *
+   * Read only to report what the delete preserved. Nothing in the workflow is touched
+   * by a directory row going away, which is the point of stating it.
+   */
+  odApproverColumns: readonly string[];
   /**
    * The row validator, in its own column vocabulary.
    *
@@ -1943,7 +2592,15 @@ async function withoutOccupiedDepartments(
  */
 function registerDirectoryRoutes(spec: DirectorySpec): void {
   const validateDirectoryRow = directoryValidator(spec, spec.validateRow);
-  const { table, idColumn, nameColumn, provisionFromStaff = false, onePerDepartment = false } = spec;
+  const {
+    table,
+    idColumn,
+    nameColumn,
+    provisionFromStaff = false,
+    onePerDepartment = false,
+    ownedAccountRoles = [],
+  } = spec;
+  const odApproverColumns = spec.odApproverColumns;
 
   /* ------------------------------------------------------------------- list */
 
@@ -2520,6 +3177,113 @@ function registerDirectoryRoutes(spec: DirectorySpec): void {
       );
     }
   });
+
+  /* ----------------------------------------------------------------- delete */
+
+  /*
+   * Removes one directory entry, and its login only when the login is its own.
+   *
+   * ## What is preserved
+   *
+   * The OD workflow snapshots every approver by the address they signed in with --
+   * `mentor_email`, `coordinator_decided_by`, `advisor_decided_by`,
+   * `hod_decided_by` -- and copies no approver id anywhere. There is no foreign key
+   * from `od_requests` onto either directory table, so every approval either of these
+   * roles ever gave stays exactly as it was recorded. Removing a head of department
+   * does not remove a term of decisions they made; the count comes back under
+   * `preservedHistory` so the dashboard can say so rather than assert it.
+   *
+   * ## The login, which is the whole difficulty
+   *
+   * Deleting the row is not enough on its own. `/api/auth/od-approver/login` resolves
+   * the caller's role, name and department through this directory's `auth_user_id`, so
+   * a person whose row is gone is refused at sign-in with `unlinked-approver` while
+   * their `auth_users` row goes on verifying their password -- an account that exists,
+   * authenticates against the shared login route, and grants nothing.
+   *
+   * Removing that account is not automatically the fix either. A coordinator's account
+   * is normally the *reused staff account*, which `staff` also points at, and deleting
+   * it would sign a colleague off a roster that still lists them. So the account goes
+   * only when `spec.ownedAccountRoles` says this directory issues it *and* nothing
+   * else still references it; otherwise it is left in place and the response says
+   * which of those two reasons applied, in `authAccountKept`.
+   *
+   * For a coordinator the leaving-behind case is the expected one, not a fault: their
+   * `staff` login keeps working, which is what an appointed member of staff expects,
+   * and losing the appointment is what stops them approving contest requests.
+   *
+   * ## One per department
+   *
+   * Nothing here has to do anything about `spec.onePerDepartment` for the rule to hold
+   * afterwards. It is enforced by the create and edit routes, both of which ask the
+   * table rather than a constraint, so a department with no row is a department
+   * available for a new appointment. The delete frees the slot by removing the row
+   * that occupied it, and touches no other department's row.
+   */
+  app.delete(`${spec.path}/:${spec.idParam}`, requireAuth, requireAdmin, async (c) => {
+    try {
+      const id = validateDirectoryId(c.req.param(spec.idParam));
+      if (id === null) {
+        return fail(c, 400, `Invalid ${spec.label} ID`, `invalid-${spec.codeStem}-id`);
+      }
+
+      /*
+       * Read the row before deleting anything, for the two things the delete needs to
+       * say: which person it was, and which account (if any) came with them. A second
+       * DELETE of an id that is already gone therefore answers 404 with a message about
+       * this row rather than reporting a successful delete of nothing.
+       */
+      const existing = await c.env.DB
+        .prepare(
+          `SELECT ${idColumn}, ${nameColumn}, email, department, auth_user_id FROM ${table} WHERE ${idColumn} = ?`
+        )
+        .bind(id)
+        .first<Record<string, string>>();
+      if (!existing) {
+        return fail(c, 404, `${spec.label} not found`, `${spec.codeStem}-not-found`);
+      }
+
+      await ensureBatchRegistry(c.env.DB);
+
+      const account = await planAccountRemoval(c.env.DB, existing.auth_user_id ?? null, ownedAccountRoles, {
+        table,
+        idColumn,
+        id,
+      });
+
+      // Row, sessions and account in one batch, which D1 runs as a transaction: the
+      // appointment and its login are never left disagreeing with each other.
+      await c.env.DB.batch([
+        c.env.DB.prepare(`DELETE FROM ${table} WHERE ${idColumn} = ?`).bind(id),
+        ...account.statements,
+      ]);
+
+      return c.json({
+        success: true,
+        [spec.listKey.slice(0, -1)]: {
+          [idColumn]: existing[idColumn],
+          [nameColumn]: existing[nameColumn],
+          email: existing.email,
+          department: existing.department,
+        },
+        authAccountRemoved: account.removed,
+        authAccountKept: account.keptReason,
+        authAccountKeptRole: account.keptRole,
+        // Reported, never acted on: these decisions are the historical record and
+        // outlive the appointment that made them.
+        preservedHistory: {
+          odRequests: await countOdDecisionsBy(c.env.DB, existing.email, odApproverColumns),
+        },
+      });
+    } catch (error) {
+      return serverError(
+        c,
+        error,
+        `Could not delete that ${spec.label.toLowerCase()}`,
+        `${spec.codeStem}-delete-failed`
+      );
+    }
+  });
 }
 
 /*
@@ -2554,6 +3318,15 @@ registerDirectoryRoutes(
     label: "HOD",
     listKey: "hods",
     codeStem: "hod",
+    /*
+     * An HOD's account was created for the appointment -- `provisionFromStaff` is unset
+     * here, so the create route creates the account rather than reusing a staff one.
+     * Removing the row therefore removes the login with it, in one transaction, so a
+     * former head of department is not left holding a working password for authority
+     * they no longer have.
+     */
+    ownedAccountRoles: ["hod"],
+    odApproverColumns: ["hod_decided_by"],
     validateRow: validateHodRow,
   }
 );
@@ -2572,11 +3345,26 @@ registerDirectoryRoutes(
     // A coordinator is appointed out of a department's staff roster, so the address
     // being added belongs to somebody who already has a `staff` account. Reuse it.
     provisionFromStaff: true,
+    /*
+     * Only a `contest_coordinator` account is this directory's to remove, and it is
+     * rare -- almost every coordinator holds the reused `staff` account instead. That
+     * account stays, because `staff` points at it too and removing it would sign a
+     * colleague off the roster that still lists them. Losing the appointment is enough:
+     * `/api/auth/od-approver/login` resolves through this row, so with it gone they can
+     * no longer reach a coordinator queue at all.
+     */
+    ownedAccountRoles: ["contest_coordinator"],
+    odApproverColumns: ["coordinator_decided_by"],
     validateRow: validateContestCoordinatorRow,
     /*
      * A department has exactly one contest coordinator. It is the single addressee the OD
      * workflow hands a request to, so a second one cannot be resolved to anybody in
      * particular; see `spec.onePerDepartment` for why it is refused rather than ordered.
+     *
+     * Deleting the row is what makes a department available again, because both the create
+     * and the edit route ask this table rather than a constraint. Nothing else has to
+     * change for the rule to hold afterwards, and no other department's row is read or
+     * written.
      */
     onePerDepartment: true,
   }

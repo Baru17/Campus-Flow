@@ -6,7 +6,9 @@ import StatusMessage from '../components/StatusMessage'
 import ImportPreviewTable from '../components/admin/ImportPreviewTable'
 import ManualRowEditor from '../components/admin/ManualRowEditor'
 import EditSubjectModal from '../components/admin/EditSubjectModal'
-import { createAdminSubjects, fetchAdminSubjects } from '../api/adminApi'
+import DeleteRecordButton from '../components/admin/DeleteRecordButton'
+import DeleteRecordModal from '../components/admin/DeleteRecordModal'
+import { createAdminSubjects, deleteAdminSubject, fetchAdminSubjects } from '../api/adminApi'
 import { parseImportFile, validateSubjectRows } from '../utils/adminImport'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
@@ -63,6 +65,8 @@ export default function AdminSubjectManagement() {
   const [result, setResult] = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const [editing, setEditing] = useState(null)
+  /* The row the confirmation dialog is open for; `null` means it is closed. */
+  const [deleting, setDeleting] = useState(null)
   const [notice, setNotice] = useState(null)
   const fileInputRef = useRef(null)
 
@@ -459,15 +463,22 @@ export default function AdminSubjectManagement() {
                     <td className="advisor-table-reg">{subject.subject_code}</td>
                     <td>{subject.subject_name}</td>
                     <td className="advisor-table-num">
-                      <button
-                        type="button"
-                        onClick={() => setEditing(subject)}
-                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
-                        aria-label={`Edit ${subject.subject_code}`}
-                      >
-                        <EditIcon size={14} />
-                        Edit
-                      </button>
+                      {/* One flex row so the actions column keeps a single width. */}
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(subject)}
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
+                          aria-label={`Edit ${subject.subject_code}`}
+                        >
+                          <EditIcon size={14} />
+                          Edit
+                        </button>
+                        <DeleteRecordButton
+                          onClick={() => setDeleting(subject)}
+                          name={`subject ${subject.subject_code}`}
+                        />
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -493,6 +504,29 @@ export default function AdminSubjectManagement() {
               // replaces the edited one is a fresh read of D1.
               load()
               setNotice(`Updated ${saved?.subject_code || editing.subject_code}.`)
+            }}
+          />
+        )}
+        {deleting && (
+          <DeleteRecordModal
+            title="Delete subject?"
+            entityLabel="catalog subject"
+            name={deleting.subject_name}
+            details={[
+              deleting.subject_code ? `Subject code ${deleting.subject_code}` : null,
+              deleting.subject_id ? `Subject ID ${deleting.subject_id}` : null,
+            ]}
+            warning="Global subject catalog"
+            note="A subject that attendance already references cannot be deleted; the server refuses it and says which records are in the way."
+            onConfirm={() => deleteAdminSubject(deleting.subject_id)}
+            onClose={() => setDeleting(null)}
+            onDeleted={() => {
+              const removedCode = deleting.subject_code
+              setDeleting(null)
+              // `load` is the same fetch the page uses on mount, so the catalog that
+              // replaces the deleted row is a fresh read of D1.
+              load()
+              setNotice(`Deleted ${removedCode}.`)
             }}
           />
         )}

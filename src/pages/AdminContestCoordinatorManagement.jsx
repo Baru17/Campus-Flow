@@ -5,8 +5,11 @@ import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
 import AddContestCoordinatorModal from '../components/admin/AddContestCoordinatorModal'
 import EditDirectoryRecordModal from '../components/admin/EditDirectoryRecordModal'
+import DeleteRecordButton from '../components/admin/DeleteRecordButton'
+import DeleteRecordModal from '../components/admin/DeleteRecordModal'
 import {
   createAdminContestCoordinators,
+  deleteAdminContestCoordinator,
   fetchAdminContestCoordinators,
   updateAdminContestCoordinator,
 } from '../api/adminApi'
@@ -70,6 +73,8 @@ export default function AdminContestCoordinatorManagement() {
 
   const [showAdd, setShowAdd] = useState(false)
   const [editing, setEditing] = useState(null)
+  /* The row the confirmation dialog is open for; `null` means it is closed. */
+  const [deleting, setDeleting] = useState(null)
   const [notice, setNotice] = useState(null)
   /*
    * A refusal is not a success, so the notice is not styled as one. Kept beside
@@ -267,15 +272,22 @@ export default function AdminContestCoordinatorManagement() {
                         <td className="advisor-table-reg">{coordinator.email}</td>
                         <td>{coordinator.department || '—'}</td>
                         <td className="advisor-table-num">
-                          <button
-                            type="button"
-                            onClick={() => setEditing(coordinator)}
-                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
-                            aria-label={`Edit ${coordinator.coordinator_name}`}
-                          >
-                            <EditIcon size={14} />
-                            Edit
-                          </button>
+                          {/* One flex row so the actions column keeps a single width. */}
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setEditing(coordinator)}
+                              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
+                              aria-label={`Edit ${coordinator.coordinator_name}`}
+                            >
+                              <EditIcon size={14} />
+                              Edit
+                            </button>
+                            <DeleteRecordButton
+                              onClick={() => setDeleting(coordinator)}
+                              name={`coordinator ${coordinator.coordinator_name}`}
+                            />
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -380,6 +392,44 @@ export default function AdminContestCoordinatorManagement() {
               load()
               setNoticeVariant('success')
               setNotice(`Updated ${saved?.coordinator_name || editing.coordinator_name}.`)
+            }}
+          />
+        )}
+        {deleting && (
+          <DeleteRecordModal
+            title="Delete coordinator?"
+            entityLabel="contest coordinator"
+            name={deleting.coordinator_name}
+            details={[
+              deleting.coordinator_id != null
+                ? `Coordinator ID ${deleting.coordinator_id}`
+                : null,
+              deleting.email,
+              deleting.department,
+            ]}
+            warning={`${deleting.department || 'this'} department`}
+            /*
+              Said before the admin presses Delete rather than after, because this is
+              the one case where the obvious expectation is wrong. A coordinator is
+              appointed out of the staff roster, so the account belongs to them as a
+              member of staff and stays: they keep their staff dashboard and stop
+              resolving as a coordinator. OD requests they decided are kept.
+            */
+            note="Their staff login is kept, because a coordinator is appointed from the staff roster — only the appointment is removed, which frees the department for a new coordinator. OD requests they approved are kept."
+            onConfirm={() => deleteAdminContestCoordinator(deleting.coordinator_id)}
+            onClose={() => setDeleting(null)}
+            onDeleted={() => {
+              const removedName = deleting.coordinator_name
+              const removedDepartment = deleting.department
+              setDeleting(null)
+              // `load` is the same fetch the page uses on mount, so the directory that
+              // replaces the deleted entry is a fresh read of D1 -- which is also what
+              // shows the department is free again.
+              load()
+              setNoticeVariant('success')
+              setNotice(
+                `Deleted ${removedName}${removedDepartment ? ` (${removedDepartment})` : ''}.`
+              )
             }}
           />
         )}

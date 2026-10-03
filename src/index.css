@@ -218,7 +218,8 @@ a {
 --------------------------------------------------------------------------- */
 .btn-cf-primary,
 .btn-cf-outline,
-.btn-cf-ghost {
+.btn-cf-ghost,
+.btn-cf-danger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -299,6 +300,44 @@ a {
 .btn-cf-ghost:disabled {
   cursor: not-allowed;
   opacity: 0.65;
+}
+
+/*
+   The destructive action in a confirmation dialog.
+
+   A fourth button rather than a Tailwind colour on `.btn-cf-primary`: the confirm
+   step in an admin dialog is the one place where a filled button means "this cannot be
+   undone", and it should not be indistinguishable from "Save Changes" sitting a screen
+   away. Same shape, spacing and disabled rules as its siblings so the dialog footer
+   keeps its rhythm -- only the colour says what the button does.
+*/
+.btn-cf-danger {
+  border-radius: 12px;
+  font-weight: 700;
+  padding: 0.72rem 1.5rem;
+  color: #fff;
+  background: var(--cf-danger);
+  box-shadow: 0 8px 20px rgba(220, 38, 38, 0.24);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, background-color 0.2s ease;
+}
+
+.btn-cf-danger:hover:not(:disabled) {
+  color: #fff;
+  background: #b91c1c;
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px rgba(220, 38, 38, 0.3);
+}
+
+.btn-cf-danger:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+  box-shadow: 0 6px 16px rgba(220, 38, 38, 0.24);
+}
+
+.btn-cf-danger:disabled {
+  background: var(--cf-border-strong);
+  color: #94a3b8;
+  box-shadow: none;
+  cursor: not-allowed;
 }
 
 /* Spinner (replaces Bootstrap spinner-border) */

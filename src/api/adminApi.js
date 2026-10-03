@@ -148,6 +148,25 @@ export function updateAdminStudent(studentId, { department, batch, ...fields }) 
   })
 }
 
+/**
+ * Removes one student from their cohort's roster.
+ *
+ * No body: the student is the last path segment, and the department and batch travel
+ * as query parameters for the same reason they do on the edit -- they tell the backend
+ * *where* the student is, and the physical table is resolved from the registry on the
+ * server either way. Passing them narrows the lookup; omitting them lets the server
+ * search every cohort it knows.
+ *
+ * Nothing is asked to be removed. Which login accounts go with the row, and what is
+ * preserved of the attendance and OD history, is the server's decision and comes back
+ * in the response rather than being requested here.
+ */
+export function deleteAdminStudent(studentId, { department, batch } = {}) {
+  return request(withTarget(`/api/admin/students/${encodeURIComponent(studentId)}`, department, batch), {
+    method: 'DELETE',
+  })
+}
+
 /* --------------------------------------------------------------------- staff */
 
 /**
@@ -191,6 +210,24 @@ export function updateAdminStaff(staffId, fields) {
   })
 }
 
+/**
+ * Removes one staff member from the roster.
+ *
+ * The `staff_id` is the last path segment and there is no body at all. A delete has
+ * nothing to negotiate, and accepting one would only create a way to express "delete
+ * this other person instead" -- which is the mistake the edit route already refuses
+ * rather than ignores.
+ *
+ * The server answers 409 when the person is currently a department's contest
+ * coordinator, because that appointment is a directory record of its own. The message
+ * comes back in `error` and is shown as-is.
+ */
+export function deleteAdminStaff(staffId) {
+  return request(`/api/admin/staff/${encodeURIComponent(staffId)}`, {
+    method: 'DELETE',
+  })
+}
+
 /* ----------------------------------------------------------------- subjects */
 
 export function fetchAdminSubjects() {
@@ -212,6 +249,22 @@ export function updateAdminSubject(subjectId, fields) {
   return request(`/api/admin/subjects/${encodeURIComponent(subjectId)}`, {
     method: 'PATCH',
     body: fields,
+  })
+}
+
+/**
+ * Removes one catalog subject.
+ *
+ * Only safe for a subject nothing has referenced. The server scans both places a
+ * subject code can appear -- `attendance_session` and the marks table of every
+ * registered cohort -- and answers 409 with `subject-in-use` rather than removing a
+ * code that students' attendance is filed under. The reason comes back in `error` and
+ * is shown to the admin verbatim, because "cannot delete, it is in use" is a more
+ * useful answer than a generic failure.
+ */
+export function deleteAdminSubject(subjectId) {
+  return request(`/api/admin/subjects/${encodeURIComponent(subjectId)}`, {
+    method: 'DELETE',
   })
 }
 
@@ -271,5 +324,30 @@ export function updateAdminContestCoordinator(coordinatorId, fields) {
   return request(`/api/admin/contest-coordinators/${encodeURIComponent(coordinatorId)}`, {
     method: 'PATCH',
     body: fields,
+  })
+}
+
+/**
+ * Removes one directory entry: a head of department, or a contest coordinator.
+ *
+ * Both are generated from one server implementation, so both are called the same way
+ * here. What the response reports is the part worth reading: `authAccountRemoved`
+ * says whether the person's login went with the appointment, and
+ * `authAccountKept` says why it stayed if it did. For a coordinator that is normally
+ * because the account is their reused *staff* login, which must keep working.
+ *
+ * Removing the row is all it takes to free the department for a new appointment --
+ * the one-per-department rule is enforced by the create and edit routes against the
+ * table, not by a constraint, so an empty department is simply an available one.
+ */
+export function deleteAdminHod(hodId) {
+  return request(`/api/admin/hods/${encodeURIComponent(hodId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function deleteAdminContestCoordinator(coordinatorId) {
+  return request(`/api/admin/contest-coordinators/${encodeURIComponent(coordinatorId)}`, {
+    method: 'DELETE',
   })
 }

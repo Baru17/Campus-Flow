@@ -5,7 +5,9 @@ import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
 import AddStaffModal from '../components/admin/AddStaffModal'
 import EditStaffModal from '../components/admin/EditStaffModal'
-import { fetchAdminBatches, fetchAdminStaff } from '../api/adminApi'
+import DeleteRecordButton from '../components/admin/DeleteRecordButton'
+import DeleteRecordModal from '../components/admin/DeleteRecordModal'
+import { deleteAdminStaff, fetchAdminBatches, fetchAdminStaff } from '../api/adminApi'
 import { isAdvisorFlag } from '../utils/sectionValidation'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
@@ -58,6 +60,8 @@ export default function AdminStaffManagement() {
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
   const [editing, setEditing] = useState(null)
+  /* The row the confirmation dialog is open for; `null` means it is closed. */
+  const [deleting, setDeleting] = useState(null)
   const [notice, setNotice] = useState(null)
 
   /*
@@ -345,15 +349,22 @@ export default function AdminStaffManagement() {
                           : '—'}
                       </td>
                       <td className="advisor-table-num">
-                        <button
-                          type="button"
-                          onClick={() => setEditing(member)}
-                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
-                          aria-label={`Edit ${member.staff_name}`}
-                        >
-                          <EditIcon size={14} />
-                          Edit
-                        </button>
+                        {/* One flex row so the actions column keeps a single width. */}
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setEditing(member)}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
+                            aria-label={`Edit ${member.staff_name}`}
+                          >
+                            <EditIcon size={14} />
+                            Edit
+                          </button>
+                          <DeleteRecordButton
+                            onClick={() => setDeleting(member)}
+                            name={`staff member ${member.staff_name}`}
+                          />
+                        </div>
                       </td>
                     </tr>
                   )
@@ -444,6 +455,32 @@ export default function AdminStaffManagement() {
                     : ''
                 }.`
               )
+            }}
+          />
+        )}
+        {deleting && (
+          <DeleteRecordModal
+            title="Delete staff member?"
+            entityLabel="staff"
+            name={deleting.staff_name}
+            details={[
+              deleting.staff_id ? `Staff ID ${deleting.staff_id}` : null,
+              deleting.email,
+              // The same fallback the table's own department column uses.
+              deleting.department || department,
+            ]}
+            warning={`${deleting.department || department} staff roster`}
+            note="Attendance sessions this person generated, and OD requests they approved or mentored, are kept. Their staff login is removed with the record unless another record still uses it."
+            onConfirm={() => deleteAdminStaff(deleting.staff_id)}
+            onClose={() => setDeleting(null)}
+            /* Refetched rather than spliced out, so the count, the current search and
+             * the current page are corrected from D1 together -- the same reason the
+             * edit dialog reloads. */
+            onDeleted={() => {
+              const removedName = deleting.staff_name
+              setDeleting(null)
+              setReloadToken((token) => token + 1)
+              setNotice(`Deleted ${removedName}.`)
             }}
           />
         )}

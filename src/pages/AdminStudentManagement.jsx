@@ -5,7 +5,13 @@ import DashboardHero from '../components/DashboardHero'
 import StatusMessage from '../components/StatusMessage'
 import AddStudentsModal from '../components/admin/AddStudentsModal'
 import EditStudentModal from '../components/admin/EditStudentModal'
-import { fetchAdminBatches, fetchAdminStudents } from '../api/adminApi'
+import DeleteRecordButton from '../components/admin/DeleteRecordButton'
+import DeleteRecordModal from '../components/admin/DeleteRecordModal'
+import {
+  deleteAdminStudent,
+  fetchAdminBatches,
+  fetchAdminStudents,
+} from '../api/adminApi'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 import {
   ChevronLeftIcon,
@@ -50,6 +56,15 @@ export default function AdminStudentManagement() {
   const [page, setPage] = useState(1)
   const [showAdd, setShowAdd] = useState(false)
   const [editing, setEditing] = useState(null)
+  /*
+   * The row the confirmation dialog is open for, not a boolean.
+   *
+   * The dialog has to name who is being removed -- name, id, cohort -- and that has to
+   * be the row as it was when the admin pressed the trash, not a second lookup made
+   * after the fact. Holding the record also makes the dialog's own lifecycle fall out:
+   * `null` means closed.
+   */
+  const [deleting, setDeleting] = useState(null)
   const [notice, setNotice] = useState(null)
 
   /*
@@ -426,15 +441,27 @@ export default function AdminStudentManagement() {
                       </td>
                       <td className="advisor-table-reg">{student.email || '—'}</td>
                       <td className="advisor-table-num">
-                        <button
-                          type="button"
-                          onClick={() => setEditing(student)}
-                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
-                          aria-label={`Edit ${student.student_id}`}
-                        >
-                          <EditIcon size={14} />
-                          Edit
-                        </button>
+                        {/*
+                          Edit and delete sit in one flex row so the actions column
+                          keeps a single width across every table on the page; the
+                          trash is narrower than the labelled Edit button and would
+                          otherwise push the row's right edge around.
+                        */}
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setEditing(student)}
+                            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-50"
+                            aria-label={`Edit ${student.student_id}`}
+                          >
+                            <EditIcon size={14} />
+                            Edit
+                          </button>
+                          <DeleteRecordButton
+                            onClick={() => setDeleting(student)}
+                            name={`student ${student.student_id}`}
+                          />
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -535,6 +562,38 @@ export default function AdminStudentManagement() {
               setNotice(
                 `Updated ${saved?.student_name || editing.student_name} (${saved?.student_id || editing.student_id}).`
               )
+            }}
+          />
+        )}
+        {deleting && (
+          <DeleteRecordModal
+            title="Delete student?"
+            entityLabel="student"
+            name={deleting.student_name}
+            details={[
+              [deleting.student_id, department, batch].filter(Boolean).join(' · '),
+              deleting.register_no ? `Register No ${deleting.register_no}` : null,
+              [deleting.section, formatYearLabel(deleting.year)].filter(Boolean).join(' · '),
+            ]}
+            warning={`${department} ${batch} roster`}
+            note="Attendance already recorded for this student is kept, and so are their OD requests. Their login is removed with the record unless another record still uses it."
+            onConfirm={() =>
+              deleteAdminStudent(deleting.student_id, { department, batch })
+            }
+            onClose={() => setDeleting(null)}
+            /*
+              Reached only once the request has succeeded, because the dialog swallows
+              a rejection and stays open on it. Refetching rather than splicing the row
+              out of `students` for the same reason the edit dialog does: the row that
+              disappears has to be the one D1 no longer holds, and a reload is also the
+              only way the count above the table, the current search and the current
+              page are all corrected together.
+            */
+            onDeleted={() => {
+              const { student_name: removedName, student_id: removedId } = deleting
+              setDeleting(null)
+              setReloadToken((token) => token + 1)
+              setNotice(`Deleted ${removedName} (${removedId}).`)
             }}
           />
         )}
