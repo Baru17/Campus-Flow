@@ -9,8 +9,17 @@
       name="description"
       content="Campus-Flow — College attendance management made simple."
     />
-    <!-- PWA / installed-app appearance. Colours match the CampusFlow brand tokens in
-         src/index.css so the browser chrome, the splash screen and the app shell agree. -->
+    <!-- PWA / installed-app appearance. `#2563eb` is not a colour picked for the browser
+         chrome -- it is the CampusFlow primary, the same value as `--cf-primary` and
+         `--color-primary` in src/index.css, so the OS status/navigation bar matches the
+         app it is wrapping. The media-scoped pair says so explicitly for both schemes: a
+         browser in dark mode that finds no matching theme-color falls back to its own
+         default rather than reading the manifest, which is how a bar ends up a lighter
+         shade than the site. The unqualified tag stays last as the fallback for clients
+         that ignore `media` on this element. `background_color` in the manifest is
+         `--cf-bg`, the page's own base colour. -->
+    <meta name="theme-color" content="#2563eb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#2563eb" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#2563eb" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

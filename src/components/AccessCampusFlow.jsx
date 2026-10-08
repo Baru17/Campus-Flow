@@ -14,8 +14,16 @@ const QR_RENDER_WIDTH = 720
 const APP_HOST = new URL(APP_ACCESS_URL).host
 
 /**
- * The "Access CampusFlow" card: a QR code for the deployed site, plus the two things a
- * visitor who scanned it will want next.
+ * The "Access CampusFlow" card: the deployed site's address, and the three ways to get
+ * at it from a phone -- install the app, copy the link, or download the QR code.
+ *
+ * ## Why the code is generated but not shown
+ *
+ * The QR is built here and handed straight to the browser as a download. It is
+ * deliberately not rendered on the page: its purpose is print and presentation -- a
+ * notice board, a poster, a slide -- and on screen it was a large block of visual weight
+ * on the landing screen for something nobody can scan from the same device. The button
+ * that produces it is the feature, so generation and the `qrcode` dependency stay.
  *
  * ## What the code contains
  *
@@ -94,70 +102,51 @@ export default function AccessCampusFlow() {
 
   return (
     <section
-      className="mt-8 flex flex-col items-center gap-5 rounded-3xl border border-slate-200 bg-linear-to-br from-blue-50/70 to-violet-50/70 p-4 text-center sm:flex-row sm:items-center sm:gap-6 sm:p-5 sm:text-left"
+      className="mt-8 rounded-3xl border border-slate-200 bg-linear-to-br from-blue-50/70 to-violet-50/70 p-4 text-center sm:p-5 sm:text-left"
       aria-labelledby="cf-access-heading"
     >
-      <div className="shrink-0 rounded-2xl border border-slate-200 bg-white p-2.5 shadow-sm">
-        {qrDataUrl ? (
-          <img
-            src={qrDataUrl}
-            width={QR_RENDER_WIDTH}
-            height={QR_RENDER_WIDTH}
-            alt={`QR code linking to ${APP_ACCESS_URL}`}
-            className="h-32 w-32 sm:h-36 sm:w-36"
-          />
-        ) : (
-          <div
-            className="h-32 w-32 animate-pulse rounded-lg bg-slate-100 sm:h-36 sm:w-36"
-            aria-hidden="true"
-          />
-        )}
-      </div>
+      <h2
+        id="cf-access-heading"
+        className="flex items-center justify-center gap-2 text-lg font-extrabold tracking-tight text-slate-900 sm:justify-start"
+      >
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-blue-600 to-violet-600 text-white">
+          <LogoIcon size={15} />
+        </span>
+        Scan to access CampusFlow
+      </h2>
 
-      <div className="min-w-0 flex-1">
-        <h2
-          id="cf-access-heading"
-          className="flex items-center justify-center gap-2 text-lg font-extrabold tracking-tight text-slate-900 sm:justify-start"
+      <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
+        Download the QR code below for a notice board, poster or presentation. Anyone who
+        scans it opens CampusFlow on their phone and can add it to their home screen.
+        Signing in is unchanged — the code is only a link.
+      </p>
+
+      <p className="mt-2 text-[11px] font-semibold text-slate-500 sm:text-xs">
+        <span className="text-slate-400">Scan to open:</span>{' '}
+        <span className="select-all whitespace-nowrap text-slate-700">{APP_HOST}</span>
+      </p>
+
+      <div className="mt-3 flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+        <InstallPwaButton variant="full" />
+
+        <button
+          type="button"
+          className="auth-btn-secondary px-4 py-2 text-sm"
+          onClick={handleCopy}
         >
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-blue-600 to-violet-600 text-white">
-            <LogoIcon size={15} />
-          </span>
-          Scan to access CampusFlow
-        </h2>
+          {copied ? <CheckIcon size={15} /> : <CopyIcon size={15} />}
+          {copied ? 'Copied' : 'Copy link'}
+        </button>
 
-        <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
-          Point a phone camera at the code to open CampusFlow, then add it to the home
-          screen so it launches like an app. Signing in is unchanged — the code is only a
-          link.
-        </p>
-
-        <p className="mt-2 text-[11px] font-semibold text-slate-500 sm:text-xs">
-          <span className="text-slate-400">Scan to open:</span>{' '}
-          <span className="select-all whitespace-nowrap text-slate-700">{APP_HOST}</span>
-        </p>
-
-        <div className="mt-3 flex flex-wrap items-center justify-center gap-2 sm:justify-start">
-          <InstallPwaButton variant="full" />
-
-          <button
-            type="button"
-            className="auth-btn-secondary px-4 py-2 text-sm"
-            onClick={handleCopy}
-          >
-            {copied ? <CheckIcon size={15} /> : <CopyIcon size={15} />}
-            {copied ? 'Copied' : 'Copy link'}
-          </button>
-
-          <button
-            type="button"
-            className="auth-btn-secondary px-4 py-2 text-sm"
-            onClick={handleDownload}
-            disabled={!qrDataUrl}
-          >
-            <DownloadIcon size={15} />
-            Download QR
-          </button>
-        </div>
+        <button
+          type="button"
+          className="auth-btn-secondary px-4 py-2 text-sm"
+          onClick={handleDownload}
+          disabled={!qrDataUrl}
+        >
+          <DownloadIcon size={15} />
+          Download QR
+        </button>
       </div>
     </section>
   )
