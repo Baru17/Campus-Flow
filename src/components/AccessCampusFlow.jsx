@@ -14,16 +14,19 @@ const QR_RENDER_WIDTH = 720
 const APP_HOST = new URL(APP_ACCESS_URL).host
 
 /**
- * The "Access CampusFlow" card: the deployed site's address, and the three ways to get
- * at it from a phone -- install the app, copy the link, or download the QR code.
+ * The "Access CampusFlow" card: the deployed site's address, and the ways to reach it from
+ * a phone -- install the app, copy the link, or download a QR code to print.
  *
- * ## Why the code is generated but not shown
+ * ## Why the QR is generated but never shown
  *
- * The QR is built here and handed straight to the browser as a download. It is
- * deliberately not rendered on the page: its purpose is print and presentation -- a
- * notice board, a poster, a slide -- and on screen it was a large block of visual weight
- * on the landing screen for something nobody can scan from the same device. The button
- * that produces it is the feature, so generation and the `qrcode` dependency stay.
+ * The card used to render the code, and stopped because a QR is only useful on a notice
+ * board, a poster or a slide -- nobody scans one off the same device that is displaying it,
+ * so on screen it was a large block of visual weight on the landing page for something
+ * nobody could act on there.
+ *
+ * Generation is therefore kept entirely in service of "Download QR". The code is rendered
+ * off-screen at poster resolution and handed to the browser as a file, and the `qrcode`
+ * dependency stays for exactly that reason.
  *
  * ## What the code contains
  *
@@ -112,13 +115,12 @@ export default function AccessCampusFlow() {
         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-blue-600 to-violet-600 text-white">
           <LogoIcon size={15} />
         </span>
-        Scan to access CampusFlow
+        Get CampusFlow
       </h2>
 
       <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
-        Download the QR code below for a notice board, poster or presentation. Anyone who
-        scans it opens CampusFlow on their phone and can add it to their home screen.
-        Signing in is unchanged — the code is only a link.
+        Access CampusFlow easily on your phone. Install it like an app, or copy the link to
+        share it with others.
       </p>
 
       <p className="mt-2 text-[11px] font-semibold text-slate-500 sm:text-xs">
