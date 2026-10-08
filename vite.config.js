@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { VitePWA } from 'vite-plugin-pwa'
 
 /*
  * The session cookie is only first-party while the browser talks to this dev
@@ -43,7 +44,77 @@ export default defineConfig(({ mode }) => {
   const target = env.VITE_API_BASE_URL || 'https://backend.bdharan06.workers.dev'
 
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+
+      /*
+       * Makes the built site installable: it emits the web app manifest, generates
+       * the Workbox service worker, and registers it.
+       *
+       * Everything about the offline behaviour is deliberately conservative, because
+       * attendance and OD are live operations where a stale cached answer is worse
+       * than no answer at all:
+       *
+       * - No `runtimeCaching` entries at all. Workbox only serves what it was told to
+       *   serve, so with none declared the precache below is the entire footprint --
+       *   `/api/*`, attendance, OTP, OD and session requests all go to the network.
+       * - `globPatterns` is limited to the hashed build output and `public/` icons, so
+       *   nothing user-specific can be swept into the precache.
+       * - `navigateFallback` answers navigations from the cached `index.html`, which is
+       *   what keeps a refresh of a deep link such as `/role-selection` working when
+       *   the app is installed. `navigateFallbackDenylist` keeps `/api/*` out of that
+       *   path even though no client route starts with `/api`.
+       * - `devOptions` is left off, so `npm run dev` talks to the network exactly as it
+       *   did before and a stale worker cannot be left behind on a developer's machine.
+       */
+      VitePWA({
+        registerType: 'prompt',
+        manifest: {
+          id: '/',
+          name: 'CampusFlow',
+          short_name: 'CampusFlow',
+          description:
+            'CampusFlow — OTP-verified college attendance and on-duty (OD) management for students, staff and administrators.',
+          lang: 'en',
+          dir: 'ltr',
+          start_url: '/',
+          scope: '/',
+          display: 'standalone',
+          orientation: 'portrait',
+          theme_color: '#2563eb',
+          background_color: '#f6f7fb',
+          categories: ['education', 'productivity'],
+          icons: [
+            { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            {
+              src: '/pwa-maskable-192x192.png',
+              sizes: '192x192',
+              type: 'image/png',
+              purpose: 'maskable',
+            },
+            {
+              src: '/pwa-maskable-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'maskable',
+            },
+          ],
+        },
+        workbox: {
+          globPatterns: [
+            '**/*.{js,css,html,ico,png,svg,webp,webmanifest,woff,woff2,ttf}',
+          ],
+          // The xlsx report writer is a single sizeable chunk; the Workbox default of
+          // 2 MiB would silently drop it from the precache.
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+          navigateFallback: '/index.html',
+          navigateFallbackDenylist: [/^\/api\//],
+          cleanupOutdatedCaches: true,
+        },
+      }),
+    ],
     server: {
       port: 5173,
       open: false,

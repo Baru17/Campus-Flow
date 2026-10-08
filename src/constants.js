@@ -57,3 +57,20 @@ export const MIN_PASSWORD_LENGTH = 6
 export const OTP_VALIDITY_SECONDS = 20
 
 export const STUDENT_EMAIL_DOMAIN = 'kiot.ac.in'
+
+/*
+ * The public address of the deployed CampusFlow site.
+ *
+ * This is the only thing the QR code encodes, and it is deliberately the plain site
+ * root -- not a role, not a session, not a query string. Scanning it opens the same
+ * page any visitor gets, which then routes through `/role-selection` and the existing
+ * sign-in flow exactly as typing the address by hand would.
+ *
+ * It is a constant rather than something derived from `window.location` on purpose: a
+ * QR code printed on a notice board has to keep pointing at the deployed site, and
+ * deriving it would make the code on a development machine encode `localhost`, which is
+ * useless to the person holding the phone. Nothing is ever appended to it -- no student
+ * ID, no OTP, no OD reference -- because the backend, not a link, is what decides what a
+ * signed-in person is allowed to see.
+ */
+export const APP_ACCESS_URL = 'https://campus-flow-cdl.pages.dev/'

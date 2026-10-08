@@ -1,3 +1,4 @@
+import AccessCampusFlow from './AccessCampusFlow'
 import {
   ChevronRightIcon,
   CompassIcon,
@@ -189,6 +190,17 @@ export default function RoleSelection({
         <LockIcon size={13} />
         Your identity and attendance are protected end to end.
       </div>
+
+      {/*
+        The QR code lives at the foot of this screen and nowhere else.
+
+        This is the last page before sign-in, so it is the one place a visitor can reach
+        without a session and the one page that is not somebody's working dashboard. A
+        permanent panel in the Student, Staff, Class Advisor, Coordinator, HOD or Admin
+        views would sit in the way of the work those screens exist for; here it is one
+        scroll away and never gets in the way of choosing a role.
+      */}
+      <AccessCampusFlow />
     </div>
   )
 }

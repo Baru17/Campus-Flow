@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom'
+import InstallPwaButton from './InstallPwaButton'
 import { LogoIcon, LogoutIcon } from './Icons'
 
 export default function Navbar({ title, subtitle, onLogout }) {
@@ -35,6 +36,12 @@ export default function Navbar({ title, subtitle, onLogout }) {
         </div>
 
         <div className="cf-nav-actions">
+          {/*
+            Sits beside Logout and takes the same shape, so it adds no line to the bar.
+            It renders nothing unless the browser has offered an install for this site and
+            nothing once the app is already installed -- see `InstallPwaButton`.
+          */}
+          <InstallPwaButton />
           <button
             type="button"
             className="btn-cf-ghost inline-flex items-center gap-2 px-4 py-2 text-sm"
