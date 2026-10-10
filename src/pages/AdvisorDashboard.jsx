@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useOutlet } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatChip from '../components/StatChip'
 import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
-import OdApprovalPanel from '../components/od/OdApprovalPanel'
+import OdManagementEntry from '../components/od/OdManagementEntry'
 import {
   getAdvisorAssignment,
   getClassStudents,
@@ -67,9 +67,21 @@ export default function AdvisorDashboard() {
   const [downloading, setDownloading] = useState(false)
   const [excelStatus, setExcelStatus] = useState(null)
 
-  // Whether the OD Requests section is open. Starts closed so the attendance report,
-  // which is what this dashboard is mostly for, is what an advisor lands on.
-  const [odOpen, setOdOpen] = useState(false)
+  /*
+   * The OD Management page, when it is the child of this route.
+   *
+   * `/advisor/od` is nested under this one, so React Router keeps this component mounted
+   * and hands the child back through the outlet rather than replacing this screen with it.
+   * That is what lets approving OD move to its own page without costing anything here: the
+   * chosen date and hour, the loaded class and the roster are React state on *this*
+   * component, so a plain route change would have thrown them away and sent an advisor back
+   * to an empty attendance report.
+   *
+   * While it is set, this dashboard renders nothing below the navbar -- the OD page brings
+   * its own `<main>`. Everything else, including the session check and the advisor
+   * assignment lookup above, applies unchanged at both paths.
+   */
+  const odPage = useOutlet()
 
   useEffect(() => {
     if (!loading && !staff) {
@@ -327,7 +339,9 @@ export default function AdvisorDashboard() {
 
   return (
     <div className="app-shell">
-      <Navbar title="Class Advisor" subtitle={advisorLabel} onLogout={handleLogout} />
+      <Navbar title={odPage ? 'OD Management' : 'Class Advisor'} subtitle={advisorLabel} onLogout={handleLogout} />
+      {odPage}
+      {!odPage && (
       <main className="container-cf py-4 lg:py-5 page-enter">
         {advisor && (
           <>
@@ -617,59 +631,31 @@ export default function AdvisorDashboard() {
               )}
 
               {/*
-                OD Requests for this advisor's own class.
+                The way onto a class advisor's OD queue.
 
-                A class advisor already has a dashboard for their class, so their approval
-                queue is a section of it rather than a separate page and a separate
-                sign-in -- approving OD is one of the things the role is for, not a second
-                job with its own door.
+                It used to be the queue itself, inline here behind a heading button. It now
+                lives at `/advisor/od`, one click away, with Pending and Approved split apart
+                and each request collapsed to a summary line until asked otherwise.
 
-                It is behind a heading button and starts closed, because this dashboard is
-                primarily an attendance report: an always-open queue with a full set of
-                fields per request pushed the thing the advisor came for below the fold.
-                The heading carries the pending count, so a closed section still shows that
-                something is waiting.
-
-                The cohort -- department, batch, year, section -- is read from the advisor
-                columns on the advisor's own staff row on the server, so the queue cannot
-                be widened by anything sent from the browser.
+                Nothing about the queue moved: it is the same `OdApprovalPanel` at the same
+                `CLASS_ADVISOR` stage, asking the same server the same question. The cohort
+                -- department, batch, year, section -- is still read by the server from the
+                advisor columns on the advisor's own staff row, so the queue cannot be
+                widened by anything sent from the browser, and the buttons on it are
+                re-checked there exactly as they were here.
               */}
               <div className="lg:col-span-12">
-                <div className="cf-card p-3 md:p-4">
-                  <button
-                    type="button"
-                    onClick={() => setOdOpen((open) => !open)}
-                    aria-expanded={odOpen}
-                    aria-controls="advisor-od-requests"
-                    className="cf-card-header w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                  >
-                    <div>
-                      <h2 className="section-title">OD Requests</h2>
-                      <p className="text-muted-2 text-sm mb-0">
-                        On-duty requests from your class, awaiting your approval.
-                      </p>
-                    </div>
-                    <span className="cf-icon-badge violet">
-                      <CalendarIcon size={22} />
-                    </span>
-                  </button>
-
-                  {odOpen && (
-                    <div id="advisor-od-requests" className="mt-4">
-                      <OdApprovalPanel
-                        stage="CLASS_ADVISOR"
-                        title="Awaiting your approval"
-                        collapsible
-                        emptyText="No OD requests are waiting on you. A request arrives once the student's mentor and the contest coordinator have approved it."
-                      />
-                    </div>
-                  )}
-                </div>
+                <OdManagementEntry
+                  to="/advisor/od"
+                  title="OD Management"
+                  description="On-duty requests from your class, and everything you have already approved."
+                />
               </div>
             </div>
           </>
         )}
       </main>
+      )}
     </div>
   )
 }

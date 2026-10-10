@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useOutlet } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatChip from '../components/StatChip'
 import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
-import OdApprovalPanel from '../components/od/OdApprovalPanel'
+import OdManagementEntry from '../components/od/OdManagementEntry'
 import SearchableSelect from '../components/SearchableSelect'
 import OTPDisplay from '../components/OTPDisplay'
 import { finalizeAttendanceSession, generateOtp } from '../api/attendanceApi'
@@ -35,6 +35,22 @@ export default function StaffDashboard() {
   const clock = useClock()
   const navigate = useNavigate()
   const { staff, loading, logout } = useStaffAuth()
+
+  /*
+   * The OD Management page, when it is the child of this route.
+   *
+   * `/staff/od` is nested under this one, so React Router keeps this component mounted and
+   * hands the child back through the outlet rather than replacing this screen with it. That
+   * is the whole reason the OD queue became its own page without costing anything here: the
+   * attendance session, its countdown and every field of the form below are React state on
+   * *this* component, so a plain route change would have thrown all of it away the moment
+   * somebody stepped away to approve a request, and a live OTP would have gone with it.
+   *
+   * While it is set, this dashboard renders nothing below the navbar -- the OD page brings
+   * its own `<main>` -- so the two are never on screen together. Everything else about this
+   * component, including the session check above, applies unchanged at both paths.
+   */
+  const odPage = useOutlet()
 
   const [year, setYear] = useState('')
   const [department, setDepartment] = useState('')
@@ -324,10 +340,12 @@ const [section, setSection] = useState('')
   return (
     <div className="app-shell">
       <Navbar
-        title="Staff Dashboard"
+        title={odPage ? 'OD Management' : 'Staff Dashboard'}
         subtitle={staffLabel}
         onLogout={handleLogout}
       />
+      {odPage}
+      {!odPage && (
       <main className="container-cf py-4 lg:py-5 page-enter">
         {!BACKEND_CONFIGURED && (
           <div className="mb-4">
@@ -664,21 +682,28 @@ const [section, setSection] = useState('')
         </div>
 
         {/*
-          A mentor's OD requests, inside the dashboard they already use.
+          The way onto a mentor's OD queue.
 
-          Approval is one of the things a mentor is here to do, so it belongs on this page
-          rather than behind another sign-in and another page. The queue is scoped to the
-          mentor's own address on the server, so a mentor sees their students' requests and
-          nobody else's, and every Approve and Reject is re-checked there.
+          It used to be the queue itself, inline here. Approving OD is still one of the
+          things a mentor is here to do and their relationship with their mentees has not
+          changed -- but a queue of requests with a full set of fields each pushed the
+          attendance session, which is what this dashboard is mostly for, below the fold.
+          It now lives at `/staff/od`, one click away, with Pending and Approved split apart
+          and each request collapsed to a summary line until asked otherwise.
+
+          Nothing about the queue moved: it is the same `OdApprovalPanel` at the same
+          `MENTOR` stage, asking the same server the same question, and the buttons on it
+          are re-checked there exactly as they were here.
         */}
         <div className="mt-4">
-          <OdApprovalPanel
-            stage="MENTOR"
-            title="OD requests from your mentees"
-            emptyText="No OD requests are waiting on you. A request arrives as soon as a student who has you as their mentor submits one."
+          <OdManagementEntry
+            to="/staff/od"
+            title="OD Management"
+            description="On-duty requests from your mentees, and everything you have already approved."
           />
         </div>
       </main>
+      )}
     </div>
   )
 }

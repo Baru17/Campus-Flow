@@ -8,6 +8,8 @@ import RoleSelection from './pages/RoleSelection'
 import StaffDashboard from './pages/StaffDashboard'
 import StudentDashboard from './pages/StudentDashboard'
 import AdvisorDashboard from './pages/AdvisorDashboard'
+import StaffOdManagement from './pages/StaffOdManagement'
+import AdvisorOdManagement from './pages/AdvisorOdManagement'
 import AdminLoginPage from './pages/AdminLoginPage'
 import AdminDashboard from './pages/AdminDashboard'
 import AdminStudentManagement from './pages/AdminStudentManagement'
@@ -53,8 +55,23 @@ export default function App() {
               <Route path="/" element={<LoadingScreen />} />
               <Route path="/role-selection" element={<RoleSelection />} />
               <Route path="/reset-password" element={<ResetPassword />} />
-              <Route path="/staff" element={<StaffDashboard />} />
-              <Route path="/advisor" element={<AdvisorDashboard />} />
+              {/*
+                The staff and class-advisor dashboards, each with its OD Management page
+                nested underneath it.
+
+                Nested rather than listed beside them, which is what lets opening the OD
+                queue leave the dashboard mounted: a lecturer who steps away from a live
+                attendance session comes back to a running OTP and a still-filled form, and
+                `/staff/od` cannot be reached without the same staff session check the
+                dashboard already makes. The page reads its own queue and its own actions
+                from the same `OdApprovalPanel` the coordinator and HOD use.
+              */}
+              <Route path="/staff" element={<StaffDashboard />}>
+                <Route path="od" element={<StaffOdManagement />} />
+              </Route>
+              <Route path="/advisor" element={<AdvisorDashboard />}>
+                <Route path="od" element={<AdvisorOdManagement />} />
+              </Route>
               <Route path="/student" element={<StudentDashboard />} />
               {/*
                 The student's entry screen, and the two things it leads to.
