@@ -369,10 +369,9 @@ const [section, setSection] = useState('')
         />
 
         {/*
-          The live strip. `ActiveStudentsCard` is a fourth entry in the same
-          auto-fitting grid rather than a new section, so nothing above or below it
-          moved; it polls only while this staff session is live, and a failed poll
-          leaves its own last value in place without touching the rest of the page.
+          The stat strip. Left exactly as it was before the live counter existed: the
+          counter is no longer a single glanceable number, so it is a card of its own
+          below rather than a fourth chip here.
         */}
         <div className="stat-strip stagger">
           <StatChip
@@ -392,7 +391,25 @@ const [section, setSection] = useState('')
             value={selectedClass}
             tone="violet"
           />
-          <ActiveStudentsCard enabled={Boolean(staff)} />
+        </div>
+
+        {/*
+          The live active-student count for the class chosen above.
+
+          It is handed the same Year, Department and Section state this form already
+          holds -- it selects nothing itself, changes nothing here, and its own
+          "View" button stays disabled until all three are set. Changing any of them
+          takes its result away, so the number on screen always describes the class
+          currently selected. It reads two of those values and the browser reads the
+          third, so it never sits between the selectors and OTP generation.
+        */}
+        <div className="mt-4">
+          <ActiveStudentsCard
+            enabled={Boolean(staff)}
+            department={department}
+            year={year}
+            section={section}
+          />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">

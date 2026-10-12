@@ -77,3 +77,31 @@ export async function getActiveStudentCount({ signal } = {}) {
   }
   return count
 }
+
+/*
+ * The aggregate number for one class.
+ *
+ * The three selectors are sent as query parameters rather than in a path segment
+ * because they are values, not identifiers: the server validates each one against
+ * the same rules the admin import and the student form use, and answers 400 rather
+ * than resolving anything when one of them is missing or malformed.
+ *
+ * As with the global count, this returns the number alone. The endpoint exposes no
+ * per-student rows, so there is nothing identifying here to leak.
+ */
+export async function getClassActiveStudentCount({ department, year, section, signal } = {}) {
+  assertBackend()
+  const query = new URLSearchParams({
+    department: String(department ?? ''),
+    year: String(year ?? ''),
+    section: String(section ?? ''),
+  })
+  const data = await apiRequest(`/api/activity/class-active-students?${query.toString()}`, { signal })
+  const count = Number(data?.active_students)
+  if (!data?.success || !Number.isFinite(count)) {
+    throw new ApiError('The active student count came back in an unexpected format.', {
+      code: 'bad-response',
+    })
+  }
+  return count
+}
