@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import auth from "./api/auth";
 import passwordReset from "./api/passwordReset";
 import attendance, { finalizeSession } from "./api/attendance";
+import activity from "./api/activity";
 import admin from "./api/admin";
 import studentOd from "./api/studentOd";
 import odApprovals from "./api/odApprovals";
@@ -107,6 +108,18 @@ app.route("/api/auth", auth);
 app.route("/api/auth", passwordReset);
 app.route("/api/attendance", attendance);
 app.route("/api/admin", admin);
+
+/*
+ * The live active-student counter.
+ *
+ * Mounted on its own prefix because it belongs to none of the workflows above: the
+ * student half is a heartbeat that records when an account was last seen, and the
+ * staff half is a single aggregate number for the dashboard. Neither reads or writes
+ * an attendance, OTP, OD, H1 or workdone record, so a failure here cannot affect any
+ * of them. Each route keeps its own role gate, so a student session reaches `ping`
+ * and nothing else, and a staff session reaches the count and nothing else.
+ */
+app.route("/api/activity", activity);
 
 /*
  * The student OD and mentor routes, and the approver half of the workflow.

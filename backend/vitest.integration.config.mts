@@ -81,6 +81,7 @@ export default defineConfig({
 			"test/adminDelete.integration.spec.ts",
 			"test/studentOd.integration.spec.ts",
 			"test/staffBatches.integration.spec.ts",
+			"test/activeStudents.integration.spec.ts",
 		],
 	},
 });

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, useParams } from 'react-router-dom'
 import AuthProvider from './context/AuthContext'
 import StaffAuthProvider from './context/StaffAuthContext'
 import AdminAuthProvider from './context/AdminAuthContext'
+import StudentActivityTracker from './components/StudentActivityTracker'
 import LoadingScreen from './components/LoadingScreen'
 import ResetPassword from './pages/ResetPassword'
 import RoleSelection from './pages/RoleSelection'
@@ -48,6 +49,12 @@ function ApproverOdInboxRoute() {
 export default function App() {
   return (
     <AuthProvider>
+      {/*
+        The student activity heartbeat, mounted once for the whole app and inside the
+        student session provider so it can read the role the session already resolved.
+        It renders nothing and is inert unless that session is a student's.
+      */}
+      <StudentActivityTracker />
       <StaffAuthProvider>
         <AdminAuthProvider>
           <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>

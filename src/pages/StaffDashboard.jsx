@@ -3,6 +3,7 @@ import { useNavigate, useOutlet } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
 import StatChip from '../components/StatChip'
+import ActiveStudentsCard from '../components/ActiveStudentsCard'
 import DropdownField from '../components/DropdownField'
 import LoadingButton from '../components/LoadingButton'
 import StatusMessage from '../components/StatusMessage'
@@ -367,6 +368,12 @@ const [section, setSection] = useState('')
           }
         />
 
+        {/*
+          The live strip. `ActiveStudentsCard` is a fourth entry in the same
+          auto-fitting grid rather than a new section, so nothing above or below it
+          moved; it polls only while this staff session is live, and a failed poll
+          leaves its own last value in place without touching the rest of the page.
+        */}
         <div className="stat-strip stagger">
           <StatChip
             icon={<SparklesIcon size={18} />}
@@ -385,6 +392,7 @@ const [section, setSection] = useState('')
             value={selectedClass}
             tone="violet"
           />
+          <ActiveStudentsCard enabled={Boolean(staff)} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
