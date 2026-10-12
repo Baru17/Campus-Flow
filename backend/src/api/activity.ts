@@ -17,6 +17,21 @@
  *   - `GET /class-active-students` is the same number narrowed to one class, and is
  *     gated on staff exactly as the global one is.
  *
+ * ## What "active" means
+ *
+ * An account is counted when it holds a valid, unexpired login session, and it is
+ * counted for as long as that session exists -- whether the student is tapping the
+ * screen or has put the phone down and walked away. An earlier version counted a
+ * heartbeat instead, which meant an idle student and a backgrounded tab silently
+ * disappeared from the number and a reader of the dashboard could not tell "nobody is
+ * here" from "nobody is touching their phone". The session is the thing that was
+ * actually asked about, so the session is what is counted.
+ *
+ * `student_activity` and its 60-second window are therefore **not** read by either
+ * count. `POST /ping` still writes that table and is still used by the client, but
+ * nothing in the counting path depends on it, and no heartbeat -- recent, stale or
+ * absent -- can add an account to or remove one from a count.
+ *
  * ## Identity always comes from the session
  *
  * Neither route accepts a user id, a role, or anything else identifying in its body,
@@ -28,10 +43,15 @@
  *
  * ## Session safety
  *
- * The heartbeat does not touch `auth_sessions` at all: it creates no session, extends
- * no expiry, and revokes nothing. A ping is therefore incapable of keeping an expired
- * or revoked session alive. Session validity for the count is established by the same
- * `expires_at` comparison `resolveAuthUser` performs, read-only, below.
+ * Nothing in this module can lengthen a session's life. Both count handlers read
+ * `auth_sessions` and compare `expires_at` against the current time -- the same
+ * comparison `resolveAuthUser` makes on every authenticated request -- and neither
+ * writes to the table. The heartbeat does not touch `auth_sessions` at all: it creates
+ * no session, extends no expiry, and revokes nothing.
+ *
+ * An account leaves a count only the way a session ends: `POST /api/auth/logout`
+ * deletes that session's row, or the row passes `expires_at`. No activity signal, and
+ * nothing in this module, can end a session early or keep one alive past its expiry.
  */
 
 import { Hono } from "hono";
@@ -41,17 +61,6 @@ import { getErrorMessageForLog, isTransientD1Error } from "../utils/databaseErro
 import { assertAllowedStudentTable, listBatchesForDepartment, resolveTables } from "../utils/tableResolver";
 
 const app = new Hono<{ Bindings: { DB: D1Database } }>();
-
-/**
- * How long a heartbeat keeps an account inside the count.
- *
- * The browser beats every 20s, so this tolerates two and a bit consecutive beats
- * being dropped by a flaky mobile network or a throttled background tab without the
- * student flickering out of the number. It is also why the browser only beats while
- * it is actually being used: past this window nothing is sent, and the row ages out
- * on its own.
- */
-export const ACTIVE_WINDOW_MS = 60_000;
 
 function serverError(c: any, error: unknown, message: string, code: string) {
   console.error(message, getErrorMessageForLog(error));
@@ -96,47 +105,51 @@ app.post("/ping", requireAuth, requireStudent, async (c) => {
 });
 
 /**
- * How many distinct student accounts are active right now.
+* How many distinct student accounts are signed in right now.
  *
- * Three conditions have to hold for an account to be counted, and all three are
- * decided server-side:
+ * "Signed in" is decided by the session table alone -- the same definition
+ * `resolveAuthUser` applies to every authenticated request -- and by nothing else:
  *
- *   1. it has a heartbeat inside the last `ACTIVE_WINDOW_MS`;
- *   2. its account role is a student, so a staff, advisor, HOD, coordinator or admin
- *      row that somehow reached the table is still not counted;
- *   3. it still has a live `auth_sessions` row -- the same `expires_at > now` test
- *      `resolveAuthUser` applies on every authenticated request. Logging out deletes
- *      that row and the account leaves the count on the next read; a session that has
- *      expired does the same, so a stale heartbeat alone can never revive or qualify
- *      an expired session.
+ *   1. the account holds at least one `auth_sessions` row whose `expires_at` is
+ *      still in the future;
+ *   2. the account's role is a student, so a staff, advisor, HOD, coordinator or
+ *      admin session is never counted even though it sits in the same table.
  *
- * `COUNT(DISTINCT ...)` is belt and braces on top of the primary key: one account is
- * one row regardless of how many sessions or devices it has.
+ * `student_activity` is deliberately not consulted. Recent activity used to be the
+ * signal, and it made the number mean "touched the screen in the last minute" rather
+ * than "is signed in": a student reading the OTP page without tapping dropped out,
+ * and a phone left face-up on a desk dropped out with it. This counts sessions.
+ *
+ * Because the definition is the session and not the browser, an account leaves the
+ * count exactly when it stops being signed in: logging out deletes that session row,
+ * and an expired session is excluded by the `expires_at` comparison whether or not
+ * the purging cron has got to it yet. Nothing else can end a session early, and
+ * nothing here can extend one.
+ *
+ * `COUNT(DISTINCT ...)` is what makes this an account count rather than a device or
+ * tab count: one student signed in on three phones is three rows in `auth_sessions`
+ * and one number here.
+ *
+ * The query starts from `auth_sessions` rather than from the roster so the role join
+ * and the expiry filter are done once, by index, rather than as a correlated probe
+ * per student.
  *
  * The response is the number and a server timestamp. No name, register number, email,
  * internal id, token or per-student row leaves this handler.
  */
 app.get("/active-students", requireAuth, requireStaff, async (c) => {
   try {
-    const nowMs = Date.now();
-    const nowIso = new Date(nowMs).toISOString();
-    const cutoffIso = new Date(nowMs - ACTIVE_WINDOW_MS).toISOString();
+    const nowIso = new Date().toISOString();
 
     const row = await c.env.DB.prepare(
-      `SELECT COUNT(DISTINCT sa.auth_user_id) AS active_students
-       FROM student_activity sa
+      `SELECT COUNT(DISTINCT s.auth_user_id) AS active_students
+       FROM auth_sessions s
        JOIN auth_users au
-         ON au.auth_user_id = sa.auth_user_id
+         ON au.auth_user_id = s.auth_user_id
         AND LOWER(au.role) = 'student'
-       WHERE sa.last_active_at > ?
-         AND EXISTS (
-           SELECT 1
-           FROM auth_sessions s
-           WHERE s.auth_user_id = sa.auth_user_id
-             AND s.expires_at > ?
-         )`
+       WHERE s.expires_at > ?`
     )
-      .bind(cutoffIso, nowIso)
+      .bind(nowIso)
       .first<{ active_students: number }>();
 
     const activeStudents = Number(row?.active_students ?? 0);
@@ -152,14 +165,18 @@ app.get("/active-students", requireAuth, requireStaff, async (c) => {
 });
 
 /**
- * How many distinct student accounts are active in one class.
+ * How many distinct student accounts are signed in to one class.
+ *
+ * The same session-based definition as the global route, narrowed by the class:
+ * a student is counted when they hold an unexpired session *and* their roster row
+ * sits in the selected department, year and section.
  *
  * ## The relationship this filters on
  *
  * There is exactly one link between an authenticated account and its roster row, and
  * it is `auth_user_id`:
  *
- *   student_activity.auth_user_id  ==  auth_users.auth_user_id  ==  <roster>.auth_user_id
+ *   auth_sessions.auth_user_id  ==  auth_users.auth_user_id  ==  <roster>.auth_user_id
  *
  * `auth_user_id` is the only one of these that is interchangeable. It is not the
  * register number, not the `student_id`, and not the email, and none of those is
@@ -197,6 +214,12 @@ app.get("/active-students", requireAuth, requireStaff, async (c) => {
  * would double-count any account linked into two rosters, which should not happen but
  * is exactly the kind of thing a monitoring number must not quietly inflate.
  *
+ * The `EXISTS` on `auth_sessions` is what makes this a session count rather than a
+ * session *row* count, so a student signed in on three phones is one number and not
+ * three, and so logging out of one device does not remove them while another session
+ * is live. `student_activity` is not read: no heartbeat, and no activity cutoff, has
+ * any say in whether an account appears here.
+ *
  * Authorization is unchanged from the global route: same `requireStaff`, so no role
  * gains access it did not have.
  */
@@ -232,9 +255,7 @@ app.get("/class-active-students", requireAuth, requireStaff, async (c) => {
       .filter((tables): tables is NonNullable<typeof tables> => tables !== null)
       .map((tables) => assertAllowedStudentTable(tables.studentTable));
 
-    const nowMs = Date.now();
-    const nowIso = new Date(nowMs).toISOString();
-    const cutoffIso = new Date(nowMs - ACTIVE_WINDOW_MS).toISOString();
+    const nowIso = new Date().toISOString();
 
     /*
      * No registered cohort for this department means there is no roster to count, so
@@ -255,19 +276,16 @@ app.get("/class-active-students", requireAuth, requireStaff, async (c) => {
          FROM ${studentTable} st
          WHERE st.year = ? AND st.section = ?
            AND EXISTS (
-             SELECT 1 FROM student_activity sa
-             WHERE sa.auth_user_id = st.auth_user_id AND sa.last_active_at > ?
-           )
-           AND EXISTS (
              SELECT 1 FROM auth_sessions s
-             WHERE s.auth_user_id = st.auth_user_id AND s.expires_at > ?
+             WHERE s.auth_user_id = st.auth_user_id
+               AND s.expires_at > ?
            )
            AND EXISTS (
              SELECT 1 FROM auth_users au
              WHERE au.auth_user_id = st.auth_user_id AND LOWER(au.role) = 'student'
            )`
       );
-      bindings.push(year, section, cutoffIso, nowIso);
+      bindings.push(year, section, nowIso);
     }
 
     const row = await c.env.DB

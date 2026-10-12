@@ -1,24 +1,26 @@
 /**
- * The live active-student counter, end to end against a real D1.
+ * The active-student counters, end to end against a real D1.
  *
- * The feature is a number on a staff dashboard, so most of what matters is not the
- * number itself -- it is who is allowed to move it and who is allowed to read it.
- * Both halves are therefore driven over HTTP rather than by calling the handlers
- * directly, because the role gates live in the routes: a handler called directly is
- * a handler whose authorisation has never been run.
+ * Both endpoints report one number, so most of what matters is not the number itself
+ * -- it is who is allowed to move it and who is allowed to read it. Both halves are
+ * therefore driven over HTTP rather than by calling the handlers directly, because the
+ * role gates live in the routes: a handler called directly is a handler whose
+ * authorisation has never been run.
  *
- * What is pinned here:
+ * ## What "active" means here
  *
- *   1. who may write activity (a signed-in student, and only a student),
- *   2. who may read the count (staff and class advisors, and nobody else),
- *   3. that the identity comes from the session rather than from the request,
- *   4. that the count is of *accounts* -- one account is one entry however many tabs,
- *      devices or sessions it has,
- *   5. that a heartbeat expires, and that a heartbeat cannot outlive, revive or
- *      otherwise qualify a session that has expired or been revoked,
- *   6. that the response carries the count and nothing else.
+ * An account is counted when it holds a valid, unexpired login session. It is counted
+ * for as long as that session exists, whether or not the student has touched the
+ * screen, and whether or not the app is in the foreground.
  *
- * ## On test 9 ("a body claiming to be somebody else changes nothing")
+ * That is a deliberate change from counting heartbeats, and the file is shaped around
+ * it: a count test sets **which accounts hold a session** and nothing else. The
+ * `student_activity` table is never consulted by either endpoint, and several tests
+ * below exist specifically to prove that -- an account with a live session and no
+ * heartbeat at all is counted, and an account with a fresh heartbeat and no live
+ * session is not.
+ *
+ * ## On test "ignores an identity claimed in the body"
  *
  * `POST /api/activity/ping` has no identity parameter at all, so the honest way to
  * assert that is to send one and show it is ignored. Sending a staff account's id in
@@ -47,17 +49,16 @@
  * ## Storage
  *
  * Each test file gets isolated storage and applies the migrations itself, including
- * `0019_student_activity.sql` -- the reviewed artefact, not yet applied to production.
- * Applying it here proves it works without touching a real database.
+ * `0019_student_activity.sql` -- the reviewed artefact. Applying it here proves it
+ * works without touching a real database.
  *
- * Session expiry and the 60s activity window are reached by writing the timestamps
- * directly, never by waiting: a test that slept for a minute would be slow and would
- * still be timing-dependent.
+ * Session expiry is reached by writing `expires_at` directly, never by waiting: a test
+ * that slept would be slow and would still be timing-dependent.
  */
 
 import { env, SELF } from "cloudflare:test";
 import bcrypt from "bcryptjs";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { hashToken } from "../src/utils/auth";
 import migration0001 from "../migrations/0001_initial-schema.sql?raw";
 import migration0002 from "../migrations/0002_auth_sessions.sql?raw";
@@ -71,12 +72,6 @@ import migration0009 from "../migrations/0009_attendance-integrity-and-class-ind
 import migration0010 from "../migrations/0010_auth-staff-subject-indexes.sql?raw";
 import migration0011 from "../migrations/0011_attendance-session-otp-lookup-index.sql?raw";
 /*
- * Creates `academic_batches`. It is here for the one test that signs a student in
- * through `/api/auth/login` rather than planting a session: login resolves the
- * student's cohort through the registry, exactly as it does in production, so the
- * cohort has to be registered for the login to find the row.
- */
-/*
  * Creates the CSE cohort tables and seeds ten CSE students, so the department filter
  * has a second department to keep out. Needs 0013 first: it is that migration which
  * adds the advisor columns 0014 writes into `staff`.
@@ -84,6 +79,11 @@ import migration0011 from "../migrations/0011_attendance-session-otp-lookup-inde
 import migration0013 from "../migrations/0013_department-aware-attendance.sql?raw";
 import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
+/*
+ * Creates `academic_batches`. It is here for the tests that sign a student in
+ * through `/api/auth/login` rather than planting a session: login resolves the
+ * student's cohort through the registry, exactly as it does in production.
+ */
 import migration0016 from "../migrations/0016_academic_batches.sql?raw";
 import migration0019 from "../migrations/0019_student_activity.sql?raw";
 
@@ -123,10 +123,6 @@ async function applyMigration(sql: string): Promise<void> {
 
 const PASSWORD = "correct-horse-battery-staple";
 
-/** Well inside the 60s window and well outside it, without any test sleeping. */
-const RECENT_MS = 30_000;
-const STALE_MS = 61_000;
-
 const HOUR_MS = 60 * 60_000;
 
 interface Account {
@@ -138,9 +134,15 @@ interface Account {
 async function makeAccount(
 	role: string,
 	label: string,
-	options: { live?: boolean; linkedStudent?: boolean } = {},
+	options: { live?: boolean; linkedStudent?: boolean; table?: string; year?: number; section?: string } = {},
 ): Promise<Account> {
-	const { live = true, linkedStudent = false } = options;
+	const {
+		live = true,
+		linkedStudent = false,
+		table = "IT_Students_2024_2028",
+		year = 3,
+		section = "A",
+	} = options;
 	const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
 	const authUserId = `c9e9f000-0000-4000-8000-${label}${suffix}`;
 	const email = `${label}.${suffix}@kiot.ac.in`;
@@ -158,17 +160,17 @@ async function makeAccount(
 		const studentId = `ACT${suffix.toUpperCase()}`;
 		statements.push(
 			env.DB.prepare(
-				`INSERT INTO IT_Students_2024_2028
+				`INSERT INTO ${table}
 				 (student_id, register_no, student_name, year, section, email, auth_user_id)
-				 VALUES (?, ?, ?, 3, 'A', ?, ?)`,
-			).bind(studentId, studentId, studentId, email, authUserId),
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			).bind(studentId, `REG${suffix.toUpperCase()}`, `Class Test ${label}`, year, section, email, authUserId),
 		);
 	}
 
 	if (live) {
 		statements.push(
 			env.DB.prepare(
-				`INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)`,
+				"INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)",
 			).bind(hashToken(token), authUserId, new Date(Date.now() + HOUR_MS).toISOString()),
 		);
 	}
@@ -177,16 +179,78 @@ async function makeAccount(
 	return { authUserId, token, email };
 }
 
+/* --------------------------------------------------- controlling the sessions */
+
+/**
+ * Removes every session belonging to a student-role account.
+ *
+ * Staff, class advisor and admin sessions are deliberately left alone: they are what
+ * authorises the count request itself, and a test that threw those away could no
+ * longer ask the question it is asking.
+ */
+async function revokeStudentSessions(): Promise<void> {
+	await env.DB.prepare(
+		`DELETE FROM auth_sessions
+		 WHERE auth_user_id IN (SELECT auth_user_id FROM auth_users WHERE LOWER(role) = 'student')`
+	).run();
+}
+
+/** Gives an account one live session, or one that has already expired. */
+async function grantSession(
+	account: Account,
+	options: { expiresAt?: string } = {},
+): Promise<string> {
+	const expiresAt = options.expiresAt ?? new Date(Date.now() + HOUR_MS).toISOString();
+	await env.DB.prepare(
+		"INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)"
+	)
+		.bind(hashToken(account.token), account.authUserId, expiresAt)
+		.run();
+	return account.token;
+}
+
 /** A second live session for an account that already has one -- a second device. */
 async function addSession(account: Account): Promise<string> {
 	const token = `${account.token}-device-2`;
 	await env.DB.prepare(
-		`INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)`,
+		"INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)",
 	)
 		.bind(hashToken(token), account.authUserId, new Date(Date.now() + HOUR_MS).toISOString())
 		.run();
 	return token;
 }
+
+/**
+ * The whole setup a count test needs: exactly these accounts are signed in.
+ *
+ * Every test starts from nobody being signed in, so a count of 2 means two of these
+ * accounts and not two of the fourteen fixtures the file creates.
+ */
+async function signedIn(accounts: Account[]): Promise<void> {
+	await revokeStudentSessions();
+	for (const account of accounts) {
+		await grantSession(account);
+	}
+}
+
+async function expireSessions(account: Account): Promise<void> {
+	await env.DB.prepare("UPDATE auth_sessions SET expires_at = ? WHERE auth_user_id = ?")
+		.bind(new Date(Date.now() - 1000).toISOString(), account.authUserId)
+		.run();
+}
+
+async function clearActivity(): Promise<void> {
+	await env.DB.prepare("DELETE FROM student_activity").run();
+}
+
+async function activityRows(): Promise<string[]> {
+	const rows = await env.DB.prepare("SELECT auth_user_id FROM student_activity").all<{
+		auth_user_id: string;
+	}>();
+	return rows.results.map((row) => row.auth_user_id);
+}
+
+/* --------------------------------------------------------------- requests */
 
 function cookie(token: string): string {
 	return `campus-flow-session=${token}`;
@@ -209,6 +273,13 @@ function count(token: string | null): Promise<Response> {
 	});
 }
 
+function classCount(token: string | null, query: Record<string, string>): Promise<Response> {
+	const search = new URLSearchParams(query).toString();
+	return SELF.fetch(`https://example.com/api/activity/class-active-students?${search}`, {
+		headers: token ? { Cookie: cookie(token) } : {},
+	});
+}
+
 async function readCount(token: string): Promise<number> {
 	const response = await count(token);
 	expect(response.status).toBe(200);
@@ -216,44 +287,57 @@ async function readCount(token: string): Promise<number> {
 	return body.active_students;
 }
 
-async function clearActivity(): Promise<void> {
-	await env.DB.prepare("DELETE FROM student_activity").run();
+async function readClassCount(token: string, department: string, year: number, section: string) {
+	const response = await classCount(token, { department, year: String(year), section });
+	expect(response.status).toBe(200);
+	const body = (await response.json()) as { active_students: number };
+	return body.active_students;
 }
 
-async function ageActivity(authUserId: string, ageMs: number): Promise<void> {
-	await env.DB.prepare("UPDATE student_activity SET last_active_at = ? WHERE auth_user_id = ?")
-		.bind(new Date(Date.now() - ageMs).toISOString(), authUserId)
-		.run();
+async function logout(token: string): Promise<Response> {
+	return SELF.fetch("https://example.com/api/auth/logout", {
+		method: "POST",
+		headers: { "Content-Type": "application/json", Cookie: cookie(token) },
+		body: "{}",
+	});
 }
 
 /* --------------------------------------------------------------- fixtures */
 
+const IT_2024 = "IT_Students_2024_2028";
+const IT_2025 = "IT_Students_2025_2029";
+const CSE_2026 = "CSE_Students_2026_2030";
+
 let student: Account;
 let otherStudent: Account;
-let revokedStudent: Account;
-let logoutStudent: Account;
 let staff: Account;
 let advisor: Account;
 let admin: Account;
+
+let it3a: Account;
+let it3aOtherCohort: Account;
+let it3b: Account;
+let it2a: Account;
+let cse3a: Account;
 
 beforeAll(async () => {
 	for (const migration of APPLY_ORDER) {
 		await applyMigration(migration);
 	}
 
-	student = await makeAccount("student", "actstudent", { linkedStudent: true });
-	otherStudent = await makeAccount("student", "actother", { linkedStudent: true });
-	revokedStudent = await makeAccount("student", "actrevoked", { linkedStudent: true });
-	/*
-	 * Its own account, because signing out deletes the *current* session only. The
-	 * shared `student` account has a second device session by then, which is exactly
-	 * the case where remaining counted is correct -- so the logout test needs an
-	 * account with nothing else signed in.
-	 */
-	logoutStudent = await makeAccount("student", "actlogout", { linkedStudent: true });
-	staff = await makeAccount("staff", "actstaff", { linkedStudent: false });
-	advisor = await makeAccount("class_advisor", "actadvisor", { linkedStudent: false });
-	admin = await makeAccount("admin", "actadmin", { linkedStudent: false });
+	student = await makeAccount("student", "actstudent", { live: false, linkedStudent: true });
+	otherStudent = await makeAccount("student", "actother", { live: false, linkedStudent: true });
+
+	it3a = await makeAccount("student", "clsit3a", { live: false, linkedStudent: true, table: IT_2024, year: 3, section: "A" });
+	it3aOtherCohort = await makeAccount("student", "clsit3ab", { live: false, linkedStudent: true, table: IT_2025, year: 3, section: "A" });
+	it3b = await makeAccount("student", "clsit3b", { live: false, linkedStudent: true, table: IT_2024, year: 3, section: "B" });
+	it2a = await makeAccount("student", "clsit2a", { live: false, linkedStudent: true, table: IT_2024, year: 2, section: "A" });
+	cse3a = await makeAccount("student", "clscse3a", { live: false, linkedStudent: true, table: CSE_2026, year: 3, section: "A" });
+
+	/* Authorising sessions. Never revoked, so every test can ask the question. */
+	staff = await makeAccount("staff", "actstaff");
+	advisor = await makeAccount("class_advisor", "actadvisor");
+	admin = await makeAccount("admin", "actadmin");
 
 	await env.DB.prepare(
 		`INSERT INTO staff (staff_id, staff_name, email, department, class_advisor, auth_user_id)
@@ -261,6 +345,16 @@ beforeAll(async () => {
 	)
 		.bind(`9${staff.authUserId.slice(-6)}`, "Active Count Staff", staff.email, staff.authUserId)
 		.run();
+});
+
+/*
+ * Nobody is signed in as a student before each test. Heartbeat rows are left alone:
+ * they are written by whichever test needs them and are never part of the setup for a
+ * count, which is the point the file keeps making.
+ */
+beforeEach(async () => {
+	await revokeStudentSessions();
+	await clearActivity();
 });
 
 /* ------------------------------------------------------------------ tests */
@@ -278,23 +372,20 @@ describe("POST /api/activity/ping", () => {
 			expect(response.status).toBe(403);
 			expect(await response.json()).toMatchObject({ code: "forbidden" });
 		}
-
-		await clearActivity();
-		expect(await readCount(staff.token)).toBe(0);
+		expect(await activityRows()).toEqual([]);
 	});
 
 	it("records a beat for a signed-in student", async () => {
-		await clearActivity();
+		await grantSession(student);
 
 		const response = await ping(student.token);
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({ success: true });
-
-		expect(await readCount(staff.token)).toBe(1);
+		expect(await activityRows()).toEqual([student.authUserId]);
 	});
 
 	it("ignores an identity claimed in the body", async () => {
-		await clearActivity();
+		await grantSession(student);
 
 		const response = await ping(student.token, {
 			auth_user_id: staff.authUserId,
@@ -302,31 +393,27 @@ describe("POST /api/activity/ping", () => {
 			role: "staff",
 		});
 		expect(response.status).toBe(200);
-
-		const rows = await env.DB.prepare("SELECT auth_user_id FROM student_activity").all<{
-			auth_user_id: string;
-		}>();
-		expect(rows.results.map((row) => row.auth_user_id)).toEqual([student.authUserId]);
+		expect(await activityRows()).toEqual([student.authUserId]);
 	});
 
 	it("never creates, extends or revokes an authentication session", async () => {
-		const before = await env.DB.prepare(
-			"SELECT token_hash, auth_user_id, expires_at FROM auth_sessions WHERE auth_user_id = ?",
-		)
-			.bind(student.authUserId)
-			.all<{ token_hash: string; auth_user_id: string; expires_at: string }>();
+		await grantSession(student);
 
+		const snapshot = async () =>
+			(
+				await env.DB.prepare(
+					"SELECT token_hash, auth_user_id, expires_at FROM auth_sessions WHERE auth_user_id = ?",
+				)
+					.bind(student.authUserId)
+					.all<{ token_hash: string; auth_user_id: string; expires_at: string }>()
+			).results;
+
+		const before = await snapshot();
 		for (let i = 0; i < 3; i += 1) {
 			expect((await ping(student.token)).status).toBe(200);
 		}
 
-		const after = await env.DB.prepare(
-			"SELECT token_hash, auth_user_id, expires_at FROM auth_sessions WHERE auth_user_id = ?",
-		)
-			.bind(student.authUserId)
-			.all<{ token_hash: string; auth_user_id: string; expires_at: string }>();
-
-		expect(after.results).toEqual(before.results);
+		expect(await snapshot()).toEqual(before);
 	});
 });
 
@@ -338,14 +425,10 @@ describe("GET /api/activity/active-students", () => {
 	});
 
 	it("refuses a student session", async () => {
+		await grantSession(student);
 		const response = await count(student.token);
 		expect(response.status).toBe(403);
 		expect(await response.json()).toMatchObject({ code: "forbidden" });
-	});
-
-	it("serves staff and class advisors", async () => {
-		expect((await count(staff.token)).status).toBe(200);
-		expect((await count(advisor.token)).status).toBe(200);
 	});
 
 	it("refuses an administrator", async () => {
@@ -356,9 +439,107 @@ describe("GET /api/activity/active-students", () => {
 		expect(await response.json()).toMatchObject({ code: "forbidden" });
 	});
 
+	it("serves staff and class advisors", async () => {
+		expect((await count(staff.token)).status).toBe(200);
+		expect((await count(advisor.token)).status).toBe(200);
+	});
+
+	it("counts an idle student who has never sent a heartbeat", async () => {
+		await signedIn([student]);
+
+		expect(await readCount(staff.token)).toBe(1);
+		expect(await activityRows()).toEqual([]);
+	});
+
+	it("ignores heartbeat activity entirely", async () => {
+		/*
+		 * The regression guard for the whole change. Three students sign in and beat;
+		 * their sessions then go away. A heartbeat-driven counter would still be
+		 * showing them, because their `last_active_at` is seconds old.
+		 */
+		await signedIn([student, otherStudent, it3a]);
+		for (const account of [student, otherStudent, it3a]) {
+			expect((await ping(account.token)).status).toBe(200);
+		}
+		expect(await activityRows()).toHaveLength(3);
+		expect(await readCount(staff.token)).toBe(3);
+
+		await revokeStudentSessions();
+
+		expect(await readCount(staff.token)).toBe(0);
+		expect(await activityRows()).toHaveLength(3);
+	});
+
+	it("counts each account once, however many sessions it holds", async () => {
+		await signedIn([student, otherStudent]);
+		await addSession(student);
+		await addSession(student);
+
+		expect(await readCount(staff.token)).toBe(2);
+	});
+
+	it("excludes every non-student role that holds a live session", async () => {
+		await signedIn([student]);
+
+		// staff, advisor and admin all have live sessions right now.
+		const sessions = await env.DB.prepare("SELECT COUNT(*) AS total FROM auth_sessions").first<{
+			total: number;
+		}>();
+		expect(sessions?.total ?? 0).toBeGreaterThan(1);
+
+		expect(await readCount(staff.token)).toBe(1);
+	});
+
+	it("does not count a student whose session has expired", async () => {
+		await grantSession(student, { expiresAt: new Date(Date.now() - 1000).toISOString() });
+
+		expect(await readCount(staff.token)).toBe(0);
+		expect((await ping(student.token)).status).toBe(401);
+	});
+
+	it("drops a student the moment they log out", async () => {
+		await signedIn([student]);
+		expect(await readCount(staff.token)).toBe(1);
+
+		const response = await logout(student.token);
+		expect(response.status).toBe(200);
+
+		expect(await readCount(staff.token)).toBe(0);
+		expect((await ping(student.token)).status).toBe(401);
+	});
+
+	it("returns a student to the count when they sign in again", async () => {
+		await signedIn([student]);
+		expect(await logout(student.token)).toHaveProperty("status", 200);
+		expect(await readCount(staff.token)).toBe(0);
+
+		const login = await SELF.fetch("https://example.com/api/auth/login", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ user_name: student.email, password: PASSWORD }),
+		});
+		expect(login.status).toBe(200);
+
+		expect(await readCount(staff.token)).toBe(1);
+	});
+
+	it("keeps counting an account that is still signed in on another device", async () => {
+		await signedIn([student]);
+		await addSession(student);
+
+		/*
+		 * Signing out deletes the current session only. An account with a second one
+		 * is still signed in, so it is still counted -- once, because the count is a
+		 * count of accounts.
+		 */
+		expect((await logout(student.token)).status).toBe(200);
+
+		expect(await readCount(staff.token)).toBe(1);
+		expect((await ping(student.token)).status).toBe(401);
+	});
+
 	it("returns a count and a timestamp, and nothing identifying", async () => {
-		await clearActivity();
-		await ping(student.token);
+		await signedIn([student]);
 
 		const response = await count(staff.token);
 		expect(response.status).toBe(200);
@@ -378,266 +559,16 @@ describe("GET /api/activity/active-students", () => {
 			"ACT",
 			"student_name",
 			"register_no",
+			"auth_user_id",
 		]) {
 			expect(serialised).not.toContain(secret);
 		}
 	});
 });
 
-describe("counting unique accounts", () => {
-	it("counts each distinct student once, however many beats it sends", async () => {
-		await clearActivity();
-
-		for (let i = 0; i < 5; i += 1) {
-			expect((await ping(student.token)).status).toBe(200);
-		}
-		expect((await ping(otherStudent.token)).status).toBe(200);
-
-		const rows = await env.DB.prepare("SELECT auth_user_id FROM student_activity").all<{
-			auth_user_id: string;
-		}>();
-		expect(rows.results).toHaveLength(2);
-		expect(await readCount(staff.token)).toBe(2);
-	});
-
-	it("counts one account once across tabs and devices", async () => {
-		await clearActivity();
-
-		// A second tab of the same session, then a second device on a new session.
-		await ping(student.token);
-		await ping(student.token);
-		await ping(await addSession(student));
-
-		const rows = await env.DB.prepare("SELECT auth_user_id FROM student_activity").all<{
-			auth_user_id: string;
-		}>();
-		expect(rows.results).toHaveLength(1);
-		expect(await readCount(staff.token)).toBe(1);
-	});
-
-	it("excludes every non-student role even if a row reaches the table", async () => {
-		await clearActivity();
-
-		await ping(student.token);
-
-		// The ping route already refuses these roles, so these rows are planted
-		// directly: the count must not depend on the writer having been correct.
-		const planted = await env.DB.batch([
-			env.DB.prepare(
-				"INSERT INTO student_activity (auth_user_id, last_active_at) VALUES (?, ?)",
-			).bind(staff.authUserId, new Date().toISOString()),
-			env.DB.prepare(
-				"INSERT INTO student_activity (auth_user_id, last_active_at) VALUES (?, ?)",
-			).bind(advisor.authUserId, new Date().toISOString()),
-			env.DB.prepare(
-				"INSERT INTO student_activity (auth_user_id, last_active_at) VALUES (?, ?)",
-			).bind(admin.authUserId, new Date().toISOString()),
-		]);
-		expect(planted.every((result) => result.success)).toBe(true);
-
-		expect(await readCount(staff.token)).toBe(1);
-	});
-});
-
-describe("expiry, revocation and the 60s window", () => {
-	it("stops counting a student once their activity ages out", async () => {
-		await clearActivity();
-		await ping(student.token);
-		expect(await readCount(staff.token)).toBe(1);
-
-		await ageActivity(student.authUserId, RECENT_MS);
-		expect(await readCount(staff.token)).toBe(1);
-
-		await ageActivity(student.authUserId, STALE_MS);
-		expect(await readCount(staff.token)).toBe(0);
-	});
-
-	it("does not count a student whose session has expired", async () => {
-		await clearActivity();
-
-		// A beat, then the session lapses. The row is still recent, which is the case
-		// a heartbeat-driven counter gets wrong: recent activity must not be enough.
-		await ping(revokedStudent.token);
-		expect(await readCount(staff.token)).toBe(1);
-
-		await env.DB.prepare("UPDATE auth_sessions SET expires_at = ? WHERE auth_user_id = ?")
-			.bind(new Date(Date.now() - 1000).toISOString(), revokedStudent.authUserId)
-			.run();
-
-		expect(await readCount(staff.token)).toBe(0);
-		expect((await ping(revokedStudent.token)).status).toBe(401);
-	});
-
-	it("drops a student from the count when they log out", async () => {
-		await clearActivity();
-		await ping(logoutStudent.token);
-		expect(await readCount(staff.token)).toBe(1);
-
-		const response = await SELF.fetch("https://example.com/api/auth/logout", {
-			method: "POST",
-			headers: { "Content-Type": "application/json", Cookie: cookie(logoutStudent.token) },
-			body: "{}",
-		});
-		expect(response.status).toBe(200);
-
-		expect(await readCount(staff.token)).toBe(0);
-		expect((await ping(logoutStudent.token)).status).toBe(401);
-
-		// Sign back in the way the student page does, and the account returns.
-		const login = await SELF.fetch("https://example.com/api/auth/login", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ user_name: logoutStudent.email, password: PASSWORD }),
-		});
-		expect(login.status).toBe(200);
-		const nextCookie = login.headers.get("Set-Cookie") ?? "";
-		const nextToken = new URLSearchParams(nextCookie.split(";")[0]).get("campus-flow-session");
-		expect(nextToken).toBeTruthy();
-
-		expect((await ping(nextToken as string)).status).toBe(200);
-		expect(await readCount(staff.token)).toBe(1);
-	});
-
-	it("keeps counting an account that is still signed in on another device", async () => {
-		await clearActivity();
-
-		/*
-		 * The honest limit of a counter keyed on accounts rather than sessions:
-		 * signing out removes one session, so an account with a second one is still
-		 * genuinely using CampusFlow and is still counted once.
-		 */
-		await ping(student.token);
-		const secondDevice = await addSession(student);
-		await ping(secondDevice);
-
-		const response = await SELF.fetch("https://example.com/api/auth/logout", {
-			method: "POST",
-			headers: { "Content-Type": "application/json", Cookie: cookie(student.token) },
-			body: "{}",
-		});
-		expect(response.status).toBe(200);
-
-		expect(await readCount(staff.token)).toBe(1);
-		expect((await ping(student.token)).status).toBe(401);
-	});
-});
-
-describe("the counter does not touch the workflows around it", () => {
-	it("leaves every other table alone", async () => {
-		await clearActivity();
-
-		const tables = [
-			"attendance_session",
-			"IT_Attendance_2024_2028",
-			"IT_Attendance_2025_2029",
-			"auth_users",
-			"auth_sessions",
-			"staff",
-			"subjects",
-		];
-
-		const before = new Map<string, number>();
-		for (const table of tables) {
-			const row = await env.DB.prepare(`SELECT COUNT(*) AS total FROM ${table}`).first<{
-				total: number;
-			}>();
-			before.set(table, row?.total ?? 0);
-		}
-
-		await ping(student.token);
-		await ping(student.token);
-		expect((await count(staff.token)).status).toBe(200);
-
-		for (const table of tables) {
-			const row = await env.DB.prepare(`SELECT COUNT(*) AS total FROM ${table}`).first<{
-				total: number;
-			}>();
-			expect(row?.total ?? -1).toBe(before.get(table));
-		}
-	});
-});
-
-/* ------------------------------------------------- class-specific counting */
-
-const IT_2024 = "IT_Students_2024_2028";
-const IT_2025 = "IT_Students_2025_2029";
-const CSE_2026 = "CSE_Students_2026_2030";
-
-/*
- * A roster row and a login row for one student, in a specific cohort.
- *
- * `table` is a literal from this file, never a request value, because the test is the
- * place where the physical-table-per-cohort fact is being set up rather than derived.
- * The two columns the endpoint joins on -- `auth_user_id`, `year`, `section` -- are
- * written exactly as `provisioning.ts` writes them.
- */
-async function makeRosterStudent(label: string, table: string, year: number, section: string) {
-	const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
-	const authUserId = `c9e9f000-0000-4000-8001-${label}${suffix}`;
-	const email = `${label}.${suffix}@kiot.ac.in`;
-	const token = `${label}-token-${suffix}`;
-	const studentId = `CLS${suffix.toUpperCase()}`;
-
-	await env.DB.batch([
-		env.DB.prepare(
-			`INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email)
-			 VALUES (?, ?, 'test-hash-not-used', 'student', ?)`,
-		).bind(authUserId, studentId, email),
-		env.DB.prepare(
-			`INSERT INTO ${table} (student_id, register_no, student_name, year, section, email, auth_user_id)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		).bind(studentId, `REG${suffix.toUpperCase()}`, `Class Test ${label}`, year, section, email, authUserId),
-		env.DB.prepare(
-			"INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at) VALUES (?, ?, ?)",
-		).bind(hashToken(token), authUserId, new Date(Date.now() + HOUR_MS).toISOString()),
-	]);
-
-	return { authUserId, token, email, studentId, table, year, section };
-}
-
-function classCount(token: string | null, query: Record<string, string>): Promise<Response> {
-	const search = new URLSearchParams(query).toString();
-	return SELF.fetch(`https://example.com/api/activity/class-active-students?${search}`, {
-		headers: token ? { Cookie: cookie(token) } : {},
-	});
-}
-
-async function readClassCount(token: string, department: string, year: number, section: string) {
-	const response = await classCount(token, { department, year: String(year), section });
-	expect(response.status).toBe(200);
-	const body = (await response.json()) as { active_students: number };
-	return body.active_students;
-}
-
-/** Beats once with every class fixture, so each lands in exactly one class. */
-async function seedClassActivity(accounts: Account[]) {
-	await clearActivity();
-	for (const account of accounts) {
-		const response = await ping(account.token);
-		expect(response.status).toBe(200);
-	}
-}
-
-let it3a: Account;
-let it3aOtherCohort: Account;
-let it3b: Account;
-let it2a: Account;
-let cse3a: Account;
-/** Never logged out and never expired, so the role gates have a live student to refuse. */
-let probeStudent: Account;
-
 describe("GET /api/activity/class-active-students", () => {
-	beforeAll(async () => {
-		it3a = await makeRosterStudent("clsit3a", IT_2024, 3, "A");
-		it3aOtherCohort = await makeRosterStudent("clsit3ab", IT_2025, 3, "A");
-		it3b = await makeRosterStudent("clsit3b", IT_2024, 3, "B");
-		it2a = await makeRosterStudent("clsit2a", IT_2024, 2, "A");
-		cse3a = await makeRosterStudent("clscse3a", CSE_2026, 3, "A");
-		probeStudent = await makeRosterStudent("clsprobe", IT_2024, 1, "D");
-	});
-
 	it("counts the selected class across every cohort of that department", async () => {
-		await seedClassActivity([it3a, it3aOtherCohort, it3b, it2a, cse3a]);
+		await signedIn([it3a, it3aOtherCohort, it3b, it2a, cse3a]);
 
 		/*
 		 * Two students in IT year 3 section A, because that class spans two cohorts --
@@ -649,7 +580,7 @@ describe("GET /api/activity/class-active-students", () => {
 	});
 
 	it("excludes other sections and other years of the same cohort", async () => {
-		await seedClassActivity([it3a, it3aOtherCohort, it3b, it2a, cse3a]);
+		await signedIn([it3a, it3aOtherCohort, it3b, it2a, cse3a]);
 
 		expect(await readClassCount(staff.token, "IT", 3, "B")).toBe(1);
 		expect(await readClassCount(staff.token, "IT", 2, "A")).toBe(1);
@@ -658,82 +589,80 @@ describe("GET /api/activity/class-active-students", () => {
 	});
 
 	it("excludes another department that shares the year and section", async () => {
-		await seedClassActivity([it3a, it3aOtherCohort, it3b, it2a, cse3a]);
+		await signedIn([it3a, it3aOtherCohort, it3b, it2a, cse3a]);
 
 		expect(await readClassCount(staff.token, "CSE", 3, "A")).toBe(1);
-		// And the ten CSE students migration 0014 seeded are active in no sense at all.
+		// And the ten CSE students migration 0014 seeded hold no session at all.
 		expect(await readClassCount(staff.token, "CSE", 1, "A")).toBe(0);
 		// ECE is a supported department with no provisioned cohort.
 		expect(await readClassCount(staff.token, "ECE", 3, "A")).toBe(0);
 	});
 
-	it("counts an account once however many devices it is signed in on", async () => {
-		await clearActivity();
-		expect((await ping(it3a.token)).status).toBe(200);
+	it("counts a class of idle students who have never sent a heartbeat", async () => {
+		await signedIn([it3a, it3aOtherCohort]);
 
-		const secondDevice = await addSession(it3a);
-		expect((await ping(secondDevice)).status).toBe(200);
-		expect((await ping(it3a.token)).status).toBe(200);
+		expect(await activityRows()).toEqual([]);
+		expect(await readClassCount(staff.token, "IT", 3, "A")).toBe(2);
+	});
+
+	it("counts an account once however many devices it is signed in on", async () => {
+		await signedIn([it3a, it3aOtherCohort]);
+		await addSession(it3a);
+		await addSession(it3a);
+
+		expect(await readClassCount(staff.token, "IT", 3, "A")).toBe(2);
+	});
+
+	it("does not count an account whose sessions are gone but whose beat is fresh", async () => {
+		await signedIn([it3a, it3b]);
+		expect((await ping(it3b.token)).status).toBe(200);
+		expect(await readClassCount(staff.token, "IT", 3, "B")).toBe(1);
+
+		await logout(it3b.token);
 
 		expect(await readClassCount(staff.token, "IT", 3, "B")).toBe(0);
+		// The beat row is still there, seconds old, and is still worth nothing.
+		expect(await activityRows()).toEqual([it3b.authUserId]);
+	});
+
+	it("stops counting a class when an idle student logs out", async () => {
+		await signedIn([it3a, it3aOtherCohort]);
+		expect(await readClassCount(staff.token, "IT", 3, "A")).toBe(2);
+
+		expect((await logout(it3a.token)).status).toBe(200);
+
 		expect(await readClassCount(staff.token, "IT", 3, "A")).toBe(1);
 	});
 
 	it("excludes a student whose session has expired", async () => {
-		/*
-		 * Its own account. Expiring a session is destructive to that account for the
-		 * rest of the file, so the fixture that other tests count on is left alone.
-		 */
-		const lapsed = await makeRosterStudent("clslapsed", IT_2024, 3, "C");
-		await seedClassActivity([lapsed]);
-		expect(await readClassCount(staff.token, "IT", 3, "C")).toBe(1);
+		await signedIn([it3b]);
+		expect(await readClassCount(staff.token, "IT", 3, "B")).toBe(1);
 
-		await env.DB.prepare("UPDATE auth_sessions SET expires_at = ? WHERE auth_user_id = ?")
-			.bind(new Date(Date.now() - 1000).toISOString(), lapsed.authUserId)
-			.run();
+		await expireSessions(it3b);
 
-		expect(await readClassCount(staff.token, "IT", 3, "C")).toBe(0);
-	});
-
-	it("excludes a student whose activity has aged past the window", async () => {
-		const ageing = await makeRosterStudent("clsageing", IT_2024, 4, "D");
-		await seedClassActivity([ageing]);
-		expect(await readClassCount(staff.token, "IT", 4, "D")).toBe(1);
-
-		await ageActivity(ageing.authUserId, RECENT_MS);
-		expect(await readClassCount(staff.token, "IT", 4, "D")).toBe(1);
-
-		await ageActivity(ageing.authUserId, STALE_MS);
-		expect(await readClassCount(staff.token, "IT", 4, "D")).toBe(0);
+		expect(await readClassCount(staff.token, "IT", 3, "B")).toBe(0);
 	});
 
 	it("excludes a non-student account even if one is linked into the roster", async () => {
-		await seedClassActivity([it3a]);
+		await signedIn([it3a]);
 		expect(await readClassCount(staff.token, "IT", 3, "A")).toBe(1);
 
 		/*
-		 * A staff account is given a heartbeat and a roster row, which is the shape an
-		 * account would have if the ping gate or the import were ever wrong. It must
-		 * still not be counted: the class count is a count of students.
+		 * The staff account already holds a live session; all it lacks is a roster row
+		 * in this class. With one planted it satisfies every condition except the one
+		 * that matters, and must still not be counted.
 		 */
-		await env.DB.batch([
-			env.DB.prepare(
-				`INSERT INTO ${IT_2024} (student_id, register_no, student_name, year, section, email, auth_user_id)
-				 VALUES (?, ?, ?, 3, 'A', ?, ?)`,
-			).bind("CLSSTAFF01", "REGSTAFF01", "Class Test Staff", `${staff.email}.roster`, staff.authUserId),
-			env.DB.prepare("INSERT INTO student_activity (auth_user_id, last_active_at) VALUES (?, ?)").bind(
-				staff.authUserId,
-				new Date().toISOString(),
-			),
-		]);
+		await env.DB.prepare(
+			`INSERT INTO ${IT_2024} (student_id, register_no, student_name, year, section, email, auth_user_id)
+			 VALUES ('CLSSTAFF01', 'REGSTAFF01', 'Class Test Staff', 3, 'A', 'cls.staff.01@kiot.ac.in', ?)`,
+		)
+			.bind(staff.authUserId)
+			.run();
 
 		try {
 			expect(await readClassCount(staff.token, "IT", 3, "A")).toBe(1);
 		} finally {
-			await env.DB.batch([
-				env.DB.prepare(`DELETE FROM ${IT_2024} WHERE student_id = ?`).bind("CLSSTAFF01"),
-				env.DB.prepare("DELETE FROM student_activity WHERE auth_user_id = ?").bind(staff.authUserId),
-			]);
+			await env.DB.prepare(`DELETE FROM ${IT_2024} WHERE student_id = 'CLSSTAFF01'`).run();
 		}
 	});
 
@@ -744,7 +673,8 @@ describe("GET /api/activity/class-active-students", () => {
 	});
 
 	it("refuses a student session", async () => {
-		const response = await classCount(probeStudent.token, { department: "IT", year: "3", section: "A" });
+		await grantSession(student);
+		const response = await classCount(student.token, { department: "IT", year: "3", section: "A" });
 		expect(response.status).toBe(403);
 		expect(await response.json()).toMatchObject({ code: "forbidden" });
 	});
@@ -790,13 +720,13 @@ describe("GET /api/activity/class-active-students", () => {
 	});
 
 	it("accepts loose casing and spacing the same way the rest of the app does", async () => {
-		await seedClassActivity([it3a]);
+		await signedIn([it3a]);
 
 		expect(await readClassCount(staff.token, "  it ", 3, " a ")).toBe(1);
 	});
 
 	it("returns a count and a timestamp, and nothing identifying", async () => {
-		await seedClassActivity([it3a, it2a, cse3a]);
+		await signedIn([it3a, it2a, cse3a]);
 
 		const response = await classCount(staff.token, { department: "IT", year: "3", section: "A" });
 		expect(response.status).toBe(200);
@@ -811,7 +741,6 @@ describe("GET /api/activity/class-active-students", () => {
 			it3a.authUserId,
 			it3a.token,
 			it3a.email,
-			it3a.studentId,
 			it2a.authUserId,
 			cse3a.authUserId,
 			"Class Test",
@@ -824,9 +753,12 @@ describe("GET /api/activity/class-active-students", () => {
 			expect(serialised).not.toContain(secret);
 		}
 	});
+});
 
-	it("reads only, and leaves attendance and the other tables untouched", async () => {
-		await seedClassActivity([it3a, it3b]);
+describe("the counters do not touch the workflows around them", () => {
+	it("reads only, and leaves attendance and the other tables alone", async () => {
+		await signedIn([it3a, it3b]);
+		expect((await ping(it3a.token)).status).toBe(200);
 
 		const tables = [
 			"attendance_session",
@@ -835,6 +767,8 @@ describe("GET /api/activity/class-active-students", () => {
 			"CSE_Attendance_2026_2030",
 			"auth_users",
 			"auth_sessions",
+			"staff",
+			"subjects",
 			IT_2024,
 			IT_2025,
 			CSE_2026,
@@ -849,7 +783,10 @@ describe("GET /api/activity/class-active-students", () => {
 		}
 
 		for (let i = 0; i < 3; i += 1) {
-			expect((await classCount(staff.token, { department: "IT", year: "3", section: "A" })).status).toBe(200);
+			expect((await count(staff.token)).status).toBe(200);
+			expect(
+				(await classCount(staff.token, { department: "IT", year: "3", section: "A" })).status
+			).toBe(200);
 		}
 
 		for (const table of tables) {
@@ -858,5 +795,21 @@ describe("GET /api/activity/class-active-students", () => {
 			}>();
 			expect(row?.total ?? -1, table).toBe(before.get(table));
 		}
+	});
+
+	it("does not let a count change any session", async () => {
+		await signedIn([it3a, it3b]);
+
+		const snapshot = async () =>
+			(
+				await env.DB.prepare(
+					"SELECT token_hash, auth_user_id, expires_at FROM auth_sessions ORDER BY auth_user_id",
+				).all<{ token_hash: string; auth_user_id: string; expires_at: string }>()
+			).results;
+
+		const before = await snapshot();
+		await readCount(staff.token);
+		await readClassCount(staff.token, "IT", 3, "A");
+		expect(await snapshot()).toEqual(before);
 	});
 });

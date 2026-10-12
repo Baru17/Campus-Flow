@@ -78,7 +78,7 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
           <h2 className="section-title">Active Students</h2>
           <p className="text-muted-2 text-sm mb-0">
             {viewing
-              ? `Unique student accounts active in the last 60 seconds · ${department} · Year ${year} · Section ${section}`
+              ? `Student accounts signed in to CampusFlow · ${department} · Year ${year} · Section ${section}`
               : 'Pick a department, year and section to see how many students are on CampusFlow right now.'}
           </p>
         </div>

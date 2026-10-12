@@ -8,6 +8,14 @@ import { sendActivityPing } from '../api/activityApi'
  * page: it is mounted once, above the router, so navigating between the entry screen,
  * the OTP page and the OD form cannot start a second timer. Nothing about attendance,
  * OTP or OD knows this hook exists.
+ *
+ * ## It does not decide who is counted
+ *
+ * Neither `/active-students` nor `/class-active-students` reads `student_activity`.
+ * An account is counted because it holds a valid, unexpired login session, and this
+ * heartbeat has no say in it: a student with no beat at all is counted, and a student
+ * with a beat seconds old and no session is not. The tracker is therefore no longer on
+ * the path that anything depends on, and nothing here can change a count.
  */
 
 const HEARTBEAT_MS = 20_000
@@ -15,10 +23,9 @@ const HEARTBEAT_MS = 20_000
 /*
  * How recently the student has to have touched the page for the next beat to go out.
  *
- * Shorter than the server's 60s window on purpose: a beat that is sent while the
- * student is still there has to land inside the window, so leaving it slightly tight
- * means a student who has genuinely stopped interacting ages out rather than lingering
- * on a last beat sent while they were halfway out of the door.
+ * This used to mirror a 60s window on the server, so the two had to be kept in step.
+ * Nothing on the server reads the table now, so the number is only about how often a
+ * beat is worth sending.
  */
 const INTERACTION_WINDOW_MS = 45_000
 

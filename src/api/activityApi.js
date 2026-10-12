@@ -54,6 +54,10 @@ async function apiRequest(url, options) {
  * so there is nothing for the browser to say about who it is. The response is
  * deliberately unread -- a beat is fire-and-forget, and a student must never see an
  * error because monitoring was unavailable. Callers are expected to swallow failures.
+ *
+ * Neither count endpoint reads the table this writes. Both decide who is counted from
+ * valid login sessions alone, so a student with no beat is still counted and a beat
+ * can never add or remove one.
  */
 export async function sendActivityPing({ signal } = {}) {
   assertBackend()
