@@ -110,7 +110,20 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
         <>
           <div className="mt-3 flex items-center gap-3 flex-wrap">
             {hasCount ? (
-              <div className="stat-chip stat-chip-green flex-1 min-w-0">
+              /*
+               * Full width below `sm`, so the count keeps its natural width on a
+               * phone instead of being squeezed.
+               *
+               * Sharing a row with the pill and the refresh button, this chip is
+               * `flex-1`, which means a flex basis of zero: the row hands it whatever
+               * is left after the two fixed-width items. On a 360px screen that is
+               * about 100px for a chip whose icon, padding and gap already take 70 --
+               * leaving less than the width of the word "STUDENTS", so the label
+               * spilled out of the chip and off the card. Taking the whole line below
+               * `sm` puts the pill and the button on the row underneath instead, and
+               * above `sm` it goes back to sharing one with them.
+               */
+              <div className="stat-chip stat-chip-green w-full sm:w-auto sm:flex-1 min-w-0">
                 <span className="stat-chip-icon" aria-hidden="true">
                   <UsersIcon size={18} />
                 </span>
@@ -125,11 +138,11 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
                * and rendering a 0 in its place would be a lie the staff member would
                * act on.
                */
-              <span className="text-muted-2 text-sm flex-1 min-w-0">
+              <span className="text-muted-2 text-sm w-full sm:w-auto sm:flex-1 min-w-0">
                 No count available for this class.
               </span>
             ) : (
-              <div className="flex items-center gap-2 flex-1 min-w-0">
+              <div className="flex items-center gap-2 w-full sm:w-auto sm:flex-1 min-w-0">
                 <span className="cf-spinner" role="status" aria-hidden="true" />
                 <span className="text-muted-2 text-sm">Loading the active student count…</span>
               </div>

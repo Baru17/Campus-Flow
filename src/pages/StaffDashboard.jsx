@@ -356,10 +356,18 @@ const [section, setSection] = useState('')
           </div>
         )}
 
+        {/*
+          The name is the heading, the way it is on the student's entry screen
+          (`Hello, <name>`). It used to sit in the muted subtitle behind the greeting,
+          which meant the only prominent thing at the top of this page was the words
+          "Staff Dashboard" -- and on a phone, where `.cf-nav-center` is hidden, the
+          navbar's `Name · Department` line was gone too, leaving the name in small grey
+          text as the only place it appeared at all.
+        */}
         <DashboardHero
           icon={<StaffIcon size={26} />}
-          title="Staff Dashboard"
-          subtitle={`${clock.greeting}, ${staff.staff_name} — manage attendance sessions for your ${staff.department} classes.`}
+          title={staff.staff_name ? `Hello, ${staff.staff_name}` : 'Staff Dashboard'}
+          subtitle={`${clock.greeting} — manage attendance sessions for your ${staff.department} classes.`}
           right={
             <div className="live-clock">
               <div className="time">{clock.time}</div>
