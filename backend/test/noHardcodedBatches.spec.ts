@@ -36,6 +36,7 @@ import provisioning from "../src/utils/provisioning.ts?raw";
 import adminApi from "../src/api/admin.ts?raw";
 import index from "../src/index.ts?raw";
 import attendanceApi from "../src/api/attendance.ts?raw";
+import activityApi from "../src/api/activity.ts?raw";
 import backendBatchValidation from "../src/utils/batchValidation.ts?raw";
 
 /** `2024_2028` and similar: an admission cohort label, not a year or a count. */
@@ -132,6 +133,14 @@ const GUARDED: { path: string; source: string }[] = [
   { path: "backend/src/api/admin.ts", source: adminApi },
   { path: "backend/src/index.ts", source: index },
   { path: "backend/src/api/attendance.ts", source: attendanceApi },
+  /*
+   * The activity routes build one SQL branch per cohort of a department and
+   * `UNION ALL` them together, so a batch label written into a branch would name a
+   * table here just as much as it would anywhere else -- and it would do it silently,
+   * because a branch that reads one cohort instead of all of them still answers with
+   * a plausible number.
+   */
+  { path: "backend/src/api/activity.ts", source: activityApi },
 ];
 
 function offendingLines(source: string): string[] {

@@ -46,6 +46,17 @@
  * Migration 0014 is applied for its CSE tables and its ten seeded year-1 CSE students,
  * which double as the check that an untouched roster contributes nothing.
  *
+ * ## The total and the missing list
+ *
+ * `GET /api/activity/class-active-students` also returns `total_students` and a
+ * `missing` array of `{ register_no, student_name }`, so a staff member can act on the
+ * count rather than only read it. Those two figures are the part of this file that can
+ * contradict the count without looking wrong, so `readClassActivity` re-asserts
+ * `active + missing === total` on every single read, and the suite checks the
+ * properties that make the arithmetic hold: a roster row with no account is in the
+ * total, a non-student account linked into a roster is in neither half, and the list
+ * spans every cohort of the department rather than one table.
+ *
  * ## Storage
  *
  * Each test file gets isolated storage and applies the migrations itself, including
@@ -129,6 +140,12 @@ interface Account {
 	authUserId: string;
 	token: string;
 	email: string;
+	/**
+	 * The register number of the roster row behind this account, or `null` for an
+	 * account that was created without one. Returned so a test can assert on the
+	 * identity a response carries without re-deriving it from the same suffix.
+	 */
+	registerNo: string | null;
 }
 
 async function makeAccount(
@@ -148,6 +165,7 @@ async function makeAccount(
 	const email = `${label}.${suffix}@kiot.ac.in`;
 	const token = `${label}-token-${suffix}`;
 	const passwordHash = await bcrypt.hash(PASSWORD, 4);
+	let registerNo: string | null = null;
 
 	const statements: D1PreparedStatement[] = [
 		env.DB.prepare(
@@ -158,12 +176,13 @@ async function makeAccount(
 
 	if (linkedStudent) {
 		const studentId = `ACT${suffix.toUpperCase()}`;
+		registerNo = `REG${suffix.toUpperCase()}`;
 		statements.push(
 			env.DB.prepare(
 				`INSERT INTO ${table}
 				 (student_id, register_no, student_name, year, section, email, auth_user_id)
 				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			).bind(studentId, `REG${suffix.toUpperCase()}`, `Class Test ${label}`, year, section, email, authUserId),
+			).bind(studentId, registerNo, `Class Test ${label}`, year, section, email, authUserId),
 		);
 	}
 
@@ -176,7 +195,18 @@ async function makeAccount(
 	}
 
 	await env.DB.batch(statements);
-	return { authUserId, token, email };
+	return { authUserId, token, email, registerNo };
+}
+
+/**
+ * The register number behind an account.
+ *
+ * A hard assertion that it exists, so a test that meant to describe a roster row cannot
+ * silently pass by comparing against `null`.
+ */
+function registerOf(account: Account): string {
+	expect(account.registerNo, "this fixture has no roster row").toBeTruthy();
+	return account.registerNo as string;
 }
 
 /* --------------------------------------------------- controlling the sessions */
@@ -287,11 +317,101 @@ async function readCount(token: string): Promise<number> {
 	return body.active_students;
 }
 
+/** One missing-student row, as the endpoint is documented to shape it. */
+interface MissingStudent {
+	register_no: string;
+	student_name: string;
+}
+
+/** The whole class-activity response, with the two numbers as numbers. */
+interface ClassActivity {
+	success: boolean;
+	active_students: number;
+	total_students: number;
+	missing: MissingStudent[];
+	missing_truncated: boolean;
+	updated_at: string;
+}
+
 async function readClassCount(token: string, department: string, year: number, section: string) {
 	const response = await classCount(token, { department, year: String(year), section });
 	expect(response.status).toBe(200);
 	const body = (await response.json()) as { active_students: number };
 	return body.active_students;
+}
+
+async function readClassTotal(token: string, department: string, year: number, section: string) {
+	const response = await classCount(token, { department, year: String(year), section });
+	expect(response.status).toBe(200);
+	const body = (await response.json()) as { total_students: number };
+	return body.total_students;
+}
+
+/**
+ * Reads the full payload and asserts the two invariants the card depends on.
+ *
+ * These are checked on every read rather than in one dedicated test because they are
+ * the properties that make the three figures safe to put on one screen: the count, the
+ * denominator and the list have to describe the same class at the same moment. A
+ * regression in any one of the three would still produce three individually plausible
+ * numbers, and only the arithmetic between them gives it away.
+ */
+async function readClassActivity(
+	token: string,
+	department: string,
+	year: number,
+	section: string,
+): Promise<ClassActivity> {
+	const response = await classCount(token, { department, year: String(year), section });
+	expect(response.status).toBe(200);
+	const body = (await response.json()) as ClassActivity;
+
+	expect(body.success).toBe(true);
+	expect(Number.isNaN(Date.parse(body.updated_at))).toBe(false);
+
+	// Active plus missing accounts for every student in the class.
+	expect(body.active_students + body.missing.length, "active + missing should equal total").toBe(
+		body.total_students,
+	);
+
+	// No student appears twice, and every row is the two documented fields.
+	const keys = body.missing.map((row) => row.register_no);
+	expect(new Set(keys).size, "register numbers should be unique").toBe(keys.length);
+	for (const row of body.missing) {
+		expect(Object.keys(row).sort()).toEqual(["register_no", "student_name"]);
+	}
+
+	return body;
+}
+
+/** Register numbers in the missing list, for assertions that do not care about order. */
+function missingRegisters(activity: ClassActivity): string[] {
+	return activity.missing.map((row) => row.register_no).sort();
+}
+
+/**
+ * Adds a roster row that has no account behind it.
+ *
+ * A student imported without an account is a real state -- the column is nullable -- and
+ * it is the case that decides whether `total` can be defined as "rows in the class" or
+ * as "rows with a session". Such a student can never be active and must still be in the
+ * total, because they are still a student the staff member is waiting for.
+ */
+async function addUnlinkedStudent(table: string, year: number, section: string): Promise<string> {
+	const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase();
+	const registerNo = `REG${suffix}`;
+	await env.DB.prepare(
+		`INSERT INTO ${table} (student_id, register_no, student_name, year, section, email)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+	)
+		.bind(`NOLINK${suffix}`, registerNo, `Unlinked ${suffix}`, year, section, `nolink.${suffix}@kiot.ac.in`)
+		.run();
+	return registerNo;
+}
+
+/** Removes a roster row, so a test can undo what `addUnlinkedStudent` did. */
+async function removeStudent(table: string, registerNo: string): Promise<void> {
+	await env.DB.prepare(`DELETE FROM ${table} WHERE register_no = ?`).bind(registerNo).run();
 }
 
 async function logout(token: string): Promise<Response> {
@@ -732,26 +852,353 @@ describe("GET /api/activity/class-active-students", () => {
 		expect(response.status).toBe(200);
 		const body = await response.json();
 
-		expect(Object.keys(body).sort()).toEqual(["active_students", "success", "updated_at"]);
+		/*
+		 * The class route is the one place a student's name is returned to a staff
+		 * session in bulk, so the exact key set is asserted rather than described: a
+		 * field added here is a field crossing the roster boundary by accident.
+		 */
+		expect(Object.keys(body).sort()).toEqual([
+			"active_students",
+			"missing",
+			"missing_truncated",
+			"success",
+			"total_students",
+			"updated_at",
+		]);
 		expect(body.active_students).toBe(1);
 		expect(Number.isNaN(Date.parse(body.updated_at))).toBe(false);
+	});
+
+	it("names only the missing students, and only the two fields that identify one", async () => {
+		/*
+		 * Everyone in IT 3 B except one is signed in, so the response legitimately
+		 * carries exactly one student's name. What must never travel is everything else:
+		 * the students who are present are not in the list at all, and no account,
+		 * address or cohort identifier leaves with the one that is.
+		 *
+		 * IT 3 B holds only `it3b`, so it is signed in, and the response is about
+		 * IT 3 A where exactly one of the four has no session.
+		 */
+		await signedIn([student, otherStudent, it3a]);
+
+		const response = await classCount(staff.token, { department: "IT", year: "3", section: "A" });
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as ClassActivity;
+
+		expect(body.total_students).toBe(4);
+		expect(body.active_students).toBe(3);
+		expect(body.missing).toEqual([
+			{
+				register_no: registerOf(it3aOtherCohort),
+				student_name: "Class Test clsit3ab",
+			},
+		]);
 
 		const serialised = JSON.stringify(body);
 		for (const secret of [
+			// The three students who are present must not appear at all.
+			student.authUserId,
+			student.token,
+			student.email,
+			otherStudent.authUserId,
+			otherStudent.email,
 			it3a.authUserId,
 			it3a.token,
 			it3a.email,
-			it2a.authUserId,
-			cse3a.authUserId,
-			"Class Test",
-			"REG",
-			"student_name",
-			"register_no",
+			// The missing student's account must not appear either, only their name.
+			it3aOtherCohort.authUserId,
+			it3aOtherCohort.token,
+			it3aOtherCohort.email,
+			// Columns that exist on the roster but are not needed to recognise someone.
+			"email",
 			"auth_user_id",
+			"student_id",
+			"mentor_email",
+			"created_at",
+			"@kiot.ac.in",
+			// And no cohort or table name.
 			IT_2024,
+			IT_2025,
 		]) {
-			expect(serialised).not.toContain(secret);
+			expect(serialised, `response must not contain ${secret}`).not.toContain(secret);
 		}
+	});
+});
+
+/*
+ * The total and the missing list.
+ *
+ * These are the half of the response that has to agree with the count rather than
+ * merely resemble it: a staff member reading `42 / 68` and then opening a list has to
+ * find 26 names there, or the card is lying in a way nothing else on screen can reveal.
+ *
+ * Every read below goes through `readClassActivity`, which asserts `active + missing`
+ * equals `total` before returning, so the agreement is checked on every case rather
+ * than only in the one that is meant to test it.
+ */
+describe("the class total", () => {
+	it("counts every roster row in the class, signed in or not", async () => {
+		/*
+		 * A class spans cohorts, and no signed-in student means the total and the
+		 * active count must both still be non-zero -- which they are only if `total` is
+		 * counting roster rows rather than sessions.
+		 *
+		 * IT year 3 section A holds four students: `student` and `otherStudent` from
+		 * the top-level fixtures, `it3a` from the 2024_2028 cohort and `it3aOtherCohort`
+		 * from 2025_2029. Both of those cohorts really are the same class.
+		 */
+		const activity = await readClassActivity(staff.token, "IT", 3, "A");
+
+		expect(activity.total_students).toBe(4);
+		expect(activity.active_students).toBe(0);
+		expect(missingRegisters(activity).sort()).toEqual(
+			[
+				registerOf(student),
+				registerOf(otherStudent),
+				registerOf(it3a),
+				registerOf(it3aOtherCohort),
+			].sort(),
+		);
+	});
+
+	it("is unaffected by who is signed in", async () => {
+		const before = await readClassTotal(staff.token, "IT", 3, "A");
+		await signedIn([it3a, it3aOtherCohort, it3b]);
+		const after = await readClassTotal(staff.token, "IT", 3, "A");
+
+		expect(before).toBe(4);
+		expect(after).toBe(4);
+	});
+
+	it("includes a roster row that has no account behind it", async () => {
+		/*
+		 * `auth_user_id` is nullable, so a student can be on the roster with no way to
+		 * sign in. They cannot ever be active, but they are still a student of this
+		 * class and the staff member is still waiting for them -- counting them out of
+		 * the total would quietly shrink the class.
+		 */
+		const registerNo = await addUnlinkedStudent(IT_2024, 3, "A");
+		try {
+			const activity = await readClassActivity(staff.token, "IT", 3, "A");
+
+			expect(activity.total_students).toBe(5);
+			expect(activity.active_students).toBe(0);
+			expect(missingRegisters(activity)).toContain(registerNo);
+		} finally {
+			await removeStudent(IT_2024, registerNo);
+		}
+	});
+
+	it("excludes other sections, other years and other departments", async () => {
+		// IT 3 A holds four, two per IT cohort.
+		expect(await readClassTotal(staff.token, "IT", 3, "A")).toBe(4);
+		// IT 3 B holds one.
+		expect(await readClassTotal(staff.token, "IT", 3, "B")).toBe(1);
+		// IT 2 A holds one.
+		expect(await readClassTotal(staff.token, "IT", 2, "A")).toBe(1);
+		// CSE 3 A holds one, from the CSE cohort.
+		expect(await readClassTotal(staff.token, "CSE", 3, "A")).toBe(1);
+		// A class nobody is enrolled in is empty, not an error.
+		expect(await readClassTotal(staff.token, "IT", 4, "A")).toBe(0);
+	});
+
+	it("reports zero for a department with no provisioned cohort", async () => {
+		const response = await classCount(staff.token, { department: "ECE", year: "3", section: "A" });
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as ClassActivity;
+
+		expect(body.active_students).toBe(0);
+		expect(body.total_students).toBe(0);
+		expect(body.missing).toEqual([]);
+		expect(body.missing_truncated).toBe(false);
+	});
+});
+
+describe("the missing student list", () => {
+	it("is exactly the class minus the students holding a live session", async () => {
+		await signedIn([it3a, it3aOtherCohort, student, otherStudent]);
+
+		const activity = await readClassActivity(staff.token, "IT", 3, "A");
+
+		expect(activity.total_students).toBe(4);
+		expect(activity.active_students).toBe(4);
+		expect(activity.missing).toEqual([]);
+	});
+
+	it("empties as students sign in, and refills as their last session ends", async () => {
+		/*
+		 * The behaviour the card is for. Nothing here is pushed to the client and there
+		 * is no subscription: the same poll that reports the count reports the list, so
+		 * the only thing that moves the list is a session appearing or going away.
+		 *
+		 * IT 3 A starts with four students and nobody signed in.
+		 */
+		const everyone = [student, otherStudent, it3a, it3aOtherCohort]
+			.map((account) => registerOf(account))
+			.sort();
+
+		await signedIn([]);
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "A"))).toEqual(everyone);
+
+		// One signs in. Three names come off the list.
+		await signedIn([it3a]);
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "A"))).toEqual(
+			everyone.filter((registerNo) => registerNo !== registerOf(it3a)),
+		);
+
+		// Signing in again with a second device does not re-add anybody.
+		await addSession(it3a);
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "A"))).toEqual(
+			everyone.filter((registerNo) => registerNo !== registerOf(it3a)),
+		);
+
+		// Losing the first session while the second lives leaves them present.
+		expect((await logout(it3a.token)).status).toBe(200);
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "A"))).toEqual(
+			everyone.filter((registerNo) => registerNo !== registerOf(it3a)),
+		);
+
+		// Only when the last one goes does the name come back.
+		await revokeStudentSessions();
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "A"))).toEqual(everyone);
+	});
+
+	it("puts an expired session's owner back on the list", async () => {
+		await signedIn([it3b]);
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "B"))).toEqual([]);
+
+		await expireSessions(it3b);
+
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "B"))).toEqual([
+			registerOf(it3b),
+		]);
+	});
+
+	it("spans every cohort of the department, not just one table", async () => {
+		/*
+		 * The failure this guards against is the quiet one: reading only the cohort that
+		 * happened to be selected would report a full class while showing a missing list
+		 * that is missing half the students.
+		 *
+		 * IT 3 A holds two students in IT_2024 and two in IT_2025. Signing in everyone
+		 * from one cohort must leave the whole of the other cohort on the list.
+		 */
+		await signedIn([student, otherStudent, it3a]);
+
+		const activity = await readClassActivity(staff.token, "IT", 3, "A");
+
+		expect(activity.total_students).toBe(4);
+		expect(activity.active_students).toBe(3);
+		expect(missingRegisters(activity)).toEqual([registerOf(it3aOtherCohort)]);
+	});
+
+	it("is ordered by register number, so a stable key really is stable", async () => {
+		await signedIn([]);
+
+		const first = await readClassActivity(staff.token, "IT", 3, "A");
+		const second = await readClassActivity(staff.token, "IT", 3, "A");
+
+		const ordered = first.missing.map((row) => row.register_no);
+		expect(ordered.length).toBeGreaterThan(1);
+		expect(ordered).toEqual([...ordered].sort());
+		// The card keys each row on this value, so it has to be the same list twice.
+		expect(second.missing.map((row) => row.register_no)).toEqual(ordered);
+	});
+
+	it("never lists a student who is signed in", async () => {
+		await signedIn([student, otherStudent, it3a, it3aOtherCohort, it3b, it2a, cse3a]);
+
+		for (const [department, year, section] of [
+			["IT", 3, "A"],
+			["IT", 3, "B"],
+			["IT", 2, "A"],
+			["CSE", 3, "A"],
+		] as [string, number, string][]) {
+			const activity = await readClassActivity(staff.token, department, year, section);
+			expect(activity.missing, `${department} ${year} ${section}`).toEqual([]);
+		}
+	});
+
+	it("ignores heartbeat activity entirely", async () => {
+		/*
+		 * The same regression guard the count has, applied to the list. A student who
+		 * beat seconds ago but has no session is not signed in, and must not be
+		 * presented as though they were.
+		 */
+		await signedIn([]);
+		await grantSession(it3b);
+		expect((await ping(it3b.token)).status).toBe(200);
+		expect(await activityRows()).toEqual([it3b.authUserId]);
+
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "B"))).toEqual([]);
+
+		await revokeStudentSessions();
+
+		// The beat is still there, seconds old, and is still worth nothing.
+		expect(await activityRows()).toEqual([it3b.authUserId]);
+		expect(missingRegisters(await readClassActivity(staff.token, "IT", 3, "B"))).toEqual([
+			registerOf(it3b),
+		]);
+	});
+
+	it("never lists a non-student account, even one planted in the roster", async () => {
+		/*
+		 * The complement case. A staff account linked into a student roster is not
+		 * counted as active, and if the missing list were simply "rows with no session"
+		 * it would then be listed as a missing student -- false, and alarming to read.
+		 *
+		 * It is left out of the total too, which is what keeps the arithmetic honest:
+		 * a row that is in the denominator but in neither half would make
+		 * `active + missing` disagree with `total` on screen.
+		 */
+		await signedIn([student, otherStudent, it3a, it3aOtherCohort]);
+
+		await env.DB.prepare(
+			`INSERT INTO ${IT_2024} (student_id, register_no, student_name, year, section, email, auth_user_id)
+			 VALUES ('CLSSTAFF02', 'REGSTAFF02', 'Class Test planted', 3, 'A', 'cls.staff.02@kiot.ac.in', ?)`,
+		)
+			.bind(staff.authUserId)
+			.run();
+
+		try {
+			const activity = await readClassActivity(staff.token, "IT", 3, "A");
+
+			expect(activity.active_students).toBe(4);
+			// The planted row is in a cohort table but is not a student of the class.
+			expect(activity.total_students).toBe(4);
+			expect(activity.missing).toEqual([]);
+		} finally {
+			await env.DB.prepare(`DELETE FROM ${IT_2024} WHERE student_id = 'CLSSTAFF02'`).run();
+		}
+	});
+
+	it("does not expose the list to a caller who cannot see the count", async () => {
+		/*
+		 * The names are the sensitive part, so the gate that protects the integer has to
+		 * be the gate that protects them. A student asking about their own class is the
+		 * sharpest version of this: they are one of the rows.
+		 */
+		await signedIn([student]);
+
+		const response = await classCount(student.token, {
+			department: "IT",
+			year: "3",
+			section: "A",
+		});
+		expect(response.status).toBe(403);
+		expect(JSON.stringify(await response.json())).not.toContain("Class Test");
+
+		const asAdmin = await classCount(admin.token, {
+			department: "IT",
+			year: "3",
+			section: "A",
+		});
+		expect(asAdmin.status).toBe(403);
+		expect(JSON.stringify(await asAdmin.json())).not.toContain("Class Test");
+
+		const anonymous = await classCount(null, { department: "IT", year: "3", section: "A" });
+		expect(anonymous.status).toBe(401);
+		expect(JSON.stringify(await anonymous.json())).not.toContain("Class Test");
 	});
 });
 
@@ -811,5 +1258,181 @@ describe("the counters do not touch the workflows around them", () => {
 		await readCount(staff.token);
 		await readClassCount(staff.token, "IT", 3, "A");
 		expect(await snapshot()).toEqual(before);
+	});
+});
+
+/*
+ * A cohort provisioned after this build shipped.
+ *
+ * The class route reaches its tables through `listBatchesForDepartment`, so it has no
+ * list of cohorts of its own to fall out of date -- but "it uses the registry" is a
+ * claim, and a claim is only worth what a test that provisions a new cohort proves.
+ *
+ * The cohort here is created through the same admin endpoint the dashboard uses, so
+ * the tables, the indexes and the registry row are all real. Nothing is planted by hand
+ * and no batch label is written into this file's assertions: the test asks the
+ * registry what exists, and checks the class route followed it.
+ */
+describe("a cohort provisioned after this build shipped", () => {
+	const NEW_DEPARTMENT = "ECE";
+	const NEW_BATCH = "2027_2031";
+
+	it("is picked up by the total and the missing list with no code change", async () => {
+		// ECE is a supported department with no cohort at all until this runs.
+		expect(await readClassTotal(staff.token, NEW_DEPARTMENT, 2, "B")).toBe(0);
+
+		const created = await SELF.fetch("https://example.com/api/admin/batches", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Cookie: cookie(admin.token) },
+			body: JSON.stringify({ department: NEW_DEPARTMENT, batch: NEW_BATCH }),
+		});
+		expect(created.status).toBe(200);
+		const body = (await created.json()) as { studentTable: string };
+
+		/*
+		 * The table name comes back from the endpoint rather than being written here, so
+		 * this suite cannot fall out of step with `buildTableNames` the way a hardcoded
+		 * label would.
+		 */
+		const newTable = body.studentTable;
+		expect(newTable).toBeTruthy();
+
+		// Declared outside the try so the cleanup below can reach them either way.
+		let present: Account | undefined;
+		let absent: Account | undefined;
+		let elsewhere: Account | undefined;
+
+		try {
+			// Two students in ECE year 2 section B, one of them signed in.
+			present = await makeAccount("student", "ecenewe", {
+				live: false,
+				linkedStudent: true,
+				table: newTable,
+				year: 2,
+				section: "B",
+			});
+			absent = await makeAccount("student", "ecenewa", {
+				live: false,
+				linkedStudent: true,
+				table: newTable,
+				year: 2,
+				section: "B",
+			});
+			// One in a different section, who must never appear in this class.
+			elsewhere = await makeAccount("student", "ecenewb", {
+				live: false,
+				linkedStudent: true,
+				table: newTable,
+				year: 2,
+				section: "A",
+			});
+
+			await signedIn([present]);
+
+			const activity = await readClassActivity(staff.token, NEW_DEPARTMENT, 2, "B");
+
+			expect(activity.total_students).toBe(2);
+			expect(activity.active_students).toBe(1);
+			expect(missingRegisters(activity)).toEqual([registerOf(absent)]);
+			expect(missingRegisters(activity)).not.toContain(registerOf(elsewhere));
+
+			/*
+			 * The global count spans every department, so it sees this student too --
+			 * which is what shows the new cohort was really registered rather than only
+			 * read from a table that happened to exist.
+			 */
+			expect(await readCount(staff.token)).toBe(1);
+		} finally {
+			for (const account of [present, absent, elsewhere]) {
+				if (!account) continue;
+				await env.DB.prepare(`DELETE FROM auth_sessions WHERE auth_user_id = ?`)
+					.bind(account.authUserId)
+					.run();
+				await env.DB.prepare(`DELETE FROM auth_users WHERE auth_user_id = ?`)
+					.bind(account.authUserId)
+					.run();
+			}
+			await env.DB.prepare(`DELETE FROM ${newTable}`).run();
+			await env.DB.prepare(`DELETE FROM academic_batches WHERE department = ? AND batch = ?`)
+				.bind(NEW_DEPARTMENT, NEW_BATCH)
+				.run();
+			await env.DB.prepare(`DROP TABLE IF EXISTS ${newTable}`).run();
+			await env.DB.prepare(
+				`DROP TABLE IF EXISTS ${newTable.replace("_Students_", "_Attendance_")}`,
+			).run();
+		}
+
+		/*
+		 * And with the cohort gone, the department is empty again -- which is the other
+		 * half of "dynamic": a cohort that is unregistered must stop counting, rather than
+		 * going on resolving for the life of the Worker isolate.
+		 *
+		 * The batch registry is cached per isolate for 60s, and this test has just
+		 * dropped the tables inside that window, so the refresh production code relies
+		 * on is triggered here explicitly instead of by sleeping. `GET /api/admin/batches`
+		 * is the route that already forces a rehydrate, and it is the same call the
+		 * admin picker makes every time it opens.
+		 */
+		await SELF.fetch("https://example.com/api/admin/batches", {
+			headers: { Cookie: cookie(admin.token) },
+		});
+
+		expect(await readClassTotal(staff.token, NEW_DEPARTMENT, 2, "B")).toBe(0);
+	});
+});
+
+/*
+ * Failure handling.
+ *
+ * The card's contract with the server is that a failed request produces *no* payload,
+ * never a zeroed one. "0 / 0" and "0 of 68 present" are both answers a staff member
+ * would act on, so the server must not be able to produce them by accident, and the
+ * client must not be able to invent them either.
+ */
+describe("failure handling", () => {
+	it("answers a rejected class with no figures at all", async () => {
+		for (const query of [
+			{ department: "IT", year: "9", section: "A" },
+			{ department: "ZZ", year: "3", section: "A" },
+			{ department: "IT", year: "3", section: "" },
+		]) {
+			const response = await classCount(staff.token, query);
+			expect(response.status, JSON.stringify(query)).toBe(400);
+			const body = (await response.json()) as Record<string, unknown>;
+
+			expect(body.success).toBe(false);
+			// No half-answer: a rejected request carries neither figures nor rows.
+			for (const field of ["active_students", "total_students", "missing", "updated_at"]) {
+				expect(body, `${field} must not be present on a rejection`).not.toHaveProperty(field);
+			}
+		}
+	});
+
+	it("keeps the roster untouched when a class is rejected", async () => {
+		const before = await env.DB.prepare(`SELECT COUNT(*) AS total FROM ${IT_2024}`).first<{
+			total: number;
+		}>();
+
+		await classCount(staff.token, { department: "IT", year: "3", section: "Z" });
+
+		const after = await env.DB.prepare(`SELECT COUNT(*) AS total FROM ${IT_2024}`).first<{
+			total: number;
+		}>();
+		expect(after?.total).toBe(before?.total);
+	});
+
+	it("still serves the count when the class is one with nobody in it", async () => {
+		/*
+		 * The distinction the card is built on. An empty class is a successful answer of
+		 * zeroes; a broken request is an error with no answer. Conflating them is what
+		 * would let a failure reach the screen as a number.
+		 */
+		const activity = await readClassActivity(staff.token, "IT", 4, "D");
+
+		expect(activity.success).toBe(true);
+		expect(activity.active_students).toBe(0);
+		expect(activity.total_students).toBe(0);
+		expect(activity.missing).toEqual([]);
+		expect(Number.isNaN(Date.parse(activity.updated_at))).toBe(false);
 	});
 });

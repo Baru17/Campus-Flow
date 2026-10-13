@@ -2,32 +2,45 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { getClassActiveStudentCount } from '../api/activityApi'
 
 /*
- * The class-specific active student count.
+ * The class-specific activity: who is signed in, how many there are, and who is not.
  *
  * The same shape as the global hook it grew out of: poll once a second while the view
  * is on, never overlap two requests, and never let a failure empty the card. What is
- * new is the class, which changes three things.
+ * different is the payload and the class, which changes three things.
  *
  *   - The result is scoped to one (department, year, section), so changing any of
  *     them has to invalidate what is on screen. `classKey` is that invalidation: it
  *     changes only when the selection does, and the effect below resets on it.
  *   - There is a manual refresh, so `refresh()` is handed back. It calls the very
  *     same guarded fetch the timer calls, which is what makes "refresh only the
- *     count" true by construction rather than by discipline -- there is no other
+ *     activity" true by construction rather than by discipline -- there is no other
  *     request this hook is capable of making.
  *   - `pending` is exposed so the button can be disabled and the spinner can run.
  *
  * ## A failure is never zero
  *
- * `count` stays `null` until the server has actually answered, and stays at its last
- * good value through any later failure. Nothing here ever turns an error into a 0, so
- * a component cannot render "0 students" for a request that failed -- the only way a
- * 0 reaches the screen is a real 0 from a real response.
+ * `activity` stays `null` until the server has actually answered, and stays at its last
+ * good value through any later failure. Nothing here ever turns an error into a 0 or
+ * an empty list, so a component cannot render "0 of 68 students present" for a request
+ * that failed -- which would read as "the whole class is absent". The only way a 0
+ * reaches the screen is a real 0 from a real response.
  */
 const POLL_INTERVAL_MS = 1000
 
+/*
+ * A hidden tab is not a staff member who has stopped watching the class.
+ *
+ * The timer keeps running and each tick returns immediately, so there is no interval
+ * to tear down and rebuild and no way to end up with two. This is the same reasoning
+ * `useStudentActivity` applies to the student heartbeat for the same reason: a
+ * backgrounded tab is not idle data, it is data nobody is reading.
+ */
+function tabIsHidden() {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+}
+
 export function useClassActiveStudentCount({ enabled, department, year, section }) {
-  const [count, setCount] = useState(null)
+  const [activity, setActivity] = useState(null)
   const [error, setError] = useState(null)
   const [pending, setPending] = useState(false)
 
@@ -45,7 +58,7 @@ export function useClassActiveStudentCount({ enabled, department, year, section 
       fetchRef.current = null
       inFlight.current = false
       setPending(false)
-      setCount(null)
+      setActivity(null)
       setError(null)
       return undefined
     }
@@ -55,6 +68,11 @@ export function useClassActiveStudentCount({ enabled, department, year, section 
 
     const fetchOnce = async () => {
       if (disposed || inFlight.current) return
+      /*
+       * Skipped before `pending` is set, so a paused tab never shows a spinner it is
+       * not going to resolve.
+       */
+      if (tabIsHidden()) return
       inFlight.current = true
       setPending(true)
       try {
@@ -65,12 +83,12 @@ export function useClassActiveStudentCount({ enabled, department, year, section 
           signal: controller.signal,
         })
         if (disposed) return
-        setCount(next)
+        setActivity(next)
         setError(null)
       } catch (err) {
         if (disposed || err?.name === 'AbortError') return
         /*
-         * The last good number stays on screen and polling carries on, so a dropped
+         * The last good numbers stay on screen and polling carries on, so a dropped
          * request shows as a stale badge rather than as a dashboard that empties
          * itself every time the network hiccups.
          */
@@ -81,12 +99,34 @@ export function useClassActiveStudentCount({ enabled, department, year, section 
       }
     }
 
+    /*
+     * Coming back to the tab is a refresh, not a wait. A class can empty completely
+     * while the tab is in the background -- every session ending at once is exactly
+     * what happens when a period ends -- and the staff member returning to the card
+     * must not be shown the state they left it in.
+     *
+     * `inFlight` is deliberately not forced clear here. If a request is genuinely in
+     * flight it is fetching *now*, and letting this start a second one would be the
+     * overlap the guard exists to prevent; it settles on its own and the data is just
+     * as fresh. Clearing the flag to "make sure" something runs would trade a skipped
+     * poll, which costs nothing, for two concurrent reads.
+     */
+    const handleVisibilityChange = () => {
+      if (tabIsHidden()) return
+      fetchOnce()
+    }
+
     fetchRef.current = fetchOnce
-    setCount(null)
+    setActivity(null)
     setError(null)
-    setPending(true)
+    /*
+     * `pending` is raised inside `fetchOnce` rather than here, because on a hidden tab
+     * that call returns without fetching. Setting it out here would leave the refresh
+     * button permanently disabled with nothing in flight to re-enable it.
+     */
     fetchOnce()
     const timer = window.setInterval(fetchOnce, POLL_INTERVAL_MS)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
       disposed = true
@@ -98,6 +138,7 @@ export function useClassActiveStudentCount({ enabled, department, year, section 
        */
       controller.abort()
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       fetchRef.current = null
       inFlight.current = false
     }
@@ -109,5 +150,5 @@ export function useClassActiveStudentCount({ enabled, department, year, section 
     fetchRef.current?.()
   }, [])
 
-  return { count, error, pending, refresh }
+  return { activity, error, pending, refresh }
 }

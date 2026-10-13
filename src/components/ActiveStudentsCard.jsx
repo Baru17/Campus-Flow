@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useClassActiveStudentCount } from '../hooks/useClassActiveStudentCount'
 import StatusMessage from './StatusMessage'
-import { UsersIcon, RefreshIcon } from './Icons'
+import { UsersIcon, RefreshIcon, AlertIcon, ChevronRightIcon, CheckIcon } from './Icons'
 
 /*
- * The live active-student count for the class the staff member has selected.
+ * The live class activity for the class the staff member has selected.
  *
  * It is a card rather than a fourth stat chip, because it is no longer a single
- * glanceable number: it is a control (which class), a result (how many), and a second
- * way to refresh. Built from the same `cf-card`, `cf-card-header`, `section-title`,
- * `cf-icon-badge`, `cf-status-pill` and `btn-cf-*` pieces as the rest of the
- * dashboard, including the OD entry card it sits beside.
+ * glanceable number: it is a control (which class), a result (how many of how many),
+ * a second way to refresh, and a list of who is not there. Built from the same
+ * `cf-card`, `cf-card-header`, `section-title`, `cf-icon-badge`, `cf-list-*`,
+ * `cf-status-pill` and `btn-cf-*` pieces as the rest of the dashboard, including the
+ * OD entry card it sits beside.
  *
  * ## Nothing is shown before it is asked for
  *
@@ -22,10 +23,15 @@ import { UsersIcon, RefreshIcon } from './Icons'
  * Choosing a different class takes the result away again and puts the button back,
  * so a number on screen always describes the class currently selected.
  *
- * ## Count only
+ * ## What the staff member is shown
  *
- * No names, no register numbers, no list. The endpoint returns one integer, so there
- * is nothing to show even if this component wanted to.
+ * `active / total` as one figure, because "42" against an unknown denominator is not
+ * an answer, and the missing list because a fraction nobody can act on is not either.
+ *
+ * The list carries a register number and a name and nothing else: no email, no account
+ * id, no year or section (the card header already says which class this is), and no
+ * timestamp of when the student was last seen. Those two fields are what it takes to
+ * recognise somebody in a room, and the endpoint was written to send no more.
  */
 export default function ActiveStudentsCard({ enabled = true, department, year, section }) {
   const classReady = Boolean(department && year && section)
@@ -41,34 +47,56 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
     setViewingClass(null)
   }, [classKey])
 
+  /*
+   * Whether the missing list is open. Reset with the class rather than carried across,
+   * for the same reason the number is: an open list of yesterday's class is a list of
+   * people who are wrong to be looking at right now.
+   */
+  const [missingOpen, setMissingOpen] = useState(false)
+  useEffect(() => {
+    setMissingOpen(false)
+  }, [classKey])
+
   const viewing = Boolean(enabled && classKey && viewingClass === classKey)
 
-  const { count, error, pending, refresh } = useClassActiveStudentCount({
+  const { activity, error, pending, refresh } = useClassActiveStudentCount({
     enabled: viewing,
     department,
     year,
     section,
   })
 
-  const hasCount = count !== null
+  const hasActivity = activity !== null
   const failed = Boolean(error)
+
+  const activeStudents = hasActivity ? activity.activeStudents : null
+  const totalStudents = hasActivity ? activity.totalStudents : null
+  const missing = hasActivity ? activity.missing : []
+
+  /*
+   * `total` is shown next to `active` rather than on its own line, and the pair is
+   * rendered from the same object the two numbers came from -- so they cannot be from
+   * different polls. There is no `active / (total ?? 0)` fallback: a failed request has
+   * no total either, and a denominator of zero would read as "the class is empty".
+   */
+  const ratio = hasActivity ? `${activeStudents} / ${totalStudents}` : null
 
   let pillVariant = 'active'
   let pillText = 'Live'
   let pillTitle = 'Refreshing every second'
 
-  if (!hasCount && failed) {
+  if (!hasActivity && failed) {
     pillVariant = 'expired'
     pillText = 'Failed'
-    pillTitle = error?.message || 'The active student count could not be loaded.'
-  } else if (!hasCount) {
+    pillTitle = error?.message || 'The class activity could not be loaded.'
+  } else if (!hasActivity) {
     pillVariant = 'idle'
     pillText = 'Loading'
-    pillTitle = 'Loading the active student count'
+    pillTitle = 'Loading the class activity'
   } else if (failed) {
     pillVariant = 'idle'
     pillText = 'Stale'
-    pillTitle = `Showing the last count that loaded. ${error?.message || ''}`.trim()
+    pillTitle = `Showing the last update that loaded. ${error?.message || ''}`.trim()
   }
 
   return (
@@ -109,42 +137,40 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
       {viewing && (
         <>
           <div className="mt-3 flex items-center gap-3 flex-wrap">
-            {hasCount ? (
+            {hasActivity ? (
               /*
-               * Full width below `sm`, so the count keeps its natural width on a
-               * phone instead of being squeezed.
-               *
-               * Sharing a row with the pill and the refresh button, this chip is
-               * `flex-1`, which means a flex basis of zero: the row hands it whatever
-               * is left after the two fixed-width items. On a 360px screen that is
-               * about 100px for a chip whose icon, padding and gap already take 70 --
-               * leaving less than the width of the word "STUDENTS", so the label
-               * spilled out of the chip and off the card. Taking the whole line below
-               * `sm` puts the pill and the button on the row underneath instead, and
-               * above `sm` it goes back to sharing one with them.
+               * Full width below `sm`, so the chip keeps its natural width on a phone
+               * instead of being squeezed. Sharing a row with the pill and the button,
+               * this chip is `flex-1`, which is a flex basis of zero: the row hands it
+               * whatever is left after the two fixed-width items. On a 360px screen
+               * that is about 100px for a chip whose icon, padding and gap already take
+               * 70 -- less than the width of the word "STUDENTS". Taking the whole line
+               * below `sm` puts the pill and the button underneath instead, and above
+               * `sm` it goes back to sharing one row with them.
                */
               <div className="stat-chip stat-chip-green w-full sm:w-auto sm:flex-1 min-w-0">
                 <span className="stat-chip-icon" aria-hidden="true">
                   <UsersIcon size={18} />
                 </span>
                 <div className="min-w-0">
-                  <div className="stat-chip-label">Active Students</div>
-                  <div className="stat-chip-value">{count}</div>
+                  <div className="stat-chip-label">Active / Total</div>
+                  <div className="stat-chip-value">{ratio}</div>
                 </div>
               </div>
             ) : failed ? (
               /*
-               * No number is shown at all here. A request that failed has no count,
-               * and rendering a 0 in its place would be a lie the staff member would
-               * act on.
+               * No numbers are shown at all here. A request that failed has neither a
+               * count nor a denominator, and rendering zeroes in their place would be a
+               * lie the staff member would act on -- "0 / 68" reads as "the entire class
+               * is absent".
                */
               <span className="text-muted-2 text-sm w-full sm:w-auto sm:flex-1 min-w-0">
-                No count available for this class.
+                No class activity available.
               </span>
             ) : (
               <div className="flex items-center gap-2 w-full sm:w-auto sm:flex-1 min-w-0">
                 <span className="cf-spinner" role="status" aria-hidden="true" />
-                <span className="text-muted-2 text-sm">Loading the active student count…</span>
+                <span className="text-muted-2 text-sm">Loading the class activity…</span>
               </div>
             )}
 
@@ -172,10 +198,116 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
             </button>
           </div>
 
+          {/*
+            The missing list.
+
+            Collapsed by default: a class of sixty with forty absent is a wall of text
+            on a dashboard whose job is to be scannable, and the count on the chip above
+            already answers "is anyone missing" without opening anything.
+
+            The toggle is always rendered once the numbers are in, including when the
+            list is empty, because "everyone is here" is itself information and a
+            header that appears and disappears as people sign in and out is worse than
+            one that stays put.
+          */}
+          {hasActivity && (
+            <div className="mt-3">
+              <button
+                type="button"
+                className="btn-cf-outline w-full inline-flex items-center justify-between gap-2 px-3 py-2 text-sm"
+                onClick={() => setMissingOpen((open) => !open)}
+                aria-expanded={missingOpen}
+                aria-controls="active-students-missing-list"
+              >
+                <span className="inline-flex items-center gap-2 min-w-0">
+                  {missing.length === 0 ? (
+                    <CheckIcon size={16} />
+                  ) : (
+                    <AlertIcon size={16} />
+                  )}
+                  <span className="truncate">
+                    {missing.length === 0
+                      ? 'Everyone is signed in'
+                      : `Missing Students (${missing.length})`}
+                  </span>
+                </span>
+                <ChevronRightIcon
+                  size={16}
+                  className={`shrink-0 transition-transform duration-200 ${
+                    missingOpen ? 'rotate-90' : ''
+                  }`}
+                />
+              </button>
+
+              {missingOpen && (
+                <div id="active-students-missing-list" className="cf-list-card mt-2 overflow-hidden">
+                  {missing.length === 0 ? (
+                    <div className="cf-list-item">
+                      <span className="cf-list-icon green" aria-hidden="true">
+                        <CheckIcon size={16} />
+                      </span>
+                      <div className="cf-list-meta">
+                        <div className="title">No missing students</div>
+                        <div className="sub">
+                          Every account in this class is signed in with a valid session.
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    missing.map((student) => (
+                      /*
+                       * Keyed on `register_no`, which is UNIQUE within a roster table
+                       * and stable across polls. It is the one identifier that does not
+                       * change between renders, so React reuses the row instead of
+                       * unmounting and remounting it -- which is what lets `.cf-list-item`
+                       * animate in and lets a row that has just signed in leave without
+                       * the rest of the list reshuffling around it.
+                       */
+                      <div className="cf-list-item" key={student.register_no}>
+                        <span className="cf-list-icon" aria-hidden="true">
+                          <AlertIcon size={16} />
+                        </span>
+                        <div className="cf-list-meta">
+                          {/*
+                            Name first and on its own line. `.title` truncates with an
+                            ellipsis rather than wrapping, which is right for a name on a
+                            phone and still leaves the register number legible underneath
+                            it on the `.sub` line.
+                          */}
+                          <div className="title" title={student.student_name}>
+                            {student.student_name}
+                          </div>
+                          <div className="sub">{student.register_no}</div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+
+                  {/*
+                    Only reachable if the server capped the list, which a real section
+                    never does. It is stated rather than left to be assumed: a list that
+                    quietly stops at N rows reads as "these are the missing ones".
+                  */}
+                  {activity.missingTruncated && (
+                    <div className="cf-list-item">
+                      <div className="cf-list-meta">
+                        <div className="title">List truncated</div>
+                        <div className="sub">
+                          Showing the first {missing.length} by register number. The count above is
+                          the full number missing.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {failed && (
             <div className="mt-3">
               <StatusMessage variant="danger">
-                {error?.message || 'The active student count could not be loaded. Try refreshing.'}
+                {error?.message || 'The class activity could not be loaded. Try refreshing.'}
               </StatusMessage>
             </div>
           )}
