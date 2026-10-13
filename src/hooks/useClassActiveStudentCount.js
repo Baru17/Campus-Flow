@@ -4,8 +4,8 @@ import { getClassActiveStudentCount } from '../api/activityApi'
 /*
  * The class-specific activity: who is signed in, how many there are, and who is not.
  *
- * The same shape as the global hook it grew out of: poll once a second while the view
- * is on, never overlap two requests, and never let a failure empty the card. What is
+ * The same shape as the global hook it grew out of: poll while the view is on, never
+ * overlap two requests, and never let a failure empty the card. What is
  * different is the payload and the class, which changes three things.
  *
  *   - The result is scoped to one (department, year, section), so changing any of
@@ -25,7 +25,26 @@ import { getClassActiveStudentCount } from '../api/activityApi'
  * that failed -- which would read as "the whole class is absent". The only way a 0
  * reaches the screen is a real 0 from a real response.
  */
-const POLL_INTERVAL_MS = 1000
+/*
+ * How often the card re-reads the class.
+ *
+ * This was one second, which was right when the count was simply "holds a session": the
+ * number could change on any poll and a staff member watching a class wanted to see it
+ * move.
+ *
+ * It is not right now. A student qualifies through a login session that must have been
+ * created in the last five minutes, so the underlying state can only change when
+ * somebody signs in or signs out, or when a session ages past the window -- and nothing
+ * about the answer is more precise than the polling interval makes it. Polling a
+ * five-minute window sixty times a minute spends two D1 round trips per second per open
+ * card to notice changes that are, at worst, five seconds old.
+ *
+ * Five seconds is the compromise: a sign-in is visible almost immediately, an ageing-out
+ * is noticed well inside the margin of the window itself, and the request rate drops by
+ * five times. The manual refresh button still calls the same guarded fetch, so a staff
+ * member who needs the number now is never waiting on the timer.
+ */
+const POLL_INTERVAL_MS = 5000
 
 /*
  * A hidden tab is not a staff member who has stopped watching the class.

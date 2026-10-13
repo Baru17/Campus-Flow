@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useClassActiveStudentCount } from '../hooks/useClassActiveStudentCount'
+import { describeClassActivity, missingToggleLabel } from '../utils/classActivity'
 import StatusMessage from './StatusMessage'
 import { UsersIcon, RefreshIcon, AlertIcon, ChevronRightIcon, CheckIcon } from './Icons'
 
@@ -27,6 +28,11 @@ import { UsersIcon, RefreshIcon, AlertIcon, ChevronRightIcon, CheckIcon } from '
  *
  * `active / total` as one figure, because "42" against an unknown denominator is not
  * an answer, and the missing list because a fraction nobody can act on is not either.
+ *
+ * A class with nobody enrolled in it is rendered as itself -- a sentence, and no
+ * statistic and no list. `0 / 0` would be true and unreadable, and an empty
+ * missing-student panel would read as a successful all-clear rather than as "this class
+ * does not exist yet".
  *
  * The list carries a register number and a name and nothing else: no email, no account
  * id, no year or section (the card header already says which class this is), and no
@@ -66,24 +72,28 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
     section,
   })
 
-  const hasActivity = activity !== null
   const failed = Boolean(error)
 
-  const activeStudents = hasActivity ? activity.activeStudents : null
-  const totalStudents = hasActivity ? activity.totalStudents : null
-  const missing = hasActivity ? activity.missing : []
-
   /*
-   * `total` is shown next to `active` rather than on its own line, and the pair is
-   * rendered from the same object the two numbers came from -- so they cannot be from
-   * different polls. There is no `active / (total ?? 0)` fallback: a failed request has
-   * no total either, and a denominator of zero would read as "the class is empty".
+   * How to present this response, decided once in `describeClassActivity`.
+   *
+   * An empty class is rendered as itself -- a sentence, and no statistic and no list --
+   * because `0 / 0` is true and unreadable, and an empty missing-student panel would read
+   * as a successful all-clear rather than as "this class does not exist yet".
    */
-  const ratio = hasActivity ? `${activeStudents} / ${totalStudents}` : null
+  const {
+    hasActivity,
+    totalStudents,
+    missing,
+    isEmptyClass,
+    allPresent,
+    ratio,
+    showMissingControl,
+  } = describeClassActivity(activity)
 
   let pillVariant = 'active'
   let pillText = 'Live'
-  let pillTitle = 'Refreshing every second'
+  let pillTitle = 'Refreshing every few seconds'
 
   if (!hasActivity && failed) {
     pillVariant = 'expired'
@@ -137,7 +147,35 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
       {viewing && (
         <>
           <div className="mt-3 flex items-center gap-3 flex-wrap">
-            {hasActivity ? (
+            {isEmptyClass ? (
+              /*
+               * The empty class, in place of the statistic.
+               *
+               * Built from `cf-list-card` + `cf-list-item`, the same pair the missing
+               * list below it uses, so the two states share one visual language. The
+               * row is the card's only child, which is what lets the `:last-child` rule
+               * drop the dashed divider -- without that it would draw a rule under the
+               * whole block and read as a broken table.
+               *
+               * `w-full sm:w-auto sm:flex-1 min-w-0` is the same trio the statistic
+               * chip uses, so the pill and the refresh button keep their position at
+               * every screen size and only the contents of the flexed line change.
+               */
+              <div className="cf-list-card w-full sm:w-auto sm:flex-1 min-w-0">
+                <div className="cf-list-item">
+                  <span className="cf-list-icon" aria-hidden="true">
+                    <UsersIcon size={16} />
+                  </span>
+                  <div className="cf-list-meta">
+                    <div className="title">There are no students in this class.</div>
+                    <div className="sub">
+                      Nobody is enrolled in {department} · Year {year} · Section {section} yet. This
+                      card keeps updating, so it will fill in as soon as the roster does.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : hasActivity ? (
               /*
                * Full width below `sm`, so the chip keeps its natural width on a phone
                * instead of being squeezed. Sharing a row with the pill and the button,
@@ -205,12 +243,16 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
             on a dashboard whose job is to be scannable, and the count on the chip above
             already answers "is anyone missing" without opening anything.
 
-            The toggle is always rendered once the numbers are in, including when the
-            list is empty, because "everyone is here" is itself information and a
-            header that appears and disappears as people sign in and out is worse than
-            one that stays put.
+            The toggle is rendered once the numbers are in for a class that has students,
+            including when the list is empty, because "everyone is here" is itself
+            information and a header that appears and disappears as people sign in and out
+            is worse than one that stays put.
+
+            An empty class gets no toggle at all. There is nothing to list and nothing
+            to report, so a control that opened onto an empty panel would be an
+            invitation to read absence as reassurance.
           */}
-          {hasActivity && (
+          {showMissingControl && (
             <div className="mt-3">
               <button
                 type="button"
@@ -220,16 +262,12 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
                 aria-controls="active-students-missing-list"
               >
                 <span className="inline-flex items-center gap-2 min-w-0">
-                  {missing.length === 0 ? (
+                  {allPresent ? (
                     <CheckIcon size={16} />
                   ) : (
                     <AlertIcon size={16} />
                   )}
-                  <span className="truncate">
-                    {missing.length === 0
-                      ? 'Everyone is signed in'
-                      : `Missing Students (${missing.length})`}
-                  </span>
+                  <span className="truncate">{missingToggleLabel({ isEmptyClass, allPresent, missingCount: missing.length })}</span>
                 </span>
                 <ChevronRightIcon
                   size={16}
@@ -241,7 +279,13 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
 
               {missingOpen && (
                 <div id="active-students-missing-list" className="cf-list-card mt-2 overflow-hidden">
-                  {missing.length === 0 ? (
+                  {/*
+                  Only reachable when the counts say the whole class is present, since
+                  the toggle that opens this panel is not rendered for an empty class
+                  and says "Everyone is signed in" otherwise. The `allPresent` guard
+                  keeps the panel honest if that toggle is ever relaxed.
+                */}
+                {allPresent ? (
                     <div className="cf-list-item">
                       <span className="cf-list-icon green" aria-hidden="true">
                         <CheckIcon size={16} />
@@ -249,7 +293,8 @@ export default function ActiveStudentsCard({ enabled = true, department, year, s
                       <div className="cf-list-meta">
                         <div className="title">No missing students</div>
                         <div className="sub">
-                          Every account in this class is signed in with a valid session.
+                          All {totalStudents} students in this class are signed in with a valid
+                          session.
                         </div>
                       </div>
                     </div>

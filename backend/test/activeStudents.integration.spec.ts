@@ -9,16 +9,18 @@
  *
  * ## What "active" means here
  *
- * An account is counted when it holds a valid, unexpired login session. It is counted
- * for as long as that session exists, whether or not the student has touched the
- * screen, and whether or not the app is in the foreground.
+ * An account is counted when it holds a login session that is both unexpired and was
+ * created within the recent-session window. The second half is what separates "signed
+ * in" from "here": a student who signed in during last week still holds a valid session
+ * and is still signed in on every protected route, and this file asserts that they are,
+ * while the dashboard does not claim they are in the room.
  *
  * That is a deliberate change from counting heartbeats, and the file is shaped around
- * it: a count test sets **which accounts hold a session** and nothing else. The
- * `student_activity` table is never consulted by either endpoint, and several tests
- * below exist specifically to prove that -- an account with a live session and no
- * heartbeat at all is counted, and an account with a fresh heartbeat and no live
- * session is not.
+ * the session rather than the browser: a count test sets **which accounts hold a
+ * qualifying session** and nothing else. The `student_activity` table is never consulted
+ * by either endpoint, and several tests below exist specifically to prove that -- an
+ * account with a qualifying session and no heartbeat at all is counted, and an account
+ * with a fresh heartbeat and no qualifying session is not.
  *
  * ## On test "ignores an identity claimed in the body"
  *
@@ -56,6 +58,19 @@
  * properties that make the arithmetic hold: a roster row with no account is in the
  * total, a non-student account linked into a roster is in neither half, and the list
  * spans every cohort of the department rather than one table.
+ *
+ * ## Session age
+ *
+ * A session qualifies while it is unexpired *and* was created inside the recent-session
+ * window. Almost every test in this file grants a session the ordinary way, which
+ * stamps `created_at` with "now" and therefore lands inside the window -- so those tests
+ * are unaffected by the rule and still read as before.
+ *
+ * The window itself is exercised by `grantSessionAged`, which writes `created_at`
+ * directly, because the column has one-second resolution and the boundary cannot be
+ * reached by waiting. Those tests state the whole rule rather than only its edges:
+ * an old session still authenticates, a fresh login restores the count, several
+ * sessions make one student, and the campus-wide count and the class count agree.
  *
  * ## Storage
  *
@@ -249,6 +264,54 @@ async function addSession(account: Account): Promise<string> {
 		.run();
 	return token;
 }
+
+/**
+ * A session whose *age* is what the test is about.
+ *
+ * The counting rule looks at `auth_sessions.created_at`, and that column is never
+ * written by any code: every insert in `auth.ts` names only `(token_hash,
+ * auth_user_id, expires_at)`, so the value is SQLite's `CURRENT_TIMESTAMP` default. A
+ * test therefore cannot reach the boundary cases by waiting, and cannot reach them by
+ * granting a session either -- that always stamps "now".
+ *
+ * So the column is written here, in the exact shape the default produces. Writing it as
+ * an ISO string instead would quietly test a different comparison: `created_at` is
+ * stored space-separated and without a zone, and the two forms do not order against each
+ * other as text. See the note in `activity.ts`.
+ *
+ * `expiresAt` defaults to an hour out, which keeps every fixture session well inside its
+ * seven-day life, so a test about session *age* is never accidentally a test about
+ * session *expiry*.
+ */
+async function grantSessionAged(
+	account: Account,
+	options: { ageMs?: number; expiresAt?: string; token?: string } = {},
+): Promise<void> {
+	const { ageMs = 0, expiresAt, token = account.token } = options;
+
+	// SQLite's CURRENT_TIMESTAMP format: UTC, space separated, second resolution.
+	const createdAt = new Date(Date.now() - ageMs).toISOString().slice(0, 19).replace("T", " ");
+	await env.DB.prepare(
+		"INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+	)
+		.bind(
+			hashToken(token),
+			account.authUserId,
+			expiresAt ?? new Date(Date.now() + HOUR_MS).toISOString(),
+			createdAt,
+		)
+		.run();
+}
+
+/**
+ * The recent-session window the endpoint applies, restated here as a number.
+ *
+ * Written out rather than imported from the module on purpose. The module's copy is
+ * what the SQL binds, so importing it would mean a test that changes the rule silently
+ * starts agreeing with the new rule instead of failing -- which is the opposite of what
+ * these tests are for.
+ */
+const WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * The whole setup a count test needs: exactly these accounts are signed in.
@@ -926,6 +989,426 @@ describe("GET /api/activity/class-active-students", () => {
 });
 
 /*
+ * What counts as active, stated as scenarios.
+ *
+ * The single-account case is here because it is the one a reader is most likely to
+ * doubt: one student signing in on one device must move the number by exactly one, and
+ * the ways it could move by more are all ways this query could be quietly wrong.
+ *
+ * Each case is a whole class rather than a single row, so `readClassActivity` checks
+ * `active + missing === total` on the way through and a miscount cannot hide behind a
+ * plausible looking number.
+ */
+describe("the five-minute session window", () => {
+	/*
+	 * The rule: a session qualifies while it is unexpired AND was created inside the
+	 * window. These tests drive the *age* of the session directly rather than sleeping,
+	 * because the boundaries are the whole point and a suite that waits for them would be
+	 * both slow and timing-dependent.
+	 */
+
+	it("counts a session created well inside the window", async () => {
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: 30 * 1000 });
+
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+	});
+
+	it("counts a session sitting exactly on the boundary", async () => {
+		/*
+		 * Exactly five minutes old counts: "older than five minutes must not qualify"
+		 * makes the boundary itself inclusive.
+		 *
+		 * Asserted against the stored timestamps with the cutoff frozen, rather than
+		 * through the live endpoint. `created_at` has one-second resolution and the query
+		 * compares against `datetime('now', ...)`, which is evaluated when the request is
+		 * served -- so a session written five minutes before the request is already a few
+		 * hundred milliseconds past the line by the time it is read. Driving it through
+		 * HTTP would be a test that passes or fails depending on how fast the request
+		 * arrived. These assertions are deterministic, and the two cases either side of
+		 * the line are covered through the endpoint above and below.
+		 */
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: WINDOW_MS });
+
+		const row = await env.DB.prepare(
+			"SELECT created_at FROM auth_sessions WHERE auth_user_id = ? ORDER BY created_at DESC LIMIT 1",
+		)
+			.bind(it3b.authUserId)
+			.first<{ created_at: string }>();
+		const createdAt = row?.created_at ?? "";
+		expect(createdAt).not.toBe("");
+
+		const qualifies = async (threshold: string): Promise<number> => {
+			const result = await env.DB.prepare("SELECT ? >= ? AS qualifies")
+				.bind(createdAt, threshold)
+				.first<{ qualifies: number }>();
+			return Number(result?.qualifies ?? 0);
+		};
+
+		// `created_at` is UTC with no zone, so parsing it back as UTC is exact.
+		const createdAtMs = Date.parse(`${createdAt.replace(" ", "T")}Z`);
+		expect(Number.isNaN(createdAtMs)).toBe(false);
+		const oneSecondEarlier = new Date(createdAtMs - 1000).toISOString().slice(0, 19).replace("T", " ");
+		const oneSecondLater = new Date(createdAtMs + 1000).toISOString().slice(0, 19).replace("T", " ");
+
+		// A cutoff exactly equal to the session's own timestamp includes it: the boundary
+		// is inclusive, which is what makes "older than five minutes" mean strictly
+		// more than five minutes.
+		expect(await qualifies(createdAt)).toBe(1);
+		// A cutoff one second earlier -- a session that is comfortably inside -- includes it.
+		expect(await qualifies(oneSecondEarlier)).toBe(1);
+		// A cutoff one second later -- the session has just aged out -- excludes it.
+		expect(await qualifies(oneSecondLater)).toBe(0);
+	});
+
+	it("counts a session created just inside the boundary", async () => {
+		/*
+		 * Thirty seconds of margin rather than one. The window is measured against the
+		 * instant the request is served, so anything written exactly on the line is
+		 * already past it by the time it is read; this asserts the rule without
+		 * depending on how long the request took.
+		 */
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: WINDOW_MS - 30 * 1000 });
+
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+	});
+
+	it("stops counting a session just past the boundary", async () => {
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: WINDOW_MS + 30 * 1000 });
+
+		const activity = await readClassActivity(staff.token, "IT", 3, "B");
+		expect(activity.active_students).toBe(0);
+		expect(missingRegisters(activity)).toEqual([registerOf(it3b)]);
+	});
+
+	it("does not count a valid seven-day session that is simply old", async () => {
+		/*
+		 * The distinction the whole change exists to draw. The session is still perfectly
+		 * valid -- unexpired, and `resolveAuthUser` would still accept it on every
+		 * protected route -- and the student is still signed in. They are just not in the
+		 * room, so the dashboard does not claim they are.
+		 *
+		 * The expiry here is the full seven days, matching `SESSION_TTL_MS`, so nothing
+		 * about this fixture is about expiry.
+		 */
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, {
+			ageMs: 2 * 60 * 60 * 1000,
+			expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+		});
+
+		// The session still authenticates: it is neither rejected nor ended by the fact
+		// that the dashboard does not count it. This is the assertion that proves the
+		// window is reporting-only.
+		expect((await ping(it3b.token)).status).toBe(200);
+		expect(
+			(await SELF.fetch("https://example.com/api/auth/session", {
+				headers: { Cookie: cookie(it3b.token) },
+			})).status,
+		).toBe(200);
+
+		// But it does not make the student active on the dashboard.
+		const activity = await readClassActivity(staff.token, "IT", 3, "B");
+		expect(activity.active_students).toBe(0);
+		expect(missingRegisters(activity)).toEqual([registerOf(it3b)]);
+	});
+
+	it("counts the student again once they log in afresh", async () => {
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: 30 * 60 * 1000 });
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(0);
+
+		// A new login mints a new row. Nothing had to expire for this to work.
+		await grantSession(it3b);
+
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+	});
+
+	it("keeps counting a student whose other session is old", async () => {
+		/*
+		 * One account, two sessions, one fresh and one ancient. The window filters
+		 * sessions, not accounts: the account qualifies on the fresh one, and the old one
+		 * is neither deleted nor counted twice.
+		 */
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: 4 * 60 * 60 * 1000, token: `${it3b.token}-old` });
+		await grantSession(it3b);
+
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+
+		// Both rows are still present: nothing here invalidates a session.
+		const rows = await env.DB.prepare(
+			"SELECT COUNT(*) AS total FROM auth_sessions WHERE auth_user_id = ?",
+		)
+			.bind(it3b.authUserId)
+			.first<{ total: number }>();
+		expect(rows?.total).toBe(2);
+	});
+
+	it("counts one student however many sessions are inside the window", async () => {
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: 10 * 1000 });
+		await grantSessionAged(it3b, { ageMs: 60 * 1000, token: `${it3b.token}-device-2` });
+		await grantSessionAged(it3b, { ageMs: 120 * 1000, token: `${it3b.token}-device-3` });
+		await grantSessionAged(it3b, { ageMs: 4 * 60 * 60 * 1000, token: `${it3b.token}-device-4` });
+
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+		expect((await readCount(staff.token))).toBe(1);
+	});
+
+	it("does not count an expired session even when it was created just now", async () => {
+		/*
+		 * The two halves of the rule are independent, and neither substitutes for the
+		 * other. A session minted a second ago and already expired is not a session at
+		 * all, and must not be resurrected by being recent.
+		 */
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, {
+			ageMs: 1000,
+			expiresAt: new Date(Date.now() - 1000).toISOString(),
+		});
+
+		const activity = await readClassActivity(staff.token, "IT", 3, "B");
+		expect(activity.active_students).toBe(0);
+		expect(missingRegisters(activity)).toEqual([registerOf(it3b)]);
+	});
+
+	it("does not count a logged-out session", async () => {
+		await revokeStudentSessions();
+		await grantSession(it3b);
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+
+		expect((await logout(it3b.token)).status).toBe(200);
+
+		const activity = await readClassActivity(staff.token, "IT", 3, "B");
+		expect(activity.active_students).toBe(0);
+		expect(missingRegisters(activity)).toEqual([registerOf(it3b)]);
+	});
+
+	it("does not let logging out of one device end the account", async () => {
+		/*
+		 * Logout deletes the row it was given and nothing else, so an account with a
+		 * second session inside the window stays active. Counting sessions instead of
+		 * accounts would have got this backwards.
+		 */
+		await revokeStudentSessions();
+		await grantSession(it3b);
+		await grantSessionAged(it3b, { ageMs: 2000, token: `${it3b.token}-device-2` });
+
+		expect((await logout(it3b.token)).status).toBe(200);
+
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+	});
+
+	it("ignores the heartbeat entirely, in both directions", async () => {
+		/*
+		 * `student_activity` is not a fallback. A fresh beat with no qualifying session
+		 * does not make a student active, and a qualifying session with no beat at all
+		 * does not need one.
+		 */
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: 60 * 60 * 1000 });
+		await grantSession(it3b);
+		expect((await ping(it3b.token)).status).toBe(200);
+		expect(await activityRows()).toEqual([it3b.authUserId]);
+
+		// Beat present, session too old: still not active.
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+
+		await revokeStudentSessions();
+		await grantSession(it3b);
+
+		// Session present, beat table emptied: still active.
+		await clearActivity();
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+	});
+
+	it("applies the same window to the campus-wide count", async () => {
+		/*
+		 * The global route and the class route answer the same question, so they have to
+		 * agree. A dashboard showing 1 here and 0 there would leave a reader with no way
+		 * to tell which number to believe.
+		 */
+		await revokeStudentSessions();
+		await grantSession(it3b);
+		expect(await readCount(staff.token)).toBe(1);
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+
+		await grantSessionAged(it3b, { ageMs: 60 * 60 * 1000, token: `${it3b.token}-old` });
+		await revokeStudentSessions();
+		await grantSessionAged(it3b, { ageMs: 60 * 60 * 1000 });
+
+		expect(await readCount(staff.token)).toBe(0);
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(0);
+	});
+
+	it("never counts a non-student session, however fresh", async () => {
+		await signedIn([]);
+
+		for (const account of [staff, advisor, admin]) {
+			await grantSession(account);
+			await grantSessionAged(account, { ageMs: 1000, token: `${account.token}-fresh` });
+		}
+
+		for (const [department, year, section] of [
+			["IT", 3, "A"],
+			["IT", 3, "B"],
+			["IT", 2, "A"],
+			["CSE", 3, "A"],
+		] as [string, number, string][]) {
+			expect(
+				(await readClassActivity(staff.token, department, year, section)).active_students,
+				`${department} ${year} ${section}`,
+			).toBe(0);
+		}
+
+		// And the campus-wide count agrees.
+		expect(await readCount(staff.token)).toBe(0);
+	});
+
+	it("keeps active, missing and total consistent at the boundary", async () => {
+		/*
+		 * The identity the card is built on, checked with sessions sitting either side of
+		 * the window rather than comfortably inside it. Both fixtures are in IT year 3
+		 * section A, so the one just inside and the one just outside are counted in the
+		 * same class and the arithmetic can actually be checked.
+		 */
+		await revokeStudentSessions();
+		await grantSessionAged(it3a, { ageMs: WINDOW_MS - 30 * 1000 });
+		await grantSessionAged(it3aOtherCohort, { ageMs: WINDOW_MS + 30 * 1000 });
+
+		const activity = await readClassActivity(staff.token, "IT", 3, "A");
+
+		// `readClassActivity` already asserts active + missing === total.
+		expect(activity.active_students).toBe(1);
+		expect(activity.total_students).toBe(4);
+		expect(activity.missing.length).toBe(activity.total_students - 1);
+		// The one outside the window is the one listed.
+		expect(missingRegisters(activity)).toContain(registerOf(it3aOtherCohort));
+		expect(missingRegisters(activity)).not.toContain(registerOf(it3a));
+	});
+});
+
+describe("what counts as an active student", () => {
+	it("counts one student signing in as exactly one", async () => {
+		await signedIn([]);
+
+		const before = await readClassActivity(staff.token, "IT", 3, "B");
+		expect(before.active_students).toBe(0);
+		expect(before.total_students).toBe(1);
+
+		await signedIn([it3b]);
+
+		const after = await readClassActivity(staff.token, "IT", 3, "B");
+		expect(after.active_students).toBe(1);
+		expect(after.total_students).toBe(1);
+		expect(after.missing).toEqual([]);
+	});
+
+	it("is not moved by a student in another class", async () => {
+		/*
+		 * The reported symptom, isolated. Signing in somebody who is on a different
+		 * roster must leave this class's numbers exactly as they were -- a count that
+		 * ignores the class filter is the most likely way for an extra account to appear
+		 * on a card it does not belong to.
+		 */
+		await signedIn([it2a]);
+
+		const it3a = await readClassActivity(staff.token, "IT", 3, "A");
+		expect(it3a.active_students).toBe(0);
+		expect(it3a.missing.length).toBe(it3a.total_students);
+
+		const it3b = await readClassActivity(staff.token, "IT", 3, "B");
+		expect(it3b.active_students).toBe(0);
+
+		const cse3a = await readClassActivity(staff.token, "CSE", 3, "A");
+		expect(cse3a.active_students).toBe(0);
+	});
+
+	it("is not moved by a student in another department", async () => {
+		await signedIn([cse3a]);
+
+		expect((await readClassActivity(staff.token, "IT", 3, "A")).active_students).toBe(0);
+		expect((await readClassActivity(staff.token, "CSE", 3, "A")).active_students).toBe(1);
+	});
+
+	it("counts one student however many sessions they hold", async () => {
+		await signedIn([it3b]);
+		await addSession(it3b);
+		await addSession(it3b);
+		await addSession(it3b);
+
+		const activity = await readClassActivity(staff.token, "IT", 3, "B");
+
+		expect(activity.active_students).toBe(1);
+		expect(activity.missing).toEqual([]);
+	});
+
+	it("counts a student who never logged out from an earlier login once", async () => {
+		/*
+		 * The production report, reproduced.
+		 *
+		 * An account that logs in repeatedly without logging out accumulates one
+		 * session row per login, all of them unexpired. The count is of accounts, so
+		 * that has to be one -- a staff member watching the card sees one student, not
+		 * one student per device and per forgotten session.
+		 */
+		await signedIn([it3b]);
+		await addSession(it3b);
+		await addSession(it3b);
+
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+
+		// And with a second account signed in, the class reads as two -- which is the
+		// honest answer when two people are signed in.
+		await signedIn([it3a, it3aOtherCohort]);
+		expect((await readClassActivity(staff.token, "IT", 3, "A")).active_students).toBe(2);
+	});
+
+	it("never counts a staff, advisor or admin session", async () => {
+		/*
+		 * Every one of these holds a live session right now -- that is what authorises
+		 * the requests in this file -- and none of them is a student.
+		 */
+		const staffSessions = await env.DB.prepare(
+			"SELECT COUNT(*) AS total FROM auth_sessions WHERE auth_user_id IN (?, ?, ?)",
+		)
+			.bind(staff.authUserId, advisor.authUserId, admin.authUserId)
+			.first<{ total: number }>();
+		expect(staffSessions?.total ?? 0).toBeGreaterThan(0);
+
+		await signedIn([]);
+
+		for (const [department, year, section] of [
+			["IT", 3, "A"],
+			["IT", 3, "B"],
+			["IT", 2, "A"],
+			["CSE", 3, "A"],
+		] as [string, number, string][]) {
+			expect(
+				(await readClassActivity(staff.token, department, year, section)).active_students,
+				`${department} ${year} ${section}`,
+			).toBe(0);
+		}
+	});
+
+	it("keeps a student out of the count once the last session expires", async () => {
+		await signedIn([it3b]);
+		expect((await readClassActivity(staff.token, "IT", 3, "B")).active_students).toBe(1);
+
+		await expireSessions(it3b);
+
+		const activity = await readClassActivity(staff.token, "IT", 3, "B");
+		expect(activity.active_students).toBe(0);
+		expect(activity.total_students).toBe(1);
+		expect(missingRegisters(activity)).toEqual([registerOf(it3b)]);
+	});
+});
+
+/*
  * The total and the missing list.
  *
  * These are the half of the response that has to agree with the count rather than
@@ -1426,13 +1909,74 @@ describe("failure handling", () => {
 		 * The distinction the card is built on. An empty class is a successful answer of
 		 * zeroes; a broken request is an error with no answer. Conflating them is what
 		 * would let a failure reach the screen as a number.
+		 *
+		 * The card renders this state as "There are no students in this class" rather
+		 * than as `0 / 0`, so what matters here is that the response is a well-formed
+		 * success and that every figure really is zero -- the client decides how to
+		 * present it, and it can only do that correctly if it is told the truth.
 		 */
+		await signedIn([it3a, it3b, it2a, cse3a]);
+
 		const activity = await readClassActivity(staff.token, "IT", 4, "D");
 
 		expect(activity.success).toBe(true);
 		expect(activity.active_students).toBe(0);
 		expect(activity.total_students).toBe(0);
 		expect(activity.missing).toEqual([]);
+		// Not truncated, because there is nothing that could have been truncated.
+		expect(activity.missing_truncated).toBe(false);
 		expect(Number.isNaN(Date.parse(activity.updated_at))).toBe(false);
+
+		/*
+		 * The same for a department with no cohort at all, which reaches the route
+		 * through the empty-registry branch rather than through an empty query result.
+		 * Both must produce the identical shape, or the card would branch on one and
+		 * not the other.
+		 */
+		const noCohort = await readClassActivity(staff.token, "ECE", 1, "A");
+		expect(Object.keys(noCohort).sort()).toEqual(Object.keys(activity).sort());
+		expect(noCohort.active_students).toBe(0);
+		expect(noCohort.total_students).toBe(0);
+		expect(noCohort.missing).toEqual([]);
+		expect(noCohort.missing_truncated).toBe(false);
+	});
+
+	it("reports a class that stops being empty the moment a roster row appears", async () => {
+		/*
+		 * The card keeps polling while it shows an empty class, so this is the state that
+		 * has to arrive on its own -- an administrator importing a roster under a
+		 * watching staff member, with nobody pressing refresh.
+		 */
+		await signedIn([]);
+		expect((await readClassActivity(staff.token, "IT", 4, "D")).total_students).toBe(0);
+
+		const late = await makeAccount("student", "latejoin", {
+			live: true,
+			linkedStudent: true,
+			table: IT_2024,
+			year: 4,
+			section: "D",
+		});
+
+		try {
+			const activity = await readClassActivity(staff.token, "IT", 4, "D");
+
+			expect(activity.total_students).toBe(1);
+			expect(activity.active_students).toBe(1);
+			expect(activity.missing).toEqual([]);
+		} finally {
+			await env.DB.prepare(`DELETE FROM auth_sessions WHERE auth_user_id = ?`)
+				.bind(late.authUserId)
+				.run();
+			await env.DB.prepare(`DELETE FROM auth_users WHERE auth_user_id = ?`)
+				.bind(late.authUserId)
+				.run();
+			await env.DB.prepare(`DELETE FROM ${IT_2024} WHERE auth_user_id = ?`)
+				.bind(late.authUserId)
+				.run();
+		}
+
+		// And back to empty once the account is gone, so nothing lingers.
+		expect((await readClassActivity(staff.token, "IT", 4, "D")).total_students).toBe(0);
 	});
 });
