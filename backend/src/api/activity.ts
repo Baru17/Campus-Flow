@@ -32,31 +32,58 @@
  *
  * ## What "active" means
  *
- * An account is counted when it holds a **valid, unexpired login session that was
- * created within the last five minutes**, and its roster row sits in the class being
- * asked about.
+ * An account is counted when it holds a **valid, unexpired login session** *and* has
+ * **activity recorded within the last sixty seconds**. Both halves are required, and
+ * neither substitutes for the other:
  *
- * Both halves matter, and neither is a substitute for the other:
+ *   - The session is what makes the account a student at all. A logout, or a passed
+ *     `expires_at`, disqualifies it -- the same comparison `resolveAuthUser` makes on
+ *     every authenticated request.
+ *   - The recent activity is what separates "signed in" from "here". A student holding a
+ *     perfectly valid seven-day session who has not touched the app in an hour is signed
+ *     in, and is not in the room, and a dashboard whose job is to say who is in the room
+ *     must not report them as present.
  *
- *   - *Unexpired* is the session still being a session. A logout or a passed `expires_at`
- *     disqualifies it, and that is the same comparison `resolveAuthUser` makes on every
- *     authenticated request.
- *   - *Recently created* is what separates "signed in and here" from "signed in". Without
- *     it, a class whose students all signed in during last week's timetable reads as a
- *     full class on a dashboard whose entire job is to say who is in the room right now.
+ * Activity is `student_activity.last_active_at`, written by `POST /ping` from the
+ * student's own browser. The client stamps nothing: the handler records
+ * `new Date().toISOString()` on the server, and the cutoff is computed by SQLite from
+ * its own clock, so neither the student nor their device clock decides who is counted.
+ * The client can only decide whether to send a beat at all.
  *
- * The window is measured from `auth_sessions.created_at` -- the moment the session was
- * minted -- and never from `expires_at`, which only says how long the session will last.
- * A seven-day session created ten minutes ago is a real, valid session that every
- * protected route still honours; it simply is not a student who is here now.
+ * `created_at` is not used for this. A session's age says how long an account has been
+ * signed in, which is a different question from whether they are using CampusFlow now.
  *
- * Logging in again mints a new row, so a student who signs back in becomes active again
- * immediately, without anything expiring.
+ * ## What the client has to get right for the server to be honest
  *
- * `student_activity` and its heartbeat are **not** read by either count. `POST /ping`
- * still writes that table and is still used by the client, but nothing in the counting
- * path depends on it, and no heartbeat -- recent, stale or absent -- can add an account
- * to or remove one from a count.
+ * The server trusts `last_active_at` to mean "this account was being used just now",
+ * and that is only true because of what `useStudentActivity.js` refuses to send. A beat
+ * is written in response to a real interaction -- a pointer, a key, a touch, a scroll,
+ * a form edit -- and never on a bare timer, never on render, and never in response to an
+ * earlier beat. A tab in the background sends nothing at all.
+ *
+ * Without that discipline the table would be a different, much worse signal: a tracker
+ * that beat on a timer would keep a student "active" for as long as their browser was
+ * open, which is exactly the backgrounded-tab problem an earlier revision of this file
+ * was written to avoid. The server rule and the client rule are one design, and the two
+ * halves are commented as such.
+ *
+ * ## Tab close is not signalled, deliberately
+ *
+ * There is no departure beacon, and `POST /ping` accepts no way to mark an account
+ * inactive. That is a choice, not an omission.
+ *
+ * `student_activity` is keyed on `auth_user_id`, so it holds one row per *account*. Any
+ * departure signal that acted on that row would evict an account whose second tab is
+ * still open and still beating -- the server has no way to tell the two apart, and a
+ * `navigator.sendBeacon` is neither reliable nor authenticated in a way that would help.
+ * The alternative would be a per-tab key, which means a second table or a second
+ * column, for a signal that the timeout already provides.
+ *
+ * So the sixty-second inactivity timeout is not a fallback here, it is the mechanism,
+ * and it is inherently correct for the multiple-tab case: a tab that is still being used
+ * keeps beating and the account stays counted, and a tab that is closed simply stops
+ * beating and the account ages out on its own. Nothing has to be reported for that to
+ * happen, so nothing can be lost or spoofed.
  *
  * ## Identity always comes from the session
  *
@@ -72,17 +99,22 @@
  * Nothing in this module can lengthen or shorten a session's life. Both count handlers
  * read `auth_sessions` and compare `expires_at` against the current time -- the same
  * comparison `resolveAuthUser` makes on every authenticated request -- and neither
- * writes to the table. The five-minute window is a filter over what is read; it does
- * not revoke anything, does not delete any row, and cannot end a session that the
- * authentication middleware would still accept.
+ * writes to that table. The sixty-second activity window is a filter over what is read;
+ * it does not revoke anything, does not delete any row, and cannot end a session that
+ * the authentication middleware would still accept.
  *
- * The heartbeat does not touch `auth_sessions` at all: it creates no session, extends
+ * A student who stops being counted because they stopped interacting is still signed in.
+ * They keep their seven-day session, their dashboard, their attendance history and their
+ * OD requests, and nothing about them changes except what a staff member's monitor says.
+ *
+ * The only write this module performs is the heartbeat upsert on `POST /ping`, which is
+ * an account-level activity timestamp and not a session: it creates no session, extends
  * no expiry, and revokes nothing.
  *
- * An account leaves a count when its sessions stop qualifying -- because they were
- * logged out, because they expired, or because they aged past the window -- and
- * reappears when a fresh session is minted. No activity signal, and nothing in this
- * module, can end a real session early or keep one alive past its expiry.
+ * An account leaves a count when its activity ages past the window or its sessions stop
+ * qualifying, and reappears when it beats again or a session is created. No activity
+ * signal, and nothing in this module, can end a real session early or keep one alive past
+ * its expiry.
  *
  * ## What leaves the class route, and what does not
  *
@@ -124,28 +156,44 @@ const app = new Hono<{ Bindings: { DB: D1Database } }>();
 const MISSING_STUDENT_LIMIT = 500;
 
 /**
- * How recent a login session must be to make an account count as active.
+ * How recent a student's activity must be for the account to count as active.
  *
  * This is a *reporting* window and nothing else. It does not shorten, extend, refresh
- * or otherwise touch a session: a student who signed in an hour ago keeps a valid
- * seven-day session and every protected route treats them as signed in exactly as
- * before. What the window changes is only whether the staff dashboard counts them, and
- * it exists because "holds a session" and "is here" are different questions -- a class
- * of sixty students who all signed in last week is not a class of sixty students in the
- * room, and the dashboard is the thing answering the second question.
+ * or revoke a session: a student who has stopped touching the app keeps a valid
+ * seven-day session, every protected route keeps accepting them, and nothing here can
+ * end that session. What the window decides is only whether the staff dashboard counts
+ * them -- which is the question the dashboard exists to answer.
  *
- * Five minutes is chosen to be longer than a sign-in flow and shorter than a lesson
- * period, so a student who opened the app at the start of a class is still counted
- * while that class is being taken.
+ * Sixty seconds is chosen to sit comfortably above the heartbeat interval, so an account
+ * that is genuinely being used is never counted as idle because a beat was late, while
+ * still being short enough that a student who has put the phone down is off the board
+ * before a staff member goes looking for them.
+ *
+ * ## Measured against the heartbeat, not the session
+ *
+ * The previous rule asked how recently the *session* was created, which meant an
+ * account that signed in once and then left was reported as present for as long as its
+ * seven-day session lasted. Activity is the thing actually being asked about, and
+ * `student_activity` already records it -- so the window is applied to that instead.
+ *
+ * An earlier version of this file went the other way and ignored `student_activity`
+ * entirely, on the grounds that a heartbeat could not distinguish a student from a
+ * backgrounded tab. That is a property of the *client* tracker, not of the table: with
+ * the tracker only sending a beat in response to real interaction, the timestamp means
+ * what the dashboard needs it to mean. See `useStudentActivity.js` for the half of this
+ * that has to be true for the other half to be honest.
  */
-const RECENT_SESSION_WINDOW_MINUTES = 5;
+const ACTIVITY_WINDOW_SECONDS = 60;
 
 /*
- * The same window as a SQLite date modifier, so it is bound as a parameter rather than
- * pasted into the statement. Nothing from the request reaches this expression, but
- * keeping the number in exactly one place is what stops the two copies drifting.
+ * The same window as a SQLite date modifier, bound as a parameter rather than pasted
+ * into the statement.
+ *
+ * The cutoff is computed by SQLite from its own clock. That is deliberate: a cutoff
+ * built in JavaScript would be a number the client has to keep honest with, and a
+ * device whose clock is minutes out would then decide who the staff dashboard counts.
  */
-const RECENT_SESSION_WINDOW_MODIFIER = `-${RECENT_SESSION_WINDOW_MINUTES} minutes`;
+const ACTIVITY_WINDOW_MODIFIER = `-${ACTIVITY_WINDOW_SECONDS} seconds`;
 
 function serverError(c: any, error: unknown, message: string, code: string) {
   console.error(message, getErrorMessageForLog(error));
@@ -163,13 +211,38 @@ function serverError(c: any, error: unknown, message: string, code: string) {
 /**
  * Record that this student account was just seen.
  *
- * Idempotent by construction: the upsert keys on `auth_user_id`, so repeated beats,
- * extra tabs and extra devices all collapse onto the one row for the account and
- * only the timestamp moves. That is what makes the aggregate count a count of
- * accounts rather than a count of open tabs.
+ * This is now load-bearing: it is the signal both count routes read, so the row it
+ * writes is what decides whether a student appears on the staff dashboard.
  *
- * The response is deliberately empty of anything derived from the caller: no user id,
- * no name, no register number, no token, not even the stored timestamp.
+ * Idempotent by construction: the upsert keys on `auth_user_id`, so repeated beats, extra
+ * tabs and extra devices all collapse onto the one row for the account and only the
+ * timestamp moves. That is what makes the count a count of accounts rather than a count
+ * of open tabs, and it is also why there is no way for one tab to mark an account inactive
+ * while another tab is still using it.
+ *
+ * ## The timestamp is the server's, and the body is ignored
+ *
+ * `last_active_at` is `new Date().toISOString()` on this side of the wire. The request
+ * body is never read -- there is no timestamp parameter to supply and no field that could
+ * override this one -- so a student cannot claim to have been active at a moment they
+ * were not, and cannot keep an account counted by replaying an old beat. The cutoff the
+ * count applies is computed by SQLite from its own clock.
+ *
+ * The account is taken from the session cookie by `requireAuth` and the role from that
+ * user by `requireStudent`, so a staff, advisor, HOD, coordinator or admin session is
+ * refused outright and cannot write a row at all.
+ *
+ * ## What this endpoint deliberately cannot do
+ *
+ * There is no departure flag and no way to mark an account inactive. `student_activity` is
+ * keyed per account, so any "this account has gone" signal would evict an account whose
+ * second tab is still open, and the server cannot tell the two apart. Inactivity is
+ * therefore expressed by the absence of beats and resolved by the activity window on the
+ * read side, which is correct for the multiple-tab case without needing a signal to
+ * arrive at all.
+ *
+ * The response is deliberately empty of anything derived from the caller: no user id, no
+ * name, no register number, no token, not even the stored timestamp.
  */
 app.post("/ping", requireAuth, requireStudent, async (c) => {
   const authUser = (c as any).get("authUser") as AuthUser;
@@ -192,12 +265,12 @@ app.post("/ping", requireAuth, requireStudent, async (c) => {
 /**
 * How many distinct student accounts are signed in right now.
  *
- * "Signed in" is decided by the session table alone and by nothing else:
+ * "Signed in" is decided by the session table and the activity table together, and by
+ * nothing else:
  *
  *   1. the account holds at least one `auth_sessions` row whose `expires_at` is still in
  *      the future;
- *   2. that session was created within the recent-session window, so an account that
- *      signed in last week is signed in, but is not "here now";
+ *   2. it has a `student_activity` row stamped within the last sixty seconds;
  *   3. the account's role is a student, so a staff, advisor, HOD, coordinator or admin
  *      session is never counted even though it sits in the same table.
  *
@@ -206,20 +279,20 @@ app.post("/ping", requireAuth, requireStudent, async (c) => {
  * differently would leave the dashboard contradicting itself with no way for a reader to
  * tell which one to believe.
  *
- * `student_activity` is deliberately not consulted. Recent activity used to be the
- * signal, and it made the number mean "touched the screen in the last minute" rather
- * than "is signed in": a student reading the OTP page without tapping dropped out,
- * and a phone left face-up on a desk dropped out with it. This counts sessions.
+ * An earlier revision ignored `student_activity` on the grounds that a heartbeat could
+ * not tell a student from a backgrounded tab. That is a property of the client tracker,
+ * not of the table, and the tracker has since been rewritten to beat only on real
+ * interaction -- so the timestamp now means what this query needs it to mean.
  *
- * Because the definition is the session and not the browser, an account leaves the count
- * when its sessions stop qualifying -- logged out, expired, or aged past the window --
- * and an expired session is excluded by the `expires_at` comparison whether or not the
- * purging cron has got to it yet. Nothing here revokes anything and nothing here can
- * extend a session.
+ * Because the definition is activity rather than session age, an account leaves the count
+ * sixty seconds after it stops being used and reappears the moment it beats again. An
+ * expired session is excluded whether or not the purging cron has got to it yet. Nothing
+ * here revokes anything and nothing here can extend a session.
  *
- * `COUNT(DISTINCT ...)` is what makes this an account count rather than a device or
- * tab count: one student signed in on three phones is three rows in `auth_sessions`
- * and one number here.
+ * `COUNT(DISTINCT ...)` is what makes this an account count rather than a device or tab
+ * count: one student signed in on three phones and holding five sessions is five rows in
+ * `auth_sessions` and one number here. `student_activity` is joined on its primary key,
+ * so it contributes exactly one row per account and cannot fan the join out.
  *
  * The query starts from `auth_sessions` rather than from the roster so the role join and
  * both session filters are done once, by index, rather than as a correlated probe per
@@ -238,10 +311,12 @@ app.get("/active-students", requireAuth, requireStaff, async (c) => {
        JOIN auth_users au
          ON au.auth_user_id = s.auth_user_id
         AND LOWER(au.role) = 'student'
-       WHERE s.expires_at > ?
-         AND datetime(s.created_at) >= datetime('now', ?)`
+       JOIN student_activity sa
+         ON sa.auth_user_id = s.auth_user_id
+        AND datetime(sa.last_active_at) >= datetime('now', ?)
+       WHERE s.expires_at > ?`
     )
-      .bind(nowIso, RECENT_SESSION_WINDOW_MODIFIER)
+      .bind(ACTIVITY_WINDOW_MODIFIER, nowIso)
       .first<{ active_students: number }>();
 
     const activeStudents = Number(row?.active_students ?? 0);
@@ -333,31 +408,36 @@ app.get("/active-students", requireAuth, requireStaff, async (c) => {
  * `student_activity` is not read: no heartbeat, and no activity cutoff, has any say in
  * whether an account appears here.
  *
- * ## The two timestamp columns are not in the same format
+ * ## Timestamps here are not all in the same format
  *
- * `auth_sessions` holds two timestamps written by two different systems:
+ * The tables involved hold timestamps written by three different systems:
  *
- *   - `expires_at` is written by the Worker as `Date#toISOString()` -- `2026-10-13T16:00:00.000Z`,
- *     with a `T` and a `Z`, and compared as a bound parameter of the same shape;
- *   - `created_at` is **never written by any code at all**. Every insert in
+ *   - `auth_sessions.expires_at` is written by the Worker as `Date#toISOString()` --
+ *     `2026-10-13T16:00:00.000Z`, with a `T` and a `Z`, and compared as a bound
+ *     parameter of the same shape;
+ *   - `auth_sessions.created_at` is **never written by any code at all**. Every insert in
  *     `auth.ts` names only `(token_hash, auth_user_id, expires_at)`, so the value is
  *     SQLite's `CURRENT_TIMESTAMP` default -- `2026-10-13 16:00:00`, space separated, no
- *     zone, second resolution, UTC.
+ *     zone, second resolution, UTC;
+ *   - `student_activity.last_active_at` is written by `POST /ping`, also as
+ *     `toISOString()`.
  *
- * Those two forms do not order against each other as text. Comparing the stored
- * `created_at` to an ISO-8601 threshold as plain strings looks at the tenth character
- * and finds `' '` against `'T'`; `' '` sorts first, so **every** session -- including
- * one created a second ago -- sorts as older than any same-day ISO string and the count
- * is permanently zero. That is not a hypothetical: it is what a naive
- * `created_at >= ?` does here, and it fails silently rather than loudly.
+ * Those forms do not order against each other as text. Comparing a stored
+ * `created_at` to an ISO-8601 threshold as plain strings looks at the tenth character and
+ * finds `' '` against `'T'`; `' '` sorts first, so **every** value sorts as older than
+ * any same-day ISO string and the count is permanently zero. That is not hypothetical --
+ * it is what a naive `created_at >= ?` does, and it fails silently rather than loudly.
  *
- * `datetime()` is what makes the comparison well defined. It parses both shapes --
- * space separated and `T`/`Z` separated, with or without fractional seconds -- and
- * returns a single normalised form, and `datetime('now', ...)` is UTC for the same
- * reason `CURRENT_TIMESTAMP` is, so the two sides of the comparison agree without
- * either being converted in JavaScript. A `NULL` or unparseable `created_at` becomes
- * `NULL`, which fails the comparison, so a malformed row disqualifies itself instead of
- * throwing or counting.
+ * Every activity comparison therefore goes through `datetime()`, which parses all of
+ * these shapes and returns one normalised form. `datetime('now', ...)` is UTC for the
+ * same reason the stored values are, so the two sides agree without either being
+ * converted in JavaScript -- which also means the cutoff comes from the database clock
+ * and not from a student's device. A `NULL` or unparseable timestamp becomes `NULL`,
+ * which fails the comparison, so a malformed row disqualifies itself rather than throwing
+ * or being counted.
+ *
+ * `expires_at` is left as a direct string comparison because every writer in the
+ * application uses `toISOString()` for it, so both sides are the same shape already.
  *
  * ## The `is_class_student` test, and why it excludes non-students from the total
  *
@@ -439,9 +519,15 @@ app.get("/class-active-students", requireAuth, requireStaff, async (c) => {
      * One pass over the class, read three ways.
      *
      * The branch tags each roster row with `is_active`, which is the whole counting
-     * rule in one expression: an unexpired session that was minted inside the recent
-     * window. Both statements below read that same tag, which is what makes the count
-     * and the list describe one class at one moment.
+     * rule in one expression: a live session *and* a beat recent enough. Both statements
+     * below read that same tag, which is what makes the count and the list describe one
+     * class at one moment.
+     *
+     * The two conditions are checked as separate `EXISTS` probes rather than as a join
+     * so that an account with several sessions is still one row here: the roster decides
+     * the row, the sessions only decide the flag. Both probes are index lookups --
+     * `idx_auth_sessions_auth_user_id` and the `student_activity` primary key -- so
+     * this stays one statement per cohort rather than a query per student.
      */
     for (const studentTable of studentTables) {
       branches.push(
@@ -452,7 +538,11 @@ app.get("/class-active-students", requireAuth, requireStaff, async (c) => {
                   SELECT 1 FROM auth_sessions s
                   WHERE s.auth_user_id = st.auth_user_id
                     AND s.expires_at > ?
-                    AND datetime(s.created_at) >= datetime('now', ?)
+                )
+                AND EXISTS (
+                  SELECT 1 FROM student_activity sa
+                  WHERE sa.auth_user_id = st.auth_user_id
+                    AND datetime(sa.last_active_at) >= datetime('now', ?)
                 ) THEN 1 ELSE 0 END AS is_active,
                 CASE WHEN st.auth_user_id IS NULL OR EXISTS (
                   SELECT 1 FROM auth_users au
@@ -461,7 +551,7 @@ app.get("/class-active-students", requireAuth, requireStaff, async (c) => {
          FROM ${studentTable} st
          WHERE st.year = ? AND st.section = ?`
       );
-      bindings.push(nowIso, RECENT_SESSION_WINDOW_MODIFIER, year, section);
+      bindings.push(nowIso, ACTIVITY_WINDOW_MODIFIER, year, section);
     }
 
     /*
