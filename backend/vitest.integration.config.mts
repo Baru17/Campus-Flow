@@ -74,6 +74,7 @@ export default defineConfig({
 			"test/migration0015.integration.spec.ts",
 			"test/cseBatch.integration.spec.ts",
 			"test/adminApi.integration.spec.ts",
+			"test/batchRegistryDrift.integration.spec.ts",
 			"test/adminEdit.integration.spec.ts",
 			"test/adminNoMigration.integration.spec.ts",
 			"test/adminBulkImport.integration.spec.ts",

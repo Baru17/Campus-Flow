@@ -86,6 +86,7 @@ import {
   type Department,
 } from "../utils/tableResolver";
 import { provisionBatchTables } from "../utils/provisioning";
+import { registerBatch } from "../utils/batchRegistry";
 import { formatBatchLabel, validateBatchInput } from "../utils/batchValidation";
 import { selectInChunks } from "../utils/sqlChunking";
 import {
@@ -620,26 +621,17 @@ app.post("/batches", requireAuth, requireAdmin, async (c) => {
     const provisioned = await provisionBatchTables(c.env.DB, department, batchCheck.batch);
 
     // The registry row is written after the tables exist, so a row can never
-    // advertise a cohort whose tables are missing.
-    await c.env.DB
-      .prepare(
-        `INSERT INTO academic_batches
-           (department, batch, start_year, end_year, student_table, attendance_table, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (department, batch) DO UPDATE SET
-           student_table = excluded.student_table,
-           attendance_table = excluded.attendance_table`
-      )
-      .bind(
-        department,
-        batchCheck.batch,
-        batchCheck.startYear,
-        batchCheck.endYear,
-        provisioned.studentTable,
-        provisioned.attendanceTable,
-        authUser(c).auth_user_id
-      )
-      .run();
+    // advertise a cohort whose tables are missing. See `registerBatch` for why the
+    // statement is built from the columns this database actually has.
+    await registerBatch(c.env.DB, {
+      department,
+      batch: batchCheck.batch,
+      startYear: batchCheck.startYear,
+      endYear: batchCheck.endYear,
+      studentTable: provisioned.studentTable,
+      attendanceTable: provisioned.attendanceTable,
+      createdBy: authUser(c).auth_user_id ?? null,
+    });
 
     // Make the new pair resolvable in this isolate immediately, so the very next
     // request can import students into it.
@@ -765,23 +757,15 @@ app.post("/students", requireAuth, requireAdmin, async (c) => {
     // first import of a new cohort work without a separate step.
     if (!resolveTables(target.department, target.batch)) {
       await provisionBatchTables(c.env.DB, target.department, target.batch);
-      await c.env.DB
-        .prepare(
-          `INSERT INTO academic_batches
-             (department, batch, start_year, end_year, student_table, attendance_table, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (department, batch) DO NOTHING`
-        )
-        .bind(
-          target.department,
-          target.batch,
-          Number(target.batch.slice(0, 4)),
-          Number(target.batch.slice(5)),
-          target.studentTable,
-          target.attendanceTable,
-          authUser(c).auth_user_id
-        )
-        .run();
+      await registerBatch(c.env.DB, {
+        department: target.department,
+        batch: target.batch,
+        startYear: Number(target.batch.slice(0, 4)),
+        endYear: Number(target.batch.slice(5)),
+        studentTable: target.studentTable,
+        attendanceTable: target.attendanceTable,
+        createdBy: authUser(c).auth_user_id ?? null,
+      });
       invalidateBatchRegistry();
     }
 
