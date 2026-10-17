@@ -12,6 +12,7 @@ import SearchableSelect from '../components/SearchableSelect'
 import OTPDisplay from '../components/OTPDisplay'
 import StaffAttendanceReport from '../components/StaffAttendanceReport'
 import { finalizeAttendanceSession, generateOtp } from '../api/attendanceApi'
+import useStaffAttendance from '../hooks/useStaffAttendance'
 import { getSubjects } from '../api/subjectsApi'
 import { YEARS, SECTIONS, PERIODS } from '../constants'
 import { formatClassName } from '../utils/format'
@@ -121,6 +122,27 @@ const [section, setSection] = useState('')
   }
 
   const sessionInProgress = session && !sessionExpired
+
+  /*
+   * The total-present summary and the attendance report read from one source of truth.
+   *
+   * A subject is required before this asks for anything, so the form does not fire
+   * class-advisor requests while it is still being filled in; a generated session is
+   * used as-is, so its date/period are the ones actually saved in the database. The
+   * hook resolves the caller's Class Advisor assignment and only reads the class-advisor
+   * endpoints when the requested class is the advisor's own, reporting `denied` /
+   * `no-assignment` / `mismatch` when it is not.
+   */
+  const attendanceSelection = useMemo(
+    () => (selectedSubject ? { department, batch, year, section, period } : null),
+    [selectedSubject, department, batch, year, section, period],
+  )
+
+  const attendance = useStaffAttendance({
+    session,
+    staffId: staff?.staff_id,
+    selection: attendanceSelection,
+  })
 
   /*
    * Any configured department can be attended by any signed-in staff member, so
@@ -316,6 +338,9 @@ const [section, setSection] = useState('')
     setFinalizing(true)
     try {
       await finalizeAttendanceSession(session.session_id)
+      // Finalization writes ABSENT for anyone the OTP never reached, so pull the
+      // settled statuses once the server is done rather than showing the pre-finalize map.
+      attendance.refresh()
     } catch (error) {
       setFinalizeError(error?.message || 'Unable to finalize the attendance session.')
     } finally {
@@ -534,6 +559,43 @@ const [section, setSection] = useState('')
                     }
                   />
                 </div>
+
+                {/*
+                  The "Total: present / class strength" readout the prompt asks for, directly
+                  under the subject. It is the same hook the report card uses, so the number
+                  here is always the number on the report. `idle` is the honest "nothing chosen
+                  yet" state (no fabricated 0/0), and an unauthorized account gets a plain
+                  unavailable line rather than a guess.
+                */}
+                <div className="sm:col-span-2">
+                  <div
+                    className={`staff-total${attendance.phase === 'ready' ? ' is-ready' : ''}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {attendance.phase === 'ready' ? (
+                      <>
+                        <span className="staff-total-label">Total:</span>{' '}
+                        <strong className="staff-total-value">{attendance.presentCount}</strong>
+                        <span className="staff-total-sep">/{attendance.totalStrength}</span>
+                        <span className="staff-total-hint">present / class strength</span>
+                      </>
+                    ) : attendance.phase === 'checking' || attendance.phase === 'loading' ? (
+                      <>
+                        <span className="cf-spinner" aria-hidden="true" />
+                        <span className="staff-total-hint">Checking class strength…</span>
+                      </>
+                    ) : attendance.phase === 'idle' ? (
+                      <span className="staff-total-hint">
+                        Total present / class strength appears once a class and subject are chosen.
+                      </span>
+                    ) : (
+                      <span className="staff-total-hint">
+                        Total present / class strength is unavailable for this account.
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
 
               <div className="mt-4">
@@ -625,15 +687,10 @@ const [section, setSection] = useState('')
                   </div>
 
                   {/*
-                    The attendance summary for this exact session, directly below the
-                    Subject row. It appears only after the OTP has expired and the
-                    automatic finalization has settled, so no final count is shown while
-                    the session is still being finalized.
+                    Finalization feedback. The report itself is not nested here: it is a
+                    card of its own below the grid, so the summary counts sit with the OTP
+                    section while the report stays one shared, collapsible panel.
                   */}
-                  {sessionExpired && !finalizing && (
-                    <StaffAttendanceReport session={session} staffId={staff.staff_id} />
-                  )}
-
                   {sessionExpired && finalizing && (
                     <div className="mt-3">
                       <StatusMessage variant="info">
@@ -729,6 +786,16 @@ const [section, setSection] = useState('')
             )}
           </div>
         </div>
+
+        {/*
+          The attendance summary and report for the session whose OTP was generated above.
+
+          It lives outside the two-column grid so the table gets the full width and can
+          scroll on a phone. The data, permission gate and editing all come from
+          `useStaffAttendance`, so the `Total: present/strength` line next to the subject
+          and the counts here can never disagree.
+        */}
+        {session && <StaffAttendanceReport session={session} attendance={attendance} />}
 
         {/*
           The way onto a mentor's OD queue.

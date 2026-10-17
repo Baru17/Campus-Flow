@@ -3186,84 +3186,76 @@ input[type="date"].cf-select {
 }
 
 /* ---------------------------------------------------------------------------
-   Staff session attendance summary
+   Staff session attendance summary and report
 --------------------------------------------------------------------------- */
-.staff-absent-chevron {
+
+/*
+ * The `Total: present / strength` readout under the subject selector. It keeps to one
+ * line and wraps without moving the surrounding grid, and only takes the stronger
+ * border once a real number is known.
+ */
+.staff-total {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid var(--cf-border);
+  background: var(--cf-surface-muted);
+  font-size: 0.95rem;
+}
+
+.staff-total.is-ready {
+  border-color: var(--cf-border-strong);
+}
+
+.staff-total-label {
+  font-weight: 600;
+}
+
+.staff-total-value {
+  font-size: 1.15rem;
+  color: var(--cf-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.staff-total-sep {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.staff-total-hint {
+  font-size: 0.82rem;
+  color: var(--cf-text-muted);
+}
+
+.staff-report-chevron {
   transition: transform 0.22s var(--cf-ease-soft);
 }
 
-.staff-absent-chevron.is-open {
+.staff-report-chevron.is-open {
   transform: rotate(90deg);
 }
 
 /*
- * Height-agnostic expand/collapse. Animating `max-height` would either clip a long
- * absentee list or reserve too much space; the grid 0fr -> 1fr trick animates to the
- * content's own height and keeps the transition smooth on mobile.
+ * Height-agnostic expand/collapse for the report. Animating `max-height` would either
+ * clip a long roster or reserve too much space; the grid 0fr -> 1fr trick animates to
+ * the content's own height and keeps the transition smooth on mobile.
  */
-.staff-absent-panel {
+.staff-report-panel {
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
   transition: grid-template-rows 0.28s var(--cf-ease-soft), opacity 0.2s ease;
 }
 
-.staff-absent-panel.is-open {
+.staff-report-panel.is-open {
   grid-template-rows: 1fr;
   opacity: 1;
 }
 
-.staff-absent-inner {
+.staff-report-inner {
+  min-height: 0;
   overflow: hidden;
-}
-
-.staff-absent-card {
-  margin-top: 0.75rem;
-  padding: 0.35rem 0.85rem;
-  border-radius: 14px;
-  border: 1px solid var(--cf-border);
-  background: var(--cf-surface-muted);
-}
-
-.staff-absent-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 16rem;
-  overflow-y: auto;
-}
-
-.staff-absent-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.55rem 0;
-  border-bottom: 1px dashed var(--cf-border);
-}
-
-.staff-absent-list li:last-child {
-  border-bottom: 0;
-}
-
-.staff-absent-name {
-  font-size: 0.9rem;
-  font-weight: 600;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.staff-absent-reg {
-  flex-shrink: 0;
-  font-size: 0.82rem;
-  color: var(--cf-text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.staff-absent-empty {
-  margin: 0;
-  padding: 0.75rem 0;
-  text-align: center;
-  font-size: 0.88rem;
-  color: var(--cf-text-muted);
 }
