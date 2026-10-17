@@ -6,7 +6,7 @@ import {
   requireClassAdvisor,
 } from "../middleware/auth";
 import { isTransientD1Error } from "../utils/databaseErrors";
-import { studentMatchesAttendanceClass } from "../utils/attendance";
+import { buildAttendanceReport, studentMatchesAttendanceClass } from "../utils/attendance";
 import {
   assertAllowedAttendanceTable,
   assertAllowedStudentTable,
@@ -375,6 +375,350 @@ attendance.post(
           success: false,
           error: transient ? "Attendance service is temporarily busy. Please retry." : "Failed to generate attendance OTP",
           code: transient ? "database-busy" : "attendance-generation-failed",
+        },
+        transient ? 503 : 500
+      );
+    }
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| SESSION REPORT (staff)
+|--------------------------------------------------------------------------
+|
+| GET /api/attendance/session/:sessionId
+|
+| The report for one OTP session, readable by the staff member who generated it.
+| This is the session-scoped counterpart to the Class Advisor report route: the
+| class-advisor routes are gated on the `class_advisor` role, so a plain staff
+| account got a 403 there even for a session it had just created itself.
+|
+| Ownership, not class, is the check. A session records its creator in
+| `created_by` (the auth user id written by /generate), so a staff member may
+| read exactly the sessions they created and no others. A class advisor is also
+| a staff member and passes the same check for their own sessions; their
+| class-wide view keeps using the class-advisor routes unchanged.
+|
+| The report text comes from the shared `buildAttendanceReport`, so what is shown
+| and copied here is byte-for-byte what the Class Advisor copies.
+|
+|--------------------------------------------------------------------------
+*/
+
+attendance.get(
+  "/session/:sessionId",
+  requireAuth,
+  requireStaff,
+  async (c) => {
+    try {
+      const authUser = (c as any).get("authUser") as { auth_user_id: string };
+      const sessionId = c.req.param("sessionId");
+
+      const session = await c.env.DB
+        .prepare("SELECT * FROM attendance_session WHERE session_id = ? LIMIT 1")
+        .bind(sessionId)
+        .first() as AttendanceSession | null;
+
+      if (!session) {
+        return c.json(
+          { success: false, error: "Session not found", code: "session-not-found" },
+          404
+        );
+      }
+
+      const staff = await c.env.DB
+        .prepare("SELECT staff_id, staff_name, department FROM staff WHERE auth_user_id = ? LIMIT 1")
+        .bind(authUser.auth_user_id)
+        .first() as StaffRecord | null;
+
+      /*
+       * `created_by` is written as the auth user id by /generate. The staff_id
+       * comparison additionally covers any historical row written the other way,
+       * without ever matching a session belonging to someone else.
+       */
+      const ownsSession =
+        session.created_by === authUser.auth_user_id ||
+        (staff !== null && session.created_by === staff.staff_id);
+
+      if (!ownsSession) {
+        return c.json(
+          {
+            success: false,
+            error: "You can only view a session you generated",
+            code: "forbidden",
+          },
+          403
+        );
+      }
+
+      const tables = resolveSessionTables(session);
+      if (!tables) {
+        return c.json(
+          {
+            success: false,
+            error: "This session's class is not configured for attendance.",
+            code: "session-tables-not-found",
+          },
+          400
+        );
+      }
+
+      const attendanceTable = assertAllowedAttendanceTable(tables.attendanceTable);
+      const studentTable = assertAllowedStudentTable(tables.studentTable);
+
+      const students = await c.env.DB
+        .prepare(
+          `SELECT student_id, register_no, student_name
+           FROM ${studentTable}
+           WHERE year = ? AND section = ?
+           ORDER BY register_no`
+        )
+        .bind(session.year, session.section)
+        .all();
+
+      const attendanceRows = await c.env.DB
+        .prepare(
+          `SELECT register_no, status, od FROM ${attendanceTable} WHERE session_id = ?`
+        )
+        .bind(session.session_id)
+        .all();
+
+      const attendanceByRegister: Record<string, { status: string; od: string }> = {};
+      for (const row of attendanceRows.results as { register_no: string; status: string; od: string }[]) {
+        attendanceByRegister[row.register_no] = { status: row.status, od: row.od };
+      }
+
+      const studentList = (students.results ?? []) as {
+        student_id: string;
+        register_no: string;
+        student_name: string;
+      }[];
+
+      const report = buildAttendanceReport({
+        date: session.attendance_date,
+        department: session.department,
+        section: session.section,
+        subjectName: session.subject_name,
+        students: studentList,
+        attendanceByRegister,
+      });
+
+      const unmarkedCount = Math.max(
+        report.totalStrength - report.presentCount - report.absentCount,
+        0
+      );
+
+      return c.json({
+        success: true,
+        data: {
+          session_id: session.session_id,
+          subject_code: session.subject_code,
+          subject_name: session.subject_name,
+          year: session.year,
+          section: session.section,
+          period: session.period,
+          attendance_date: session.attendance_date,
+          department: session.department,
+          batch: session.batch,
+          status: session.status,
+          students: studentList.map((s) => ({
+            ...s,
+            status: attendanceByRegister[s.register_no]?.status ?? null,
+            od: attendanceByRegister[s.register_no]?.od ?? null,
+          })),
+          summary: {
+            totalStrength: report.totalStrength,
+            presentCount: report.presentCount,
+            absentCount: report.absentCount,
+            odCount: report.odCount,
+            unmarkedCount,
+            percentage: report.percentage,
+          },
+          report: report.report,
+        },
+      });
+    } catch (error) {
+      console.error("Session report error:", error);
+      const transient = isTransientD1Error(error);
+      return c.json(
+        {
+          success: false,
+          error: transient
+            ? "Attendance service is temporarily busy. Please retry."
+            : "Failed to load the attendance report",
+          code: transient ? "database-busy" : "session-report-failed",
+        },
+        transient ? 503 : 500
+      );
+    }
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| SESSION MARK (staff)
+|--------------------------------------------------------------------------
+|
+| PATCH /api/attendance/session/:sessionId
+|
+| Edits one student's PRESENT/ABSENT mark for a session the caller generated.
+| This is the staff counterpart to the class-advisor PATCH: the class-advisor
+| routes are gated on the `class_advisor` role, so a plain staff account could
+| not correct a mark on its own session. Ownership is checked exactly as on the
+| report route above, and the student is verified to belong to the session's
+| class before anything is written.
+|
+| The mark is upserted on UNIQUE(session_id, register_no), so a correction lands
+| on the existing row rather than creating a second one, and a student who was
+| never marked gets a row without needing a pre-read.
+|
+|--------------------------------------------------------------------------
+*/
+
+attendance.patch(
+  "/session/:sessionId",
+  requireAuth,
+  requireStaff,
+  async (c) => {
+    try {
+      const authUser = (c as any).get("authUser") as { auth_user_id: string };
+      const sessionId = c.req.param("sessionId");
+      const body = await c.req.json<{ register_no?: string; status?: string }>();
+
+      const registerNo = body.register_no?.trim();
+      const status = body.status?.trim().toUpperCase();
+
+      if (!registerNo || !status || !["PRESENT", "ABSENT"].includes(status)) {
+        return c.json(
+          {
+            success: false,
+            error: "register_no and valid status (PRESENT/ABSENT) are required",
+            code: "invalid-request",
+          },
+          400
+        );
+      }
+
+      const session = await c.env.DB
+        .prepare("SELECT * FROM attendance_session WHERE session_id = ? LIMIT 1")
+        .bind(sessionId)
+        .first() as AttendanceSession | null;
+
+      if (!session) {
+        return c.json(
+          { success: false, error: "Session not found", code: "session-not-found" },
+          404
+        );
+      }
+
+      const staff = await c.env.DB
+        .prepare("SELECT staff_id, staff_name, department FROM staff WHERE auth_user_id = ? LIMIT 1")
+        .bind(authUser.auth_user_id)
+        .first() as StaffRecord | null;
+
+      const ownsSession =
+        session.created_by === authUser.auth_user_id ||
+        (staff !== null && session.created_by === staff.staff_id);
+
+      if (!ownsSession) {
+        return c.json(
+          {
+            success: false,
+            error: "You can only edit attendance for a session you generated",
+            code: "forbidden",
+          },
+          403
+        );
+      }
+
+      const tables = resolveSessionTables(session);
+      if (!tables) {
+        return c.json(
+          {
+            success: false,
+            error: "This session's class is not configured for attendance.",
+            code: "session-tables-not-found",
+          },
+          400
+        );
+      }
+
+      const attendanceTable = assertAllowedAttendanceTable(tables.attendanceTable);
+      const studentTable = assertAllowedStudentTable(tables.studentTable);
+
+      const student = await c.env.DB
+        .prepare(
+          `SELECT register_no, section FROM ${studentTable}
+           WHERE register_no = ? AND year = ? AND section = ? LIMIT 1`
+        )
+        .bind(registerNo, session.year, session.section)
+        .first() as { register_no: string; section: string } | null;
+
+      if (!student) {
+        return c.json(
+          {
+            success: false,
+            error: "Student does not belong to this class",
+            code: "student-not-in-class",
+          },
+          403
+        );
+      }
+
+      const existing = await c.env.DB
+        .prepare(
+          `SELECT id FROM ${attendanceTable} WHERE session_id = ? AND register_no = ? LIMIT 1`
+        )
+        .bind(sessionId, registerNo)
+        .first() as { id: number } | null;
+
+      if (existing) {
+        await c.env.DB
+          .prepare(`UPDATE ${attendanceTable} SET status = ?, marked_at = ? WHERE id = ?`)
+          .bind(status, new Date().toISOString(), existing.id)
+          .run();
+      } else {
+        await c.env.DB
+          .prepare(
+            `INSERT INTO ${attendanceTable} (attendance_id, register_no, section, attendance_date, period, subject_code, subject_name, marked_at, session_id, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(session_id, register_no) DO UPDATE
+             SET status = excluded.status, marked_at = excluded.marked_at`
+          )
+          .bind(
+            crypto.randomUUID(),
+            registerNo,
+            student.section,
+            session.attendance_date,
+            session.period,
+            session.subject_code,
+            session.subject_name,
+            new Date().toISOString(),
+            sessionId,
+            status
+          )
+          .run();
+      }
+
+      const updated = await c.env.DB
+        .prepare(
+          `SELECT register_no, status, od FROM ${attendanceTable} WHERE session_id = ? AND register_no = ? LIMIT 1`
+        )
+        .bind(sessionId, registerNo)
+        .first() as { register_no: string; status: string; od: string } | null;
+
+      return c.json({ success: true, attendance: updated });
+    } catch (error) {
+      console.error("Session mark error:", error);
+      const transient = isTransientD1Error(error);
+      return c.json(
+        {
+          success: false,
+          error: transient
+            ? "Attendance service is temporarily busy. Please retry."
+            : "Failed to update attendance",
+          code: transient ? "database-busy" : "session-mark-failed",
         },
         transient ? 503 : 500
       );

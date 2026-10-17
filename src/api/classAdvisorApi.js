@@ -80,3 +80,30 @@ export async function getReport(date, period) {
   if (!data || data.success === false) return null
   return data
 }
+
+/*
+ * The session-scoped reads a plain staff member uses for a session they
+ * generated. They are served by `/api/attendance/session/:sessionId`, which is
+ * gated on the staff role and on ownership of the session rather than on the
+ * class_advisor role the `/api/class-advisors/*` routes require -- so an
+ * ordinary staff account is no longer refused its own report.
+ */
+export async function getSessionAttendance(sessionId) {
+  assertBackend()
+  if (!sessionId) return null
+  const data = await apiRequest(`/api/attendance/session/${sessionId}`)
+  if (!data || data.success === false) return null
+  return data
+}
+
+export async function patchSessionAttendance(sessionId, registerNo, status) {
+  assertBackend()
+  const data = await apiRequest(`/api/attendance/session/${sessionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ register_no: registerNo, status }),
+  })
+  if (!data.success) {
+    throw new ApiError(data.error || 'Failed to update attendance', { code: data.code })
+  }
+  return data.attendance
+}

@@ -19,6 +19,7 @@ import {
   SUPPORTED_DEPARTMENTS,
 } from "./utils/tableResolver";
 import { formatBatchLabel } from "./utils/batchValidation";
+import { buildAttendanceReport } from "./utils/attendance";
 
 type Bindings = {
   DB: D1Database;
@@ -527,45 +528,15 @@ app.get("/api/class-advisors/attendance/report", requireAuth, requireClassAdviso
 
   const studentList = students.results as { student_id: string; register_no: string; student_name: string }[];
 
-  const totalStrength = studentList.length;
-  const presentCount = studentList.filter((s) => attendanceMap[s.register_no]?.status === "PRESENT").length;
-  const absentCount = studentList.filter((s) => attendanceMap[s.register_no]?.status === "ABSENT").length;
-  const odCount = studentList.filter((s) => attendanceMap[s.register_no]?.od === "YES").length;
-  const absentStudents = studentList.filter((s) => attendanceMap[s.register_no]?.status === "ABSENT");
-  const odStudents = studentList.filter((s) => attendanceMap[s.register_no]?.od === "YES");
-  const percentage = totalStrength ? Math.round((presentCount / totalStrength) * 100) : 0;
-
-  const dateLabel = date.split("-").reverse().join(".");
-  const subjectName = session.subject_name;
-
-  const absenteesList = absentStudents.length > 0
-    ? absentStudents.map((s, i) => `${i + 1}. ${s.student_name.toUpperCase()} (${s.register_no})`).join("\n")
-    : "Nil";
-
-  const odList = odStudents.length > 0
-    ? odStudents.map((s, i) => `${i + 1}. ${s.student_name.toUpperCase()} (${s.register_no})`).join("\n")
-    : "Nil";
-
-  const report = [
-    "Good Morning Sir,",
-    `Date: ${dateLabel}`,
-    "",
-    `B. Tech - ${department} - ${section}`,
-    `Total Strength: ${totalStrength}`,
-    `Present: ${presentCount}/${totalStrength}`,
-    `Absent: ${absentCount}`,
-    `OD: ${odCount}`,
-    `Hour: ${subjectName}`,
-    "",
-    "Absentees:",
-    "",
-    absenteesList,
-    "",
-    "OD:",
-    odList,
-    "",
-    `Attendance Percentage: ${percentage}%`,
-  ].join("\n");
+  const { report, totalStrength, presentCount, absentCount, odCount, percentage, absentees, odStudents } =
+    buildAttendanceReport({
+      date,
+      department,
+      section,
+      subjectName: session.subject_name,
+      students: studentList,
+      attendanceByRegister: attendanceMap,
+    });
 
   return c.json({
     success: true,
@@ -582,7 +553,7 @@ app.get("/api/class-advisors/attendance/report", requireAuth, requireClassAdviso
       absent: absentCount,
       od: odCount,
       percentage,
-      absentees: absentStudents.map((s) => ({ name: s.student_name, register_no: s.register_no })),
+      absentees: absentees.map((s) => ({ name: s.student_name, register_no: s.register_no })),
       od_students: odStudents.map((s) => ({ name: s.student_name, register_no: s.register_no })),
     },
   });

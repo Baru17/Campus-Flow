@@ -126,12 +126,14 @@ const [section, setSection] = useState('')
   /*
    * The total-present summary and the attendance report read from one source of truth.
    *
-   * A subject is required before this asks for anything, so the form does not fire
-   * class-advisor requests while it is still being filled in; a generated session is
-   * used as-is, so its date/period are the ones actually saved in the database. The
-   * hook resolves the caller's Class Advisor assignment and only reads the class-advisor
-   * endpoints when the requested class is the advisor's own, reporting `denied` /
-   * `no-assignment` / `mismatch` when it is not.
+   * A subject is required before this asks for anything, so the form does not fire a
+   * request while it is still being filled in. Once an OTP session exists the hook reads
+   * and writes that session directly through the session-scoped endpoints, which are gated
+   * on the caller having generated the session rather than on the class_advisor role -- so
+   * a plain staff account gets its own summary, table and copyable report. Before any
+   * session exists the only readable strength is the class advisor's roster, so that path
+   * is tried and, when the caller is not that advisor, the line simply reports that no
+   * number is available instead of guessing one.
    */
   const attendanceSelection = useMemo(
     () => (selectedSubject ? { department, batch, year, section, period } : null),

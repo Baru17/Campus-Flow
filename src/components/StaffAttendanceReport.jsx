@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getReport } from '../api/classAdvisorApi'
 import AttendanceReportTable from './AttendanceReportTable'
 import StatChip from './StatChip'
 import StatusMessage from './StatusMessage'
@@ -16,9 +15,9 @@ import { copyTextToClipboard } from '../utils/clipboard'
  *
  * The summary shows Present, Absent and Total class strength, and keeps any students
  * with no recorded status out of both counts (they are reported as "not marked" rather
- * than being mislabelled absent). The report panel reuses the Class Advisor's own
- * `AttendanceReportTable` (same columns, same Present/Absent editing) and copies the
- * Class Advisor's report text verbatim through `getReport`, so there is only one format.
+ * than being mislabelled absent). The report panel reuses the shared `AttendanceReportTable`
+ * (same columns, same Present/Absent editing) and copies the report text the server built with
+ * the same shared formatter the Class Advisor's report uses, so there is only one format.
  */
 export default function StaffAttendanceReport({ session, attendance }) {
   const [open, setOpen] = useState(false)
@@ -40,32 +39,12 @@ export default function StaffAttendanceReport({ session, attendance }) {
     [],
   )
 
-  const handleCopyReport = useCallback(async () => {
-    if (!session || copyState === 'copying') return
-    setCopyError(null)
-    setCopyState('copying')
-    try {
-      const data = await getReport(session.attendance_date, session.period)
-      if (!data || !data.report) {
-        throw new Error('The report is not available for this session yet.')
-      }
-      await copyTextToClipboard(data.report)
-      setCopyState('copied')
-      if (copyTimer.current) clearTimeout(copyTimer.current)
-      copyTimer.current = setTimeout(() => setCopyState('idle'), 2500)
-    } catch (error) {
-      setCopyState('idle')
-      setCopyError(error?.message || 'Could not copy the report. Please try again.')
-    }
-  }, [session, copyState])
-
-  if (!session) return null
-
   const {
     phase,
     message,
     students,
     attendanceMap,
+    report,
     presentCount,
     absentCount,
     unmarkedCount,
@@ -74,6 +53,23 @@ export default function StaffAttendanceReport({ session, attendance }) {
     saveError,
     toggle,
   } = attendance
+
+  const handleCopyReport = useCallback(async () => {
+    if (!report || copyState === 'copying') return
+    setCopyError(null)
+    setCopyState('copying')
+    try {
+      await copyTextToClipboard(report)
+      setCopyState('copied')
+      if (copyTimer.current) clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => setCopyState('idle'), 2500)
+    } catch (error) {
+      setCopyState('idle')
+      setCopyError(error?.message || 'Could not copy the report. Please try again.')
+    }
+  }, [report, copyState])
+
+  if (!session) return null
 
   const classLabel = formatClassName(session.department, session.year, session.section, session.batch)
   const ready = phase === 'ready'
@@ -90,33 +86,8 @@ export default function StaffAttendanceReport({ session, attendance }) {
     if (phase === 'denied') {
       return (
         <StatusMessage variant="warning">
-          Attendance for this class is restricted to its Class Advisor on the server.{' '}
-          {message || 'A staff account cannot read it.'} No summary or report is shown, and no
-          numbers are guessed. Ask an administrator to assign you as the Class Advisor.
-        </StatusMessage>
-      )
-    }
-    if (phase === 'no-assignment') {
-      return (
-        <StatusMessage variant="info">
-          Your account is not assigned as a Class Advisor, so this class&rsquo;s attendance
-          report cannot be read. It stays available on the Class Advisor dashboard.
-        </StatusMessage>
-      )
-    }
-    if (phase === 'mismatch') {
-      return (
-        <StatusMessage variant="warning">
-          This OTP was generated for {classLabel}, but the report can only be read for the
-          Class Advisor&rsquo;s own assigned class.
-        </StatusMessage>
-      )
-    }
-    if (phase === 'different-session') {
-      return (
-        <StatusMessage variant="warning">
-          This slot now belongs to a newer attendance session, so the report for the session
-          whose OTP you generated cannot be shown.
+          This session belongs to a different account, so its attendance cannot be shown here.
+          {message ? ` ${message}` : ''}
         </StatusMessage>
       )
     }
@@ -202,7 +173,7 @@ export default function StaffAttendanceReport({ session, attendance }) {
                   type="button"
                   className="btn-cf-primary inline-flex items-center gap-2"
                   onClick={handleCopyReport}
-                  disabled={copyState === 'copying'}
+                  disabled={!report || copyState === 'copying'}
                 >
                   {copyState === 'copied' ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
                   {copyState === 'copying' ? 'Copying…' : copyState === 'copied' ? 'Copied!' : 'Copy Report'}

@@ -1,44 +1,31 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   getAdvisorAssignment,
-  getAttendance,
   getClassStudents,
-  patchAttendance,
+  getSessionAttendance,
+  patchSessionAttendance,
 } from '../api/classAdvisorApi'
 
 /*
- * Attendance data for the staff dashboard's selected class.
+ * Attendance data for the staff dashboard's selected class and OTP session.
  *
- * The class-advisor endpoints are the only place the roster, the saved statuses and
- * the strength live, and the server restricts them to a Class Advisor whose assigned
- * class matches the session. So this hook resolves the caller's assignment first and
- * only reaches for data when the requested class is the advisor's own; otherwise it
- * reports the exact reason (`denied`, `no-assignment`, `mismatch`) instead of numbers
- * it cannot stand behind.
+ * Two sources, and which one is used depends only on whether a session exists:
  *
- * Two sources, chosen so a strength is available even before an OTP exists:
- *   - a live session  -> `/attendance` (roster + saved statuses for that date/period)
- *   - no session yet  -> `/students`  (the authoritative roster, so `0 / strength`)
+ *   - Once an OTP session exists, everything -- the summary, the table and the
+ *     copyable report text -- is read from and written to that session through
+ *     `/api/attendance/session/:sessionId`. Those routes are gated on the staff
+ *     role and on the caller having generated the session, so a plain staff
+ *     account can view, edit and copy the report for its own session. The
+ *     class-advisor-only endpoints are not in this path at all.
+ *   - Before any session exists, the `Total: present/strength` line still needs a
+ *     class strength, and the only roster readable without a session is the class
+ *     advisor's. That path is tried and, when the caller is not the advisor of the
+ *     selected class, the phase reports that no number is available rather than
+ *     inventing one.
  *
- * Nothing is hardcoded and no record is counted twice: counts are derived once from the
- * roster (a register number appears at most once per class) and the status map.
+ * Every count is derived from the roster the server returns, so the summary card
+ * and the table can never disagree, and nothing can go negative.
  */
-
-function normalize(value) {
-  return String(value ?? '')
-    .trim()
-    .toUpperCase()
-}
-
-function sameClass(assignment, target) {
-  if (!assignment || !target) return false
-  return (
-    normalize(assignment.department) === normalize(target.department) &&
-    Number(assignment.year) === Number(target.year) &&
-    normalize(assignment.section) === normalize(target.section) &&
-    String(assignment.batch ?? '') === String(target.batch ?? '')
-  )
-}
 
 function toStatusMap(rows) {
   const map = {}
@@ -48,11 +35,21 @@ function toStatusMap(rows) {
   return map
 }
 
+function sameClass(assignment, target) {
+  return (
+    assignment.department === target.department &&
+    assignment.batch === target.batch &&
+    Number(assignment.year) === Number(target.year) &&
+    assignment.section === target.section
+  )
+}
+
 export default function useStaffAttendance({ session, staffId, selection }) {
   const [phase, setPhase] = useState('idle')
   const [message, setMessage] = useState(null)
   const [students, setStudents] = useState([])
   const [attendanceMap, setAttendanceMap] = useState({})
+  const [report, setReport] = useState(null)
   const [savingId, setSavingId] = useState(null)
   const [saveError, setSaveError] = useState(null)
   const [reloadKey, setReloadKey] = useState(0)
@@ -83,60 +80,71 @@ export default function useStaffAttendance({ session, staffId, selection }) {
       setMessage(null)
       setStudents([])
       setAttendanceMap({})
+      setReport(null)
       setSaveError(null)
       return undefined
     }
 
     let cancelled = false
-    setPhase('checking')
     setMessage(null)
+    setSaveError(null)
 
     ;(async () => {
+      /*
+       * Session path. The route answers only for a session this caller generated,
+       * so this works for any staff role and needs no class-advisor assignment.
+       */
+      if (target.sessionId) {
+        setPhase('loading')
+        try {
+          const data = await getSessionAttendance(target.sessionId)
+          if (cancelled) return
+          if (!data) {
+            setPhase('error')
+            setMessage('The attendance report for this session is not available yet.')
+            return
+          }
+          const roster = Array.isArray(data.students) ? data.students : []
+          setStudents(roster)
+          setAttendanceMap(toStatusMap(roster))
+          setReport(typeof data.report === 'string' ? data.report : null)
+          setPhase('ready')
+        } catch (error) {
+          if (cancelled) return
+          setPhase(error?.status === 403 ? 'denied' : 'error')
+          setMessage(error?.message || null)
+        }
+        return
+      }
+
+      /*
+       * No session yet: best-effort class strength through the advisor roster.
+       * A plain staff account has no such roster, which is not an error here --
+       * it simply has no strength to show before its first session.
+       */
+      setPhase('checking')
       try {
         const assignment = await getAdvisorAssignment(staffId)
         if (cancelled) return
-        if (!assignment) {
+        if (!assignment || !sameClass(assignment, target)) {
+          setStudents([])
+          setAttendanceMap({})
+          setReport(null)
           setPhase('no-assignment')
           return
         }
-        if (!sameClass(assignment, target)) {
-          setPhase('mismatch')
-          return
-        }
-
-        setPhase('loading')
-
-        if (target.sessionId) {
-          const data = await getAttendance(target.date, target.period)
-          if (cancelled) return
-          if (data && data.session_id && data.session_id !== target.sessionId) {
-            setPhase('different-session')
-            return
-          }
-          if (data && data.session_id === target.sessionId) {
-            setStudents(Array.isArray(data.students) ? data.students : [])
-            setAttendanceMap(toStatusMap(data.students))
-            setPhase('ready')
-            return
-          }
-          // Session not readable yet (or gone): fall back to the roster for strength.
-          const roster = await getClassStudents()
-          if (cancelled) return
-          setStudents(Array.isArray(roster) ? roster : [])
-          setAttendanceMap({})
-          setPhase('ready')
-          return
-        }
-
         const roster = await getClassStudents()
         if (cancelled) return
         setStudents(Array.isArray(roster) ? roster : [])
         setAttendanceMap({})
+        setReport(null)
         setPhase('ready')
-      } catch (error) {
+      } catch {
         if (cancelled) return
-        setPhase(error?.status === 403 ? 'denied' : 'error')
-        setMessage(error?.message || null)
+        setStudents([])
+        setAttendanceMap({})
+        setReport(null)
+        setPhase('no-assignment')
       }
     })()
 
@@ -151,11 +159,13 @@ export default function useStaffAttendance({ session, staffId, selection }) {
       setSaveError(null)
       setSavingId(registerNo)
       try {
-        await patchAttendance(target.sessionId, registerNo, nextStatus)
-        const data = await getAttendance(target.date, target.period)
-        if (data && data.session_id === target.sessionId) {
-          setStudents(Array.isArray(data.students) ? data.students : [])
-          setAttendanceMap(toStatusMap(data.students))
+        await patchSessionAttendance(target.sessionId, registerNo, nextStatus)
+        const data = await getSessionAttendance(target.sessionId)
+        if (data) {
+          const roster = Array.isArray(data.students) ? data.students : []
+          setStudents(roster)
+          setAttendanceMap(toStatusMap(roster))
+          setReport(typeof data.report === 'string' ? data.report : null)
         }
       } catch (error) {
         setSaveError(error?.message || 'Could not save the attendance change.')
@@ -177,21 +187,20 @@ export default function useStaffAttendance({ session, staffId, selection }) {
 
   const totalStrength = students.length
   const unmarkedCount = Math.max(totalStrength - presentCount - absentCount, 0)
-  const percentage = totalStrength ? Math.round((presentCount / totalStrength) * 100) : 0
 
   return {
     phase,
     message,
     students,
     attendanceMap,
+    report,
     savingId,
     saveError,
     presentCount,
     absentCount,
     unmarkedCount,
     totalStrength,
-    percentage,
-    // Only a live session can be edited, and only after the class check above passed.
+    // A live session is editable by the staff member who generated it.
     canEdit: Boolean(target?.sessionId) && phase === 'ready',
     toggle,
     refresh,
