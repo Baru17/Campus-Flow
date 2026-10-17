@@ -10,6 +10,7 @@ import StatusMessage from '../components/StatusMessage'
 import OdManagementEntry from '../components/od/OdManagementEntry'
 import SearchableSelect from '../components/SearchableSelect'
 import OTPDisplay from '../components/OTPDisplay'
+import StaffAttendanceReport from '../components/StaffAttendanceReport'
 import { finalizeAttendanceSession, generateOtp } from '../api/attendanceApi'
 import { getSubjects } from '../api/subjectsApi'
 import { YEARS, SECTIONS, PERIODS } from '../constants'
@@ -713,6 +714,11 @@ const [section, setSection] = useState('')
             )}
           </div>
         </div>
+
+        {/* The absentees report for the session that just ended. */}
+        {session && sessionExpired && (
+          <StaffAttendanceReport session={session} staffId={staff.staff_id} expired={sessionExpired} />
+        )}
 
         {/*
           The way onto a mentor's OD queue.

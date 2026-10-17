@@ -9,6 +9,7 @@ import {
   updatePassword,
   validateResetToken,
 } from '../api/authApi'
+import { broadcastActivityRefresh } from '../utils/activityEvents'
 
 export default function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
@@ -48,6 +49,12 @@ export default function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     await studentLogout()
+    /*
+     * The student's session row is deleted server-side by this call. Tell any
+     * activity reader in this window to re-read now; it re-reads the server, so
+     * the number can only ever fall to the true value and never below it.
+     */
+    broadcastActivityRefresh()
     setUser(null)
     setStudent(null)
   }, [])

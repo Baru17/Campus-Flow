@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getActiveStudentCount } from '../api/activityApi'
+import { subscribeActivityRefresh } from '../utils/activityEvents'
 
 /*
  * How often the dashboard re-reads the aggregate number.
@@ -49,11 +50,13 @@ export function useActiveStudentCount(enabled) {
 
     poll()
     const timer = window.setInterval(poll, POLL_INTERVAL_MS)
+    const unsubscribeActivity = subscribeActivityRefresh(poll)
 
     return () => {
       disposed = true
       controller.abort()
       window.clearInterval(timer)
+      unsubscribeActivity()
       inFlight.current = false
     }
   }, [enabled])

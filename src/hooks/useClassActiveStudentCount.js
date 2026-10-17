@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getClassActiveStudentCount } from '../api/activityApi'
+import { subscribeActivityRefresh } from '../utils/activityEvents'
 
 /*
  * The class-specific activity: who is signed in, how many there are, and who is not.
@@ -146,6 +147,12 @@ export function useClassActiveStudentCount({ enabled, department, year, section 
     fetchOnce()
     const timer = window.setInterval(fetchOnce, POLL_INTERVAL_MS)
     document.addEventListener('visibilitychange', handleVisibilityChange)
+    /*
+     * A same-window activity refresh -- the student sign-out broadcast -- reuses this
+     * same guarded fetch, so it cannot overlap an in-flight read and cannot invent a
+     * result. Cross-device sign-outs still arrive on the timer below.
+     */
+    const unsubscribeActivity = subscribeActivityRefresh(fetchOnce)
 
     return () => {
       disposed = true
@@ -158,6 +165,7 @@ export function useClassActiveStudentCount({ enabled, department, year, section 
       controller.abort()
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
+      unsubscribeActivity()
       fetchRef.current = null
       inFlight.current = false
     }
