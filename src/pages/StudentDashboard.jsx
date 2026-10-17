@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import DashboardHero from '../components/DashboardHero'
@@ -53,7 +53,34 @@ export default function StudentDashboard() {
   const BACKEND_CONFIGURED = Boolean(import.meta.env.VITE_API_BASE_URL)
   const clock = useClock()
   const navigate = useNavigate()
-  const { student } = useAuth()
+  const { student, loading: authLoading, logout } = useAuth()
+
+  /*
+   * The route only means anything with a student session, and the check has to live
+   * here rather than on the sign-in screen: `/student` is a real URL, and a phone's
+   * back-swipe after signing out returns to an earlier history entry rather than
+   * restarting the app. Landing here signed out would otherwise render the OTP box
+   * for a session that no longer exists, so a visitor who is no longer signed in is
+   * sent to role selection instead, with `replace` so this attempt is not itself a
+   * new entry to return to. Until the check resolves the page renders nothing, so
+   * there is no frame of an attendance box that cannot be used.
+   */
+  useEffect(() => {
+    if (!authLoading && !student) {
+      navigate('/role-selection', { replace: true })
+    }
+  }, [authLoading, student, navigate])
+
+  /*
+   * Signing out goes through the provider, which is what actually clears the cookie
+   * on the server; the Navbar fallback would only move within the app and leave the
+   * session standing. `replace` keeps role selection from leaving the signed-out
+   * page as a history entry the back gesture can restore.
+   */
+  const handleLogout = async () => {
+    await logout()
+    navigate('/role-selection', { replace: true })
+  }
 
   const [otp, setOtp] = useState('')
   const [verifying, setVerifying] = useState(false)
@@ -110,9 +137,28 @@ export default function StudentDashboard() {
   const status = result ? 'Marked' : locked ? 'Locked' : 'Ready'
   const statusTone = result ? 'green' : locked ? 'amber' : 'primary'
 
+  if (authLoading) {
+    return (
+      <div className="app-shell">
+        <div className="flex min-h-screen items-center justify-center">
+          <div className="flex flex-col items-center gap-3">
+            <span className="cf-spinner" role="status" aria-hidden="true" />
+            <p className="text-sm text-slate-500">Checking your session…</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!student) return null
+
   return (
     <div className="app-shell">
-      <Navbar title="Student Dashboard" subtitle="Mark your attendance using OTP" />
+      <Navbar
+        title="Student Dashboard"
+        subtitle="Mark your attendance using OTP"
+        onLogout={handleLogout}
+      />
       <main className="container-cf py-4 lg:py-5 page-enter">
         {/*
           Back to the student dashboard this page was opened from.
@@ -217,7 +263,7 @@ export default function StudentDashboard() {
               </div>
 
               <div className="flex flex-col sm:flex-row gap-2 justify-center">
-                <LoadingButton variant="primary" onClick={() => navigate('/role-selection')}>
+                <LoadingButton variant="primary" onClick={() => navigate('/role-selection', { replace: true })}>
                   Done
                 </LoadingButton>
               </div>

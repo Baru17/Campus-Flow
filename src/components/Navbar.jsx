@@ -10,7 +10,12 @@ export default function Navbar({ title, subtitle, onLogout }) {
       onLogout()
       return
     }
-    navigate('/role-selection')
+    /*
+     * The fallback for a screen that did not hand a handler in. `replace`, not a
+     * push, so the screen being left is not an entry the phone's back gesture can
+     * return to.
+     */
+    navigate('/role-selection', { replace: true })
   }
 
   return (
