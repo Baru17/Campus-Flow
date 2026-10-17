@@ -164,10 +164,11 @@ export default function StudentDashboard() {
           Back to the student dashboard this page was opened from.
 
           Same markup, spacing and hover treatment as the OD and mentor pages, and the
-          same destination: `/student/entry` is the dashboard whose "Mark Attendance"
-          card opens this page, so going back lands on the card rather than leaving the
-          student with the "Done -> role selection" dead end below. It is a push, not
-          `navigate(-1)`, so it behaves the same whether or not there is history to pop.
+          same destination as the "Done" button below: `/student/entry` is the dashboard
+          whose "Mark Attendance" card opens this page, so both ways out land on that
+          card rather than leaving the student on a screen they have finished with. It
+          is a push, not `navigate(-1)`, so it behaves the same whether or not there is
+          history to pop.
         */}
         <button
           type="button"
@@ -263,7 +264,7 @@ export default function StudentDashboard() {
               </div>
 
               <div className="flex flex-col sm:flex-row gap-2 justify-center">
-                <LoadingButton variant="primary" onClick={() => navigate('/role-selection', { replace: true })}>
+                <LoadingButton variant="primary" onClick={() => navigate('/student/entry')}>
                   Done
                 </LoadingButton>
               </div>
