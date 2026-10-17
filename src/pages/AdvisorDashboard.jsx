@@ -151,7 +151,7 @@ export default function AdvisorDashboard() {
             const od = {}
             for (const s of data.students) {
               if (s.status) map[s.register_no] = s.status
-              if (s.od === 'YES') od[s.register_no] = true
+              if (s.status === 'OD' || s.od === 'YES') od[s.register_no] = true
             }
             setAttendanceMap(map)
             setOdMap(od)
@@ -190,7 +190,7 @@ export default function AdvisorDashboard() {
         const nextOd = {}
         for (const student of refreshed.students) {
           if (student.status) nextAttendance[student.register_no] = student.status
-          if (student.od === 'YES') nextOd[student.register_no] = true
+          if (student.od === 'YES' || student.status === 'OD') nextOd[student.register_no] = true
         }
         setAttendanceMap(nextAttendance)
         setOdMap(nextOd)
@@ -268,9 +268,14 @@ export default function AdvisorDashboard() {
     () => students.filter((student) => odMap[student.register_no]).length,
     [students, odMap],
   )
-  const notMarkedCount = Math.max(students.length - presentCount - absentCount, 0)
+  /*
+   * A student on OD is marked, not unmarked, so the "not marked" figure has to
+   * subtract the OD count as well as the present and absent ones. The percentage
+   * credits OD the same as PRESENT; ABSENT and unmarked earn nothing.
+   */
+  const notMarkedCount = Math.max(students.length - presentCount - absentCount - odCount, 0)
   const attendancePercentage = students.length
-    ? Math.round((presentCount / students.length) * 100)
+    ? Math.round(((presentCount + odCount) / students.length) * 100)
     : 0
 
   const canLoadAttendance = Boolean(date && period && sessionId)
@@ -370,10 +375,10 @@ export default function AdvisorDashboard() {
                 tone="amber"
               />
               <StatChip
-                icon={<CheckIcon size={18} />}
+                icon={<ClockIcon size={18} />}
                 label="OD"
                 value={odCount}
-                tone="primary"
+                tone="violet"
               />
               <StatChip
                 icon={<CompassIcon size={18} />}
@@ -469,7 +474,8 @@ export default function AdvisorDashboard() {
                             {classLabel} · {subjectCode || '—'} · Hour {period}
                           </h3>
                           <p className="text-muted-2 text-sm mb-0">
-                            {presentCount} present · {absentCount} absent · {notMarkedCount} not marked
+                            {presentCount} present · {absentCount} absent · {odCount} OD ·{' '}
+                            {notMarkedCount} not marked
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">

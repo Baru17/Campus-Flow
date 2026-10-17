@@ -10,7 +10,13 @@ const TABLE_BORDER = {
 
 const HEADER_FILL = { patternType: 'solid', fgColor: { rgb: 'EFF3FA' } }
 
-const HEADER_ROW = 14
+/*
+ * Row index of the table header inside the worksheet. It sits below the summary
+ * block (title, blank, six metadata rows, blank, four count rows, blank), and it
+ * is derived here because the freeze pane and the body styling below both measure
+ * from it; when a summary row is added it has to move with the rest.
+ */
+const HEADER_ROW = 15
 
 function parseDate(date) {
   const parsed = new Date(`${date}T00:00:00`)
@@ -44,7 +50,10 @@ export function buildAttendanceWorkbook({ department, year, section, date, subje
   const total = students.length
   const present = students.filter((s) => attendanceMap[s.register_no] === 'PRESENT').length
   const absent = students.filter((s) => attendanceMap[s.register_no] === 'ABSENT').length
-  const percentage = total ? Math.round((present / total) * 100) : 0
+  // OD is its own status and earns the same credit as PRESENT, so it is counted
+  // separately and included in the percentage numerator.
+  const od = students.filter((s) => attendanceMap[s.register_no] === 'OD').length
+  const percentage = total ? Math.round(((present + od) / total) * 100) : 0
 
   const rows = [
     ['Campus-Flow Attendance Report'],
@@ -59,6 +68,7 @@ export function buildAttendanceWorkbook({ department, year, section, date, subje
     [`Total Students: ${total}`],
     [`Present: ${present}`],
     [`Absent: ${absent}`],
+    [`OD: ${od}`],
     [`Attendance Percentage: ${percentage}%`],
     [],
     ['#', 'Register No', 'Student Name', 'Status'],
@@ -75,7 +85,7 @@ export function buildAttendanceWorkbook({ department, year, section, date, subje
   ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }]
   ws['A1'].s = { font: { bold: true, sz: 14, color: { rgb: '1D4ED8' } } }
 
-  for (let r = 2; r <= 12; r++) {
+  for (let r = 2; r <= 13; r++) {
     if (r === 8) continue
     ws[XLSX.utils.encode_cell({ r, c: 0 })].s = { font: { bold: true } }
   }
@@ -92,13 +102,21 @@ export function buildAttendanceWorkbook({ department, year, section, date, subje
 
   for (let r = 0; r < total; r++) {
     const status = attendanceMap[students[r].register_no]
-    if (status !== 'PRESENT' && status !== 'ABSENT') continue
+    const tone =
+      status === 'PRESENT'
+        ? '16A34A'
+        : status === 'OD'
+          ? '7C3AED'
+          : status === 'ABSENT'
+            ? 'DC2626'
+            : null
+    if (!tone) continue
     const cell = ws[XLSX.utils.encode_cell({ r: HEADER_ROW + 1 + r, c: 3 })]
     cell.s = {
       ...cell.s,
       font: {
         bold: true,
-        color: { rgb: status === 'PRESENT' ? '16A34A' : 'DC2626' },
+        color: { rgb: tone },
       },
     }
   }

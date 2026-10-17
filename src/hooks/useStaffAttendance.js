@@ -184,9 +184,22 @@ export default function useStaffAttendance({ session, staffId, selection }) {
     () => students.filter((s) => attendanceMap[s.register_no] === 'ABSENT').length,
     [students, attendanceMap],
   )
+  /*
+   * OD is a status of its own, written by finalization for an approved day, so it
+   * is neither PRESENT nor ABSENT. It is still *marked*, which is why it has to be
+   * subtracted from the "not marked" figure too, and it earns the same attendance
+   * credit as PRESENT wherever a percentage is shown.
+   */
+  const odCount = useMemo(
+    () =>
+      students.filter(
+        (s) => attendanceMap[s.register_no] === 'OD' || s.od === 'YES',
+      ).length,
+    [students, attendanceMap],
+  )
 
   const totalStrength = students.length
-  const unmarkedCount = Math.max(totalStrength - presentCount - absentCount, 0)
+  const unmarkedCount = Math.max(totalStrength - presentCount - absentCount - odCount, 0)
 
   return {
     phase,
@@ -198,6 +211,7 @@ export default function useStaffAttendance({ session, staffId, selection }) {
     saveError,
     presentCount,
     absentCount,
+    odCount,
     unmarkedCount,
     totalStrength,
     // A live session is editable by the staff member who generated it.

@@ -21,6 +21,7 @@ import migration0013 from "../migrations/0013_department-aware-attendance.sql?ra
 import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
 import migration0016 from "../migrations/0016_academic_batches.sql?raw";
+import migration0017 from "../migrations/0017_od_requests.sql?raw";
 
 type TestStudent = {
 	studentId: string;
@@ -1159,5 +1160,551 @@ describe("staff profile department is not a prerequisite for generating", () => 
 
 		expect(response.status).toBe(403);
 		expect(((await response.json()) as { code: string }).code).toBe("forbidden");
+	});
+});
+
+/*
+ * ---------------------------------------------------------------------------
+ * Day-based OD at finalization
+ * ---------------------------------------------------------------------------
+ *
+ * An approved OD request must turn a student's ABSENT into OD for the days it
+ * actually covers, and into nothing else. Everything else in the workflow -- a
+ * pending request, a rejected one, a half-approved one, a request for a different
+ * day, or a request filed by the same student id in a different cohort -- must
+ * leave the existing ABSENT behaviour untouched.
+ *
+ * These tests drive the real finalizer and the real copied-report route against
+ * an isolated D1, because the questions worth asking are end-to-end ones: what
+ * status is stored, what the copied report says, and that a second run changes
+ * neither.
+ *
+ * The cohort lives in section C so nothing here shares a class with the load
+ * test's section A/B students, and the OD date is a fixed literal rather than
+ * `new Date()`, so a test cannot pass by accident on the day it happens to run.
+ */
+describe("day-based OD finalization", () => {
+	const odSuffix = `${testSuffix}OD`;
+	const OD_DATE = "2026-10-14";
+	const NEIGHBOUR_DATE = "2026-10-15";
+
+	const odSessionIds: string[] = [];
+	const odRequestIds: string[] = [];
+	let odAdvisorAuthUserId = "";
+	const odAdvisorCookie = `od-advisor-cookie-${testSuffix}`;
+
+	type OdStudent = {
+		studentId: string;
+		registerNo: string;
+		authUserId: string;
+		token: string;
+	};
+
+	/*
+	 * One student per rule under test. The key is the rule; the register number is
+	 * derived from it, so a failing assertion names the case in the row it found.
+	 */
+	const CASE_KEYS = [
+		"approved",
+		"pending",
+		"rejected",
+		"otherday",
+		"multiday",
+		"othercohort",
+		"badjson",
+		"partial",
+		"twice",
+		"present",
+	] as const;
+
+	const roster: Record<string, OdStudent> = {};
+
+	async function insertOdRequest({
+		id,
+		student,
+		studentTable = "IT_Students_2024_2028",
+		status = "APPROVED",
+		dates = [OD_DATE],
+		mentorDecision = null,
+		coordinatorDecision = null,
+	}: {
+		id: string;
+		student: OdStudent;
+		studentTable?: string;
+		status?: string;
+		dates?: string[] | string;
+		mentorDecision?: string | null;
+		coordinatorDecision?: string | null;
+	}): Promise<void> {
+		odRequestIds.push(id);
+		const storedDates = typeof dates === "string" ? dates : JSON.stringify(dates);
+		await env.DB
+			.prepare(
+				`INSERT INTO od_requests
+				 (od_request_id, auth_user_id, student_table, student_id, student_name, student_email,
+				  department, batch, year, section, submitted_date, od_days_requested, od_dates,
+				  reason, status, mentor_decision, coordinator_decision)
+				 VALUES (?, ?, ?, ?, ?, ?, 'IT', '2024_2028', 3, 'C', ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.bind(
+				id,
+				student.authUserId,
+				studentTable,
+				student.studentId,
+				student.studentId,
+				`${student.studentId.toLowerCase()}@od-test.invalid`,
+				OD_DATE,
+				typeof dates === "string" ? 1 : dates.length,
+				storedDates,
+				"integration test",
+				status,
+				mentorDecision,
+				coordinatorDecision,
+			)
+			.run();
+	}
+
+	async function createOdSession(otp: string, period: number, date: string, expired: boolean): Promise<string> {
+		const sessionId = crypto.randomUUID();
+		const createdAt = new Date();
+		const expiresAt = new Date(createdAt.getTime() + (expired ? -1000 : 5 * 60_000));
+		await env.DB
+			.prepare(
+				`INSERT INTO attendance_session (
+					session_id, created_by, otp, created_at, expire_at, subject_code,
+					subject_name, year, section, period, attendance_date,
+					attendance_table, department, batch, status
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IT', '2024_2028', 'ACTIVE')`,
+			)
+			.bind(
+				sessionId,
+				// Owned by the advisor account, so the same cookie can read the session
+				// report route as well as the class-advisor one.
+				odAdvisorAuthUserId,
+				otp,
+				createdAt.toISOString(),
+				expiresAt.toISOString(),
+				"ODIT401",
+				"OD Integration",
+				3,
+				"C",
+				period,
+				date,
+				"IT_Attendance_2024_2028",
+			)
+			.run();
+		odSessionIds.push(sessionId);
+		return sessionId;
+	}
+
+	async function statusFor(sessionId: string, registerNo: string): Promise<string | null> {
+		const row = await env.DB
+			.prepare(
+				"SELECT status FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ? LIMIT 1",
+			)
+			.bind(sessionId, registerNo)
+			.first<{ status: string }>();
+		return row?.status ?? null;
+	}
+
+	async function rowCount(sessionId: string): Promise<number> {
+		const row = await env.DB
+			.prepare("SELECT COUNT(*) AS count FROM IT_Attendance_2024_2028 WHERE session_id = ?")
+			.bind(sessionId)
+			.first<{ count: number }>();
+		return Number(row?.count ?? 0);
+	}
+
+	beforeAll(async () => {
+		/*
+		 * Only the OD table is applied here. The rest of the file applies 0001..0016
+		 * once, at the top, and every describe in the file depends on that having
+		 * happened -- later migrations (0015) rebuild tables and drop columns, so
+		 * re-applying the chain is not idempotent and is not what this block should
+		 * be doing. `0017` is the one migration the rest of the file never applies,
+		 * and it is all `CREATE ... IF NOT EXISTS`, so re-running it is free.
+		 */
+		for (const statement of migration0017
+			.split("\n")
+			.filter((line) => !line.trimStart().startsWith("--"))
+			.join("\n")
+			.split(";")
+			.map((statement) => statement.trim())
+			.filter(Boolean)) {
+			await env.DB.prepare(statement).run();
+		}
+
+		const seeds: D1PreparedStatement[] = [];
+		for (const key of CASE_KEYS) {
+			const studentId = `${odSuffix}-${key}`.toUpperCase();
+			const registerNo = studentId;
+			const authUserId = crypto.randomUUID();
+			const token = crypto.randomUUID();
+			roster[key] = { studentId, registerNo, authUserId, token };
+
+			seeds.push(
+				env.DB.prepare(
+					`INSERT INTO IT_Students_2024_2028
+					 (student_id, register_no, student_name, year, section, email, auth_user_id)
+					 VALUES (?, ?, ?, 3, 'C', ?, ?)`,
+				).bind(studentId, registerNo, key, `${key.toLowerCase()}@od-test.invalid`, authUserId),
+				env.DB.prepare(
+					`INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email)
+					 VALUES (?, ?, 'test-hash-not-used', 'student', ?)`,
+				).bind(authUserId, studentId, `${studentId.toLowerCase()}@od-test.invalid`),
+				env.DB.prepare(
+					`INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at)
+					 VALUES (?, ?, ?)`,
+				).bind(hashToken(token), authUserId, new Date(Date.now() + 60 * 60_000).toISOString()),
+			);
+		}
+
+		odAdvisorAuthUserId = crypto.randomUUID();
+		const odAdvisorEmail = `od-advisor-${testSuffix.toLowerCase()}@load-test.invalid`;
+		seeds.push(
+			env.DB.prepare(
+				`INSERT INTO auth_users (auth_user_id, user_name, pwd_hash, role, email)
+				 VALUES (?, ?, 'test-hash-not-used', 'class_advisor', ?)`,
+			).bind(odAdvisorAuthUserId, odAdvisorEmail, odAdvisorEmail),
+			env.DB.prepare(
+				`INSERT INTO staff (staff_id, staff_name, email, department, advisor_batch, advisor_year, advisor_section, auth_user_id)
+				 VALUES (?, 'OD Test Advisor', ?, 'IT', '2024_2028', 3, 'C', ?)`,
+			).bind(`ODOA${testSuffix}`, odAdvisorEmail, odAdvisorAuthUserId),
+			env.DB.prepare(
+				`INSERT INTO auth_sessions (token_hash, auth_user_id, expires_at)
+				 VALUES (?, ?, ?)`,
+			).bind(hashToken(odAdvisorCookie), odAdvisorAuthUserId, new Date(Date.now() + 60 * 60_000).toISOString()),
+		);
+		await runBatch(seeds);
+
+		// A fully approved request for exactly this day, and the variants that must
+		// not grant anything.
+		await insertOdRequest({ id: `${odSuffix}-approved`, student: roster.approved });
+		await insertOdRequest({
+			id: `${odSuffix}-pending`,
+			student: roster.pending,
+			status: "PENDING_MENTOR",
+		});
+		await insertOdRequest({
+			id: `${odSuffix}-rejected`,
+			student: roster.rejected,
+			status: "REJECTED",
+		});
+		await insertOdRequest({
+			id: `${odSuffix}-otherday`,
+			student: roster.otherday,
+			dates: [NEIGHBOUR_DATE],
+		});
+		await insertOdRequest({
+			id: `${odSuffix}-multiday`,
+			student: roster.multiday,
+			dates: [NEIGHBOUR_DATE, OD_DATE],
+		});
+		/*
+		 * The same student id, filed against a different cohort's student table. A
+		 * student id is unique only within its table, so this must not reach across.
+		 */
+		await insertOdRequest({
+			id: `${odSuffix}-othercohort`,
+			student: roster.othercohort,
+			studentTable: "IT_Students_2025_2029",
+		});
+		await insertOdRequest({
+			id: `${odSuffix}-badjson`,
+			student: roster.badjson,
+			dates: "{ not an array",
+		});
+		await insertOdRequest({
+			id: `${odSuffix}-partial`,
+			student: roster.partial,
+			// Mentor approved, then the chain stalled: nothing grants until the HOD.
+			status: "PENDING_CLASS_ADVISOR",
+			mentorDecision: "APPROVED",
+		});
+		// Two approved requests that both cover this day, for the one student.
+		await insertOdRequest({ id: `${odSuffix}-twice-1`, student: roster.twice });
+		await insertOdRequest({
+			id: `${odSuffix}-twice-2`,
+			student: roster.twice,
+			dates: [OD_DATE, NEIGHBOUR_DATE],
+		});
+		// Approved, but this student scans the OTP anyway: PRESENT must win.
+		await insertOdRequest({ id: `${odSuffix}-present`, student: roster.present });
+	});
+
+	afterAll(async () => {
+		const cleanup: D1PreparedStatement[] = [];
+		for (const sessionId of odSessionIds) {
+			cleanup.push(
+				env.DB.prepare("DELETE FROM IT_Attendance_2024_2028 WHERE session_id = ?").bind(sessionId),
+				env.DB.prepare("DELETE FROM attendance_session WHERE session_id = ?").bind(sessionId),
+			);
+		}
+		for (const requestId of odRequestIds) {
+			cleanup.push(env.DB.prepare("DELETE FROM od_requests WHERE od_request_id = ?").bind(requestId));
+		}
+		cleanup.push(
+			env.DB.prepare(
+				"DELETE FROM auth_sessions WHERE auth_user_id IN (SELECT auth_user_id FROM auth_users WHERE user_name LIKE ?)",
+			).bind(`${odSuffix}%`),
+			env.DB.prepare("DELETE FROM IT_Students_2024_2028 WHERE student_id LIKE ?").bind(`${odSuffix}%`),
+			env.DB.prepare("DELETE FROM auth_users WHERE user_name LIKE ?").bind(`${odSuffix}%`),
+			env.DB.prepare("DELETE FROM auth_sessions WHERE auth_user_id = ?").bind(odAdvisorAuthUserId),
+			env.DB.prepare("DELETE FROM staff WHERE staff_id = ?").bind(`ODOA${testSuffix}`),
+			env.DB.prepare("DELETE FROM auth_users WHERE auth_user_id = ?").bind(odAdvisorAuthUserId),
+		);
+		await runBatch(cleanup);
+	});
+
+	it("writes OD, not ABSENT, only for students whose approved request covers the date", async () => {
+		const sessionId = await createOdSession("611111", 1, OD_DATE, true);
+
+		const result = await finalizeSession(env.DB, sessionId);
+
+		expect(result.success).toBe(true);
+		expect(await statusFor(sessionId, roster.approved.registerNo)).toBe("OD");
+		expect(await statusFor(sessionId, roster.multiday.registerNo)).toBe("OD");
+		expect(await statusFor(sessionId, roster.twice.registerNo)).toBe("OD");
+		// This student has an approved day too, and did not scan this session.
+		expect(await statusFor(sessionId, roster.present.registerNo)).toBe("OD");
+
+		// Everything that is not a fully approved request for this exact day stays ABSENT.
+		expect(await statusFor(sessionId, roster.pending.registerNo)).toBe("ABSENT");
+		expect(await statusFor(sessionId, roster.rejected.registerNo)).toBe("ABSENT");
+		expect(await statusFor(sessionId, roster.otherday.registerNo)).toBe("ABSENT");
+		expect(await statusFor(sessionId, roster.othercohort.registerNo)).toBe("ABSENT");
+		expect(await statusFor(sessionId, roster.badjson.registerNo)).toBe("ABSENT");
+		expect(await statusFor(sessionId, roster.partial.registerNo)).toBe("ABSENT");
+
+		// The reported split agrees with the rows, and the three parts add up.
+		expect(result.od).toBe(4);
+		expect(result.present).toBe(0);
+		expect(result.total_students).toBe(CASE_KEYS.length);
+		expect(result.od + result.present + result.absent).toBe(result.total_students);
+		expect(result.absent).toBe(CASE_KEYS.length - 4);
+
+		// One row per student per session, still.
+		expect(await rowCount(sessionId)).toBe(CASE_KEYS.length);
+	});
+
+	it("grants OD for the right day only, and nothing for the neighbouring one", async () => {
+		const sessionId = await createOdSession("611112", 2, NEIGHBOUR_DATE, true);
+
+		const result = await finalizeSession(env.DB, sessionId);
+
+		expect(result.success).toBe(true);
+		// `approved` asked for the 14th only, so on the 15th it is an ordinary absence.
+		expect(await statusFor(sessionId, roster.approved.registerNo)).toBe("ABSENT");
+		expect(await statusFor(sessionId, roster.otherday.registerNo)).toBe("OD");
+		expect(await statusFor(sessionId, roster.multiday.registerNo)).toBe("OD");
+		expect(await statusFor(sessionId, roster.twice.registerNo)).toBe("OD");
+		expect(result.od).toBe(3);
+	});
+
+	it("never overwrites a verified PRESENT with OD", async () => {
+		const sessionId = await createOdSession("611113", 3, OD_DATE, false);
+		const present = roster.present;
+
+		const scan = await submitOtp(
+			{
+				studentId: present.studentId,
+				registerNo: present.registerNo,
+				authUserId: present.authUserId,
+				token: present.token,
+			},
+			"611113",
+		);
+		expect(scan.status).toBe(200);
+		expect(await statusFor(sessionId, present.registerNo)).toBe("PRESENT");
+
+		// The session has to be expired before the finalizer will close it.
+		await env.DB
+			.prepare("UPDATE attendance_session SET expire_at = ? WHERE session_id = ?")
+			.bind(new Date(Date.now() - 1000).toISOString(), sessionId)
+			.run();
+
+		const result = await finalizeSession(env.DB, sessionId);
+		expect(await statusFor(sessionId, present.registerNo)).toBe("PRESENT");
+		expect(result.present).toBe(1);
+	});
+
+	it("is idempotent: a second finalization reports the same split and adds no rows", async () => {
+		const sessionId = odSessionIds[odSessionIds.length - 1];
+		const first = await finalizeSession(env.DB, sessionId);
+		const second = await finalizeSession(env.DB, sessionId);
+
+		expect(second).toMatchObject({
+			success: true,
+			total_students: first.total_students,
+			present: first.present,
+			absent: first.absent,
+			od: first.od,
+		});
+		expect(await rowCount(sessionId)).toBe(first.total_students);
+	});
+
+	it("does not let a late OTP scan turn an OD row into PRESENT", async () => {
+		const sessionId = await createOdSession("611114", 4, OD_DATE, true);
+		await finalizeSession(env.DB, sessionId);
+		expect(await statusFor(sessionId, roster.approved.registerNo)).toBe("OD");
+
+		/*
+		 * The student scans after the session is closed. Both write paths carry the
+		 * ACTIVE guard, so neither touches the row: the ABSENT-to-PRESENT promotion
+		 * only fires on an ABSENT row, and the guarded insert collides with the
+		 * existing row and does nothing. The OD status written at finalization stands.
+		 */
+		const odRow = await env.DB
+			.prepare(
+				"SELECT id, marked_at FROM IT_Attendance_2024_2028 WHERE session_id = ? AND register_no = ? LIMIT 1",
+			)
+			.bind(sessionId, roster.approved.registerNo)
+			.first<{ id: number; marked_at: string }>();
+
+		const promoted = await promoteAbsentToPresentIfSessionActive(env.DB, {
+			attendanceTable: "IT_Attendance_2024_2028",
+			sessionId,
+			rowId: Number(odRow?.id),
+			markedAt: new Date().toISOString(),
+		});
+		expect(promoted).toBe(0);
+		expect(await statusFor(sessionId, roster.approved.registerNo)).toBe("OD");
+
+		const marked = await markPresentIfSessionActive(env.DB, {
+			attendanceTable: "IT_Attendance_2024_2028",
+			sessionId,
+			registerNo: roster.approved.registerNo,
+			section: "C",
+			attendanceDate: OD_DATE,
+			period: 4,
+			subjectCode: "ODIT401",
+			subjectName: "OD Integration",
+			markedAt: new Date().toISOString(),
+		});
+		expect(marked).toBe(0);
+		expect(await rowCount(sessionId)).toBe(CASE_KEYS.length);
+		expect(await statusFor(sessionId, roster.approved.registerNo)).toBe("OD");
+	});
+
+	it("puts PRESENT, OD and ABSENT in three separate sections of the copied report", async () => {
+		const sessionId = await createOdSession("611115", 5, OD_DATE, false);
+
+		/*
+		 * One of the OD-eligible students scans before the session closes, so the
+		 * report has a row in each of the three sections. This is the case the
+		 * requirement cares about most: a verified PRESENT must not be turned into OD
+		 * by the same request that would have made an absent student OD.
+		 */
+		const scan = await submitOtp(
+			{
+				studentId: roster.present.studentId,
+				registerNo: roster.present.registerNo,
+				authUserId: roster.present.authUserId,
+				token: roster.present.token,
+			},
+			"611115",
+		);
+		expect(scan.status).toBe(200);
+
+		await env.DB
+			.prepare("UPDATE attendance_session SET expire_at = ? WHERE session_id = ?")
+			.bind(new Date(Date.now() - 1000).toISOString(), sessionId)
+			.run();
+		await finalizeSession(env.DB, sessionId);
+
+		const response = await SELF.fetch(
+			`https://example.com/api/class-advisors/attendance/report?date=${OD_DATE}&period=5`,
+			{ headers: { Cookie: `campus-flow-session=${odAdvisorCookie}` } },
+		);
+		expect(response.status).toBe(200);
+
+		const body = (await response.json()) as {
+			success: boolean;
+			data?: {
+				report: string;
+				present: number;
+				od: number;
+				absent: number;
+				total_strength: number;
+				percentage: number;
+			};
+		};
+		expect(body.success).toBe(true);
+
+		const report = body.data?.report ?? "";
+		expect(report).toContain("PRESENT (1)");
+		expect(report).toContain("OD (3)");
+		expect(report).toContain("ABSENT (6)");
+
+		// Names and register numbers, one line each. The roster is register-ordered,
+		// so the OD students appear as APPROVED, MULTIDAY, TWICE.
+		expect(report).toContain(`1. PRESENT (${roster.present.registerNo})`);
+		expect(report).toContain(`1. APPROVED (${roster.approved.registerNo})`);
+		expect(report).toContain(`2. MULTIDAY (${roster.multiday.registerNo})`);
+		expect(report).toContain(`3. TWICE (${roster.twice.registerNo})`);
+
+		// The counts the route reports match the text it produced.
+		expect(body.data?.total_strength).toBe(CASE_KEYS.length);
+		expect(body.data?.present).toBe(1);
+		expect(body.data?.od).toBe(3);
+		expect(body.data?.absent).toBe(6);
+		// (1 present + 3 on duty) / 10 = 40%.
+		expect(body.data?.percentage).toBe(40);
+		expect(report).toContain("Attendance Percentage: 40%");
+
+		// OD is never also listed as an absentee, and PRESENT is not either.
+		const odSection = report.slice(report.indexOf("OD (3)"), report.indexOf("ABSENT (6)"));
+		const absentSection = report.slice(report.indexOf("ABSENT (6)"));
+		expect(odSection).toContain(roster.approved.registerNo);
+		expect(absentSection).not.toContain(roster.approved.registerNo);
+		expect(absentSection).not.toContain(roster.present.registerNo);
+
+		// And the PRESENT row is genuinely in the PRESENT section.
+		const presentSection = report.slice(report.indexOf("PRESENT (1)"), report.indexOf("OD (3)"));
+		expect(presentSection).toContain(roster.present.registerNo);
+	});
+
+	it("counts an OD student as marked, not unmarked, in the session summary", async () => {
+		const sessionId = await createOdSession("611116", 6, OD_DATE, true);
+		await finalizeSession(env.DB, sessionId);
+
+		// The route the staff dashboard's summary reads from.
+		const response = await SELF.fetch(
+			`https://example.com/api/attendance/session/${sessionId}`,
+			{ headers: { Cookie: `campus-flow-session=${odAdvisorCookie}` } },
+		);
+		expect(response.status).toBe(200);
+
+		const body = (await response.json()) as {
+			success: boolean;
+			data?: {
+				students: Array<{ register_no: string; status: string | null }>;
+				summary: {
+					totalStrength: number;
+					presentCount: number;
+					absentCount: number;
+					odCount: number;
+					unmarkedCount: number;
+					percentage: number;
+				};
+			};
+		};
+		expect(body.success).toBe(true);
+
+		const summary = body.data?.summary;
+		expect(summary?.totalStrength).toBe(CASE_KEYS.length);
+		expect(summary?.presentCount).toBe(0);
+		expect(summary?.odCount).toBe(4);
+		expect(summary?.absentCount).toBe(6);
+		// The three marked categories account for the whole class; an OD student is
+		// not an unmarked one.
+		expect(summary?.unmarkedCount).toBe(0);
+		// (0 present + 4 on duty) / 10 = 40%.
+		expect(summary?.percentage).toBe(40);
+
+		const approvedRow = body.data?.students.find(
+			(s) => s.register_no === roster.approved.registerNo,
+		);
+		expect(approvedRow?.status).toBe("OD");
 	});
 });

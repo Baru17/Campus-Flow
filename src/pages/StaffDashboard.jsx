@@ -581,6 +581,15 @@ const [section, setSection] = useState('')
                         <strong className="staff-total-value">{attendance.presentCount}</strong>
                         <span className="staff-total-sep">/{attendance.totalStrength}</span>
                         <span className="staff-total-hint">present / class strength</span>
+                        {/*
+                          OD students are marked, not present, so they are not in the
+                          present count above. They are worth surfacing here anyway, but
+                          only when there are any, so the readout stays exactly the
+                          "present / class strength" line it has always been.
+                        */}
+                        {attendance.odCount > 0 ? (
+                          <span className="staff-total-hint"> · {attendance.odCount} OD</span>
+                        ) : null}
                       </>
                     ) : attendance.phase === 'checking' || attendance.phase === 'loading' ? (
                       <>

@@ -81,6 +81,10 @@ export default function AttendanceReportTable({
                         <span className="cf-status-pill active">
                           <span className="dot" aria-hidden="true" /> Present
                         </span>
+                      ) : status === 'OD' ? (
+                        <span className="cf-status-pill od">
+                          <span className="dot" aria-hidden="true" /> OD
+                        </span>
                       ) : status === 'ABSENT' ? (
                         <span className="cf-status-pill expired">
                           <span className="dot" aria-hidden="true" /> Absent

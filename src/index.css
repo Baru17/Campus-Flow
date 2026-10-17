@@ -1485,6 +1485,17 @@ a {
   border: 1px solid rgba(220, 38, 38, 0.25);
 }
 
+/*
+ * OD is neither present nor absent, so it gets its own tone rather than borrowing
+ * the success or danger colour. Used in the attendance report tables where an
+ * approved On Duty day replaces an ABSENT row.
+ */
+.cf-status-pill.od {
+  background: var(--cf-accent-soft);
+  color: var(--cf-accent);
+  border: 1px solid rgba(124, 58, 237, 0.25);
+}
+
 .cf-status-pill .dot {
   width: 8px;
   height: 8px;

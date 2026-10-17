@@ -52,6 +52,7 @@ import {
 } from "./odWorkflow";
 import { validateDecisionComment, validateRejectionReason } from "./odValidation";
 import { assertAllowedStudentTable } from "./tableResolver";
+import { parseOdDateList } from "./odEligibility";
 import type { AuthenticatedStudent } from "./studentIdentity";
 
 /**
@@ -144,14 +145,15 @@ export interface DecisionView {
 
 const PENDING_STATUSES = STAGES.map((stage) => stage.status);
 
-/** `od_dates` is stored as a JSON array; everything that reads it goes through here. */
+/**
+ * `od_dates` is stored as a JSON array; everything that reads it goes through here.
+ *
+ * Kept as a thin, exported alias of the eligibility module's parser so there is one
+ * JSON reader for the column. `odDates` may already be an array when a caller has
+ * parsed the column itself, which the guard accepts.
+ */
 export function parseOdDates(stored: string): string[] {
-  try {
-    const parsed = JSON.parse(stored);
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
-  } catch {
-    return [];
-  }
+  return parseOdDateList(stored);
 }
 
 /**

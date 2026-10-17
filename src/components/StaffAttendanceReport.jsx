@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import AttendanceReportTable from './AttendanceReportTable'
 import StatChip from './StatChip'
 import StatusMessage from './StatusMessage'
-import { CheckIcon, ChevronRightIcon, CopyIcon, UsersIcon, XIcon } from './Icons'
+import { CheckIcon, ChevronRightIcon, ClockIcon, CopyIcon, UsersIcon, XIcon } from './Icons'
 import { formatClassName } from '../utils/format'
 import { copyTextToClipboard } from '../utils/clipboard'
 
@@ -13,11 +13,14 @@ import { copyTextToClipboard } from '../utils/clipboard'
  * in `useStaffAttendance`, so the "Total: present / strength" line above the OTP section
  * and this panel read from one source and can never disagree.
  *
- * The summary shows Present, Absent and Total class strength, and keeps any students
- * with no recorded status out of both counts (they are reported as "not marked" rather
- * than being mislabelled absent). The report panel reuses the shared `AttendanceReportTable`
- * (same columns, same Present/Absent editing) and copies the report text the server built with
- * the same shared formatter the Class Advisor's report uses, so there is only one format.
+ * The summary shows Present, Absent, OD and Total class strength, and keeps any students
+ * with no recorded status out of every count (they are reported as "not marked" rather
+ * than being mislabelled absent). OD is a status of its own -- written by finalization for
+ * a student whose approved OD request covers that day -- so it is neither Present nor
+ * Absent, but it still counts as attendance credit. The report panel reuses the shared
+ * `AttendanceReportTable` (same columns, same Present/Absent editing) and copies the report
+ * text the server built with the same shared formatter the Class Advisor's report uses, so
+ * there is only one format and both copies carry the same PRESENT / OD / ABSENT sections.
  */
 export default function StaffAttendanceReport({ session, attendance }) {
   const [open, setOpen] = useState(false)
@@ -47,6 +50,7 @@ export default function StaffAttendanceReport({ session, attendance }) {
     report,
     presentCount,
     absentCount,
+    odCount,
     unmarkedCount,
     totalStrength,
     savingId,
@@ -119,6 +123,7 @@ export default function StaffAttendanceReport({ session, attendance }) {
           <div className="stat-strip">
             <StatChip icon={<CheckIcon size={18} />} label="Present" value={presentCount} tone="green" />
             <StatChip icon={<XIcon size={18} />} label="Absent" value={absentCount} tone="amber" />
+            <StatChip icon={<ClockIcon size={18} />} label="OD" value={odCount} tone="violet" />
             <StatChip
               icon={<UsersIcon size={18} />}
               label="Total strength"
@@ -167,7 +172,8 @@ export default function StaffAttendanceReport({ session, attendance }) {
 
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-muted-2 text-sm mb-0">
-                  {presentCount} present · {absentCount} absent · {unmarkedCount} not marked
+                  {presentCount} present · {absentCount} absent · {odCount} OD ·{' '}
+                  {unmarkedCount} not marked
                 </p>
                 <button
                   type="button"

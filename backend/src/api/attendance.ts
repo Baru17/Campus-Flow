@@ -8,6 +8,11 @@ import {
 import { isTransientD1Error } from "../utils/databaseErrors";
 import { buildAttendanceReport, studentMatchesAttendanceClass } from "../utils/attendance";
 import {
+  OD_ELIGIBLE_STATUS,
+  parseOdDateList,
+  studentsCoveredByApprovedOd,
+} from "../utils/odEligibility";
+import {
   assertAllowedAttendanceTable,
   assertAllowedStudentTable,
   listAllowedStudentTables,
@@ -505,7 +510,7 @@ attendance.get(
       });
 
       const unmarkedCount = Math.max(
-        report.totalStrength - report.presentCount - report.absentCount,
+        report.totalStrength - report.presentCount - report.absentCount - report.odCount,
         0
       );
 
@@ -1236,7 +1241,65 @@ attendance.post(
   }
 );
 
-export async function finalizeSession(db: D1Database, sessionId: string): Promise<{ success: boolean; message: string; session_id: string; total_students: number; present: number; absent: number }> {
+/*
+|--------------------------------------------------------------------------
+| OD LOOKUP FOR FINALIZATION
+|--------------------------------------------------------------------------
+|
+| Whether `od_requests` exists at all is checked before it is read, because the
+| table is the reviewed artefact of the OD feature and a database that has not
+| been migrated (a fresh local one, or the attendance integration suite, which
+| applies migrations 0001..0016) simply has no OD requests. Treating a missing
+| table as "no approved OD" is the safe way to be wrong: finalization still
+| writes ABSENT exactly as it did before the feature existed.
+|
+| The lookup itself is a plain read, outside the finalize batch. Only the writes
+| need to be atomic -- a request approved in the microseconds after this read
+| makes the student ABSENT for one session, which is the pre-existing behaviour,
+| not a corrupt state.
+|
+*/
+
+async function odRequestsTableExists(db: D1Database): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'od_requests' LIMIT 1")
+    .first<{ hit: number }>();
+  return Boolean(row);
+}
+
+/**
+ * The student ids in one cohort with an approved OD request covering `sessionDate`.
+ *
+ * Scoped by `student_table` because a student id is unique only within its cohort.
+ * Only `status = 'APPROVED'` rows are read, so pending, partially approved and
+ * rejected requests grant nothing, and the day test itself lives in
+ * `utils/odEligibility.ts` so the finalizer and the tests share one rule.
+ */
+async function loadApprovedOdStudentIds(
+  db: D1Database,
+  studentTable: string,
+  sessionDate: string
+): Promise<Set<string>> {
+  if (!(await odRequestsTableExists(db))) return new Set();
+
+  const { results } = await db
+    .prepare(
+      `SELECT student_id, od_dates
+       FROM od_requests
+       WHERE student_table = ? AND status = ?`
+    )
+    .bind(studentTable, OD_ELIGIBLE_STATUS)
+    .all<{ student_id: string; od_dates: string }>();
+
+  const periods = (results ?? []).map((row) => ({
+    studentId: row.student_id,
+    odDates: parseOdDateList(row.od_dates),
+  }));
+
+  return studentsCoveredByApprovedOd(periods, sessionDate);
+}
+
+export async function finalizeSession(db: D1Database, sessionId: string): Promise<{ success: boolean; message: string; session_id: string; total_students: number; present: number; absent: number; od: number }> {
   try {
     const session = await db
       .prepare(
@@ -1276,25 +1339,25 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
       } | null;
 
     if (!session) {
-      return { success: false, message: "Attendance session not found", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
+      return { success: false, message: "Attendance session not found", session_id: sessionId, total_students: 0, present: 0, absent: 0, od: 0 };
     }
 
     const sessionTables = resolveSessionTables(session);
 
     if (!sessionTables) {
-      return { success: false, message: "Attendance session table is not supported", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
+      return { success: false, message: "Attendance session table is not supported", session_id: sessionId, total_students: 0, present: 0, absent: 0, od: 0 };
     }
 
     const attendanceTable = getSupportedAttendanceTable(session.attendance_table, session);
 
     if (!attendanceTable) {
-      return { success: false, message: "Attendance session table is not supported", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
+      return { success: false, message: "Attendance session table is not supported", session_id: sessionId, total_students: 0, present: 0, absent: 0, od: 0 };
     }
 
     const studentTable = assertAllowedStudentTable(sessionTables.studentTable);
 
     if (session.status !== "FINALIZED" && session.expire_at > new Date().toISOString()) {
-      return { success: false, message: "Attendance session has not expired", session_id: sessionId, total_students: 0, present: 0, absent: 0 };
+      return { success: false, message: "Attendance session has not expired", session_id: sessionId, total_students: 0, present: 0, absent: 0, od: 0 };
     }
 
     if (session.status === "FINALIZED") {
@@ -1321,15 +1384,36 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
         .bind(sessionId, session.year, session.section)
         .first() as { present: number };
 
+      /*
+       * OD rows are counted the same way PRESENT is -- distinct register numbers
+       * joined to the class -- so a re-run of an already-finalized session reports
+       * the same split the first run wrote, and `absent` never includes an OD
+       * student.
+       */
+      const odResult = await db
+        .prepare(
+          `SELECT COUNT(DISTINCT attendance.register_no) AS od
+           FROM ${attendanceTable} attendance
+           JOIN ${studentTable} students
+             ON students.register_no = attendance.register_no
+           WHERE attendance.session_id = ?
+             AND attendance.status = 'OD'
+             AND students.year = ?
+             AND students.section = ?`
+        )
+        .bind(sessionId, session.year, session.section)
+        .first() as { od: number };
+
       const totalStudents = Number(totalResult?.total_students || 0);
       const present = Number(presentResult?.present || 0);
+      const od = Number(odResult?.od || 0);
 
-      return { success: true, message: "Attendance session already finalized", session_id: sessionId, total_students: totalStudents, present, absent: totalStudents - present };
+      return { success: true, message: "Attendance session already finalized", session_id: sessionId, total_students: totalStudents, present, absent: Math.max(totalStudents - present - od, 0), od };
     }
 
     const studentQuery = await db
       .prepare(
-        `SELECT register_no
+        `SELECT student_id, register_no
          FROM ${studentTable}
          WHERE year = ?
            AND section = ?
@@ -1338,7 +1422,7 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
       .bind(session.year, session.section)
       .all();
 
-    const students = studentQuery.results as unknown as { register_no: string }[];
+    const students = studentQuery.results as unknown as { student_id: string; register_no: string }[];
 
     const existingQuery = await db
       .prepare(
@@ -1360,7 +1444,21 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
       existingRecords.map((record) => record.register_no)
     );
 
+    /*
+     * The students who were on approved duty for this session's date. Read once,
+     * then consulted per student below. A student who already has a row -- a real
+     * PRESENT scan, or an ABSENT an advisor wrote during the session -- keeps it:
+     * this change only decides the status of the rows finalization is about to
+     * create, so it can never overwrite a verified mark.
+     */
+    const odCoveredStudentIds = await loadApprovedOdStudentIds(
+      db,
+      studentTable,
+      session.attendance_date
+    );
+
     const statements: D1PreparedStatement[] = [];
+    let odCreated = 0;
 
     for (const student of students) {
       if (presentSet.has(student.register_no)) {
@@ -1369,6 +1467,15 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
       if (existingSet.has(student.register_no)) {
         continue;
       }
+
+      /*
+       * An eligible OD request makes this student OD instead of ABSENT for the day.
+       * OD is a status on the row, not a second row, so `ON CONFLICT ... DO NOTHING`
+       * plus the unique `(session_id, register_no)` index still guarantees at most
+       * one record per student per session.
+       */
+      const status = odCoveredStudentIds.has(student.student_id) ? "OD" : "ABSENT";
+      if (status === "OD") odCreated += 1;
 
       const attendanceId = crypto.randomUUID();
 
@@ -1387,7 +1494,7 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
                session_id,
                status
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ABSENT')
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(session_id, register_no) DO NOTHING`
           )
           .bind(
@@ -1399,7 +1506,8 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
             session.subject_code,
             session.subject_name,
             new Date().toISOString(),
-            sessionId
+            sessionId,
+            status
           )
       );
     }
@@ -1425,7 +1533,12 @@ export async function finalizeSession(db: D1Database, sessionId: string): Promis
       presentSet.has(student.register_no)
     ).length;
 
-    return { success: true, message: "Attendance finalized successfully", session_id: sessionId, total_students: students.length, present, absent: students.length - present };
+    /*
+     * `absent` is everything that is neither present nor on duty. An unmarked
+     * student cannot occur here: finalization writes a row for every student in the
+     * class, so present + od + absent always equals the class strength.
+     */
+    return { success: true, message: "Attendance finalized successfully", session_id: sessionId, total_students: students.length, present, absent: Math.max(students.length - present - odCreated, 0), od: odCreated };
   } catch (error) {
     console.error("Finalize session error:", error);
     throw error;
