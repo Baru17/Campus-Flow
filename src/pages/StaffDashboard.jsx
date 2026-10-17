@@ -83,6 +83,7 @@ const [section, setSection] = useState('')
 
   const [session, setSession] = useState(null)
   const [sessionExpired, setSessionExpired] = useState(false)
+  const [finalizing, setFinalizing] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState(null)
   const [finalizeError, setFinalizeError] = useState(null)
@@ -261,6 +262,7 @@ const [section, setSection] = useState('')
     setFinalizeError(null)
     setSession(null)
     setSessionExpired(false)
+    setFinalizing(false)
     setGenerating(true)
     try {
       /*
@@ -311,10 +313,13 @@ const [section, setSection] = useState('')
     setSessionExpired(true)
     setRecentSessions((prev) => prev.map((item, index) => (index === 0 ? { ...item, expired: true } : item)))
     setFinalizeError(null)
+    setFinalizing(true)
     try {
       await finalizeAttendanceSession(session.session_id)
     } catch (error) {
       setFinalizeError(error?.message || 'Unable to finalize the attendance session.')
+    } finally {
+      setFinalizing(false)
     }
   }
 
@@ -619,10 +624,20 @@ const [section, setSection] = useState('')
                     </span>
                   </div>
 
-                  {sessionExpired && (
+                  {/*
+                    The attendance summary for this exact session, directly below the
+                    Subject row. It appears only after the OTP has expired and the
+                    automatic finalization has settled, so no final count is shown while
+                    the session is still being finalized.
+                  */}
+                  {sessionExpired && !finalizing && (
+                    <StaffAttendanceReport session={session} staffId={staff.staff_id} />
+                  )}
+
+                  {sessionExpired && finalizing && (
                     <div className="mt-3">
                       <StatusMessage variant="info">
-                        OTP expired. The session is being finalized automatically by the system.
+                        OTP expired. The session is being finalized automatically by the system…
                       </StatusMessage>
                     </div>
                   )}
@@ -714,11 +729,6 @@ const [section, setSection] = useState('')
             )}
           </div>
         </div>
-
-        {/* The absentees report for the session that just ended. */}
-        {session && sessionExpired && (
-          <StaffAttendanceReport session={session} staffId={staff.staff_id} expired={sessionExpired} />
-        )}
 
         {/*
           The way onto a mentor's OD queue.
