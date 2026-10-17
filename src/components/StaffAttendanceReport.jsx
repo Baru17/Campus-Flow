@@ -70,7 +70,6 @@ export default function StaffAttendanceReport({ session, attendance }) {
     absentCount,
     unmarkedCount,
     totalStrength,
-    percentage,
     savingId,
     saveError,
     toggle,
@@ -156,17 +155,6 @@ export default function StaffAttendanceReport({ session, attendance }) {
               tone="violet"
             />
           </div>
-
-          <p className="text-muted-2 text-sm mb-0 mt-2">
-            Overall attendance: {percentage}%
-            {unmarkedCount > 0
-              ? ` · ${unmarkedCount} not marked yet`
-              : ' · every student has a recorded status'}
-          </p>
-          <p className="text-muted-2 text-sm mb-0">
-            Present + Absent = {presentCount + absentCount} of {totalStrength}
-            {unmarkedCount > 0 ? ` (${unmarkedCount} still unmarked)` : ''}
-          </p>
 
           <div className="mt-3">
             <button
