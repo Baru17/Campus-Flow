@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getAdvisorAssignment, getAttendance, getReport } from '../api/classAdvisorApi'
+import { getAdvisorAssignment, getAttendance, getReport, patchAttendance } from '../api/classAdvisorApi'
+import AttendanceReportTable from './AttendanceReportTable'
 import StatusMessage from './StatusMessage'
 import {
   CheckIcon,
@@ -49,6 +50,8 @@ export default function StaffAttendanceReport({ session, staffId, enabled = true
   const [showAbsentees, setShowAbsentees] = useState(false)
   const [copyState, setCopyState] = useState('idle')
   const [copyError, setCopyError] = useState(null)
+  const [savingId, setSavingId] = useState(null)
+  const [saveError, setSaveError] = useState(null)
   const copyTimer = useRef(null)
 
   const request = useMemo(
@@ -64,6 +67,15 @@ export default function StaffAttendanceReport({ session, staffId, enabled = true
   )
 
   const sessionKey = request?.sessionId
+
+  const applyAttendanceData = useCallback((data) => {
+    const nextMap = {}
+    for (const student of data.students || []) {
+      if (student.status) nextMap[student.register_no] = student.status
+    }
+    setAttendanceMap(nextMap)
+    setStudents(Array.isArray(data.students) ? data.students : [])
+  }, [])
 
   useEffect(() => {
     if (!enabled || !request || !staffId) return undefined
@@ -96,12 +108,7 @@ export default function StaffAttendanceReport({ session, staffId, enabled = true
           setPhase('different-session')
           return
         }
-        const nextMap = {}
-        for (const student of data.students || []) {
-          if (student.status) nextMap[student.register_no] = student.status
-        }
-        setAttendanceMap(nextMap)
-        setStudents(Array.isArray(data.students) ? data.students : [])
+        applyAttendanceData(data)
         setPhase('ready')
       } catch (error) {
         if (cancelled) return
@@ -113,13 +120,14 @@ export default function StaffAttendanceReport({ session, staffId, enabled = true
     return () => {
       cancelled = true
     }
-  }, [enabled, request, staffId, session])
+  }, [enabled, request, staffId, session, applyAttendanceData])
 
   // The summary belongs to one session; a new session starts collapsed and quiet.
   useEffect(() => {
     setShowAbsentees(false)
     setCopyState('idle')
     setCopyError(null)
+    setSaveError(null)
   }, [sessionKey])
 
   useEffect(
@@ -163,6 +171,26 @@ export default function StaffAttendanceReport({ session, staffId, enabled = true
       setCopyError(error?.message || 'Could not copy the report. Please try again.')
     }
   }, [request, copyState])
+
+  const handleToggle = useCallback(
+    async (registerNo, nextStatus) => {
+      if (!request || !sessionKey) return
+      setSaveError(null)
+      setSavingId(registerNo)
+      try {
+        await patchAttendance(sessionKey, registerNo, nextStatus)
+        const refreshed = await getAttendance(request.date, request.period)
+        if (refreshed && refreshed.session_id === request.sessionId) {
+          applyAttendanceData(refreshed)
+        }
+      } catch (error) {
+        setSaveError(error?.message || 'Could not save the attendance change.')
+      } finally {
+        setSavingId(null)
+      }
+    },
+    [request, sessionKey, applyAttendanceData],
+  )
 
   if (phase === 'checking' || phase === 'loading') {
     return (
@@ -324,6 +352,36 @@ export default function StaffAttendanceReport({ session, staffId, enabled = true
             )}
           </div>
         </div>
+      </div>
+
+      {saveError && (
+        <div className="mt-3">
+          <StatusMessage variant="danger">{saveError}</StatusMessage>
+        </div>
+      )}
+
+      {/*
+        Present / Absent editing, exactly as on the Class Advisor dashboard.
+
+        This is only reached in the `ready` phase, which requires the signed-in user
+        to be the Class Advisor of this session's class -- the same rule the server
+        enforces on the PATCH endpoint -- so the controls are only shown where the
+        API actually allows the write.
+      */}
+      <div className="mt-4">
+        <h4 className="section-title">Mark attendance</h4>
+        <p className="text-muted-2 text-sm mb-0">
+          {formatClassName(session.department, session.year, session.section, session.batch)} · Period{' '}
+          {request.period} · {session.subject_code} - {session.subject_name}
+        </p>
+        <AttendanceReportTable
+          students={students}
+          attendanceMap={attendanceMap}
+          loading={false}
+          savingId={savingId}
+          onToggle={handleToggle}
+          emptyText="No students found for this class."
+        />
       </div>
     </>
   )
