@@ -68,6 +68,7 @@ export default defineConfig({
 		hookTimeout: 60_000,
 		include: [
 			"test/attendance.integration.spec.ts",
+			"test/authSession.integration.spec.ts",
 			"test/session-cookie.integration.spec.ts",
 			"test/password-reset.integration.spec.ts",
 			"test/migration0013.integration.spec.ts",

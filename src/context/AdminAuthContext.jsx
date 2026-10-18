@@ -6,6 +6,13 @@ export default function AdminAuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
+  /*
+   * `getCurrentAdmin` is the shared "who am I?" read narrowed to an administrator, so
+   * this effect joins the request the student and staff providers are already making at
+   * the same moment rather than adding a third copy of it. A signed-out visitor therefore
+   * gets one 401 on the page instead of three, and `StrictMode`'s double-invoked effects
+   * add none.
+   */
   useEffect(() => {
     let active = true
     ;(async () => {

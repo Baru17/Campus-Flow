@@ -93,7 +93,7 @@ export default function ApproverLogin() {
       const home = HOME_BY_ROLE[role]
 
       if (role === 'staff' || role === 'class_advisor' || role === 'contest_coordinator') {
-        await refresh()
+        await refresh({ force: true })
       }
 
       navigate(home || '/role-selection', { replace: true })

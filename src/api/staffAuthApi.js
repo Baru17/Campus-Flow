@@ -1,9 +1,7 @@
-import { ApiError } from './attendanceApi'
+import { ApiError, apiRequest, assertBackend, isNetworkError } from './http'
 import { SESSION_NOT_STORED_MESSAGE } from './authApi'
 import { BACKEND_URL } from './backendUrl'
-
-const NOT_CONFIGURED_MESSAGE =
-  'The authentication service is not configured yet. Contact the administrator.'
+import { clearCurrentUser, refreshCurrentUser, setCurrentUser } from './sessionApi'
 
 const NETWORK_MESSAGE =
   'Unable to connect to the authentication service. Please try again.'
@@ -19,49 +17,6 @@ const PASSWORD_UPDATED_MESSAGE = 'Your password has been updated successfully.'
 
 const RESET_SENT_MESSAGE =
   'If an account matches, a password reset link has been sent to its registered email.'
-
-function assertBackend() {
-  if (!BACKEND_URL) {
-    throw new ApiError(NOT_CONFIGURED_MESSAGE, { code: 'not-configured' })
-  }
-}
-
-function isNetworkError(error) {
-  const message = String(error?.message || error?.name || '').toLowerCase()
-  return (
-    error instanceof TypeError ||
-    message.includes('failed to fetch') ||
-    message.includes('networkerror') ||
-    message.includes('network error') ||
-    message.includes('load failed') ||
-    message.includes('fetch failed') ||
-    message.includes('unexpected end of json input')
-  )
-}
-
-async function apiRequest(url, options) {
-  try {
-    const response = await fetch(`${BACKEND_URL}${url}`, {
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      ...options,
-    })
-    const body = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      throw new ApiError(body.error || 'Request failed', {
-        status: response.status,
-        code: body.code || null,
-      })
-    }
-    return { data: body, error: body.error || null }
-  } catch (error) {
-    if (error instanceof ApiError) throw error
-    if (isNetworkError(error)) {
-      throw new ApiError(NETWORK_MESSAGE, { code: 'network' })
-    }
-    throw error
-  }
-}
 
 function mapAuthError(error, kind = 'generic') {
   if (isNetworkError(error)) {
@@ -149,6 +104,7 @@ export async function staffLogin(identifier, password) {
   const staff = data.staff || (await apiRequest(`/api/auth/staff/${data.user.auth_user_id}`).then(r => r.data))
   if (!staff) {
     await apiRequest('/api/auth/staff/logout', { method: 'POST' }).catch(() => {})
+    clearCurrentUser()
     throw new ApiError(
       'Your account is not linked to a staff record. Please contact your administrator.',
       { code: 'unlinked-staff' }
@@ -158,15 +114,22 @@ export async function staffLogin(identifier, password) {
    * The login response only proves the password was right. If the browser
    * dropped the session cookie, every later call 401s while the dashboard looks
    * signed in, so confirm the cookie round-tripped before handing back a user.
+   *
+   * Confirmed against the server rather than against what the sign-in page already
+   * knows, and the remembered answer is set from the login response first so the
+   * other providers agree with this one immediately.
    */
-  const verifiedUser = await getCurrentUser()
+  setCurrentUser(data.user)
+  const verifiedUser = await refreshCurrentUser()
   if (!verifiedUser) {
     await apiRequest('/api/auth/staff/logout', { method: 'POST' }).catch(() => {})
+    clearCurrentUser()
     throw new ApiError(SESSION_NOT_STORED_MESSAGE, { code: 'session-not-stored' })
   }
   const verifiedStaff = await getCurrentStaff(verifiedUser.id)
   if (!verifiedStaff) {
     await apiRequest('/api/auth/staff/logout', { method: 'POST' }).catch(() => {})
+    clearCurrentUser()
     throw new ApiError(SESSION_NOT_STORED_MESSAGE, { code: 'session-not-stored' })
   }
   const session = await getCurrentSession()
@@ -174,21 +137,20 @@ export async function staffLogin(identifier, password) {
 }
 
 export async function staffLogout() {
-  if (!BACKEND_URL) return
-  await apiRequest('/api/auth/staff/logout', { method: 'POST' }).catch(() => {})
-}
-
-export async function getCurrentUser() {
-  if (!BACKEND_URL) return null
+  if (!BACKEND_URL) {
+    clearCurrentUser()
+    return
+  }
   try {
-    const { data } = await apiRequest('/api/auth/user')
-    if (!data?.user) return null
-    return data.user
-  } catch (error) {
-    if (error?.status === 401) return null
-    throw error
+    await apiRequest('/api/auth/staff/logout', { method: 'POST' })
+  } catch {
+    // The session is being ended either way; the cookie and the memory are cleared below.
+  } finally {
+    clearCurrentUser()
   }
 }
+
+export { getCurrentUser } from './sessionApi'
 
 export async function getCurrentStaff(userId) {
   assertBackend()

@@ -3,12 +3,12 @@ import { StaffAuthContext } from './staffAuthContextValue'
 import {
   getCurrentSession,
   getCurrentStaff,
-  getCurrentUser,
   requestStaffPasswordReset,
   staffLogin,
   staffLogout,
   updateStaffPassword,
 } from '../api/staffAuthApi'
+import { getCurrentUser, refreshCurrentUser } from '../api/sessionApi'
 
 export default function StaffAuthProvider({ children }) {
   const [user, setUser] = useState(null)
@@ -26,11 +26,17 @@ export default function StaffAuthProvider({ children }) {
    * dashboard. The provider has already mounted by then and has already decided it is
    * showing a signed-out staff member, so without this they would land on a dashboard that
    * signs them straight back out.
+   *
+   * `force` is what separates those two callers. On mount it is false, so the read joins
+   * whatever `AuthProvider` and `AdminAuthProvider` are already asking the same question
+   * about, and three providers cost one request. After a sign-in it is true, because the
+   * session that answer described did not exist when it was taken and it has to be asked
+   * again rather than remembered.
    */
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async ({ force = false } = {}) => {
     setLoading(true)
     try {
-      const currentUser = await getCurrentUser()
+      const currentUser = force ? await refreshCurrentUser() : await getCurrentUser()
       const role = String(currentUser?.role || '').trim().toLowerCase().replace(/[ -]+/g, '_')
       if (role !== 'staff' && role !== 'class_advisor') {
         setUser(null)

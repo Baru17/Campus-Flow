@@ -1,9 +1,7 @@
-import { ApiError } from './attendanceApi'
+import { ApiError, apiRequest, assertBackend, isNetworkError } from './http'
 import { BACKEND_URL } from './backendUrl'
+import { clearCurrentUser, refreshCurrentUser, setCurrentUser } from './sessionApi'
 import { isValidStudentId, normalizeStudentId } from '../utils/validation'
-
-const NOT_CONFIGURED_MESSAGE =
-  'The authentication service is not configured yet. Contact the administrator.'
 
 const NETWORK_MESSAGE =
   'Unable to connect to the authentication service. Please try again.'
@@ -26,49 +24,6 @@ const RESET_SENT_MESSAGE =
 
 function looksLikeEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim())
-}
-
-function assertBackend() {
-  if (!BACKEND_URL) {
-    throw new ApiError(NOT_CONFIGURED_MESSAGE, { code: 'not-configured' })
-  }
-}
-
-function isNetworkError(error) {
-  const message = String(error?.message || error?.name || '').toLowerCase()
-  return (
-    error instanceof TypeError ||
-    message.includes('failed to fetch') ||
-    message.includes('networkerror') ||
-    message.includes('network error') ||
-    message.includes('load failed') ||
-    message.includes('fetch failed') ||
-    message.includes('unexpected end of json input')
-  )
-}
-
-async function apiRequest(url, options) {
-  try {
-    const response = await fetch(`${BACKEND_URL}${url}`, {
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      ...options,
-    })
-    const body = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      throw new ApiError(body.error || 'Request failed', {
-        status: response.status,
-        code: body.code || null,
-      })
-    }
-    return { data: body, error: body.error || null }
-  } catch (error) {
-    if (error instanceof ApiError) throw error
-    if (isNetworkError(error)) {
-      throw new ApiError(NETWORK_MESSAGE, { code: 'network' })
-    }
-    throw error
-  }
 }
 
 function mapAuthError(error, kind = 'generic') {
@@ -129,11 +84,29 @@ export async function studentLogin(studentId, password) {
     throw mapAuthError({ message: 'Invalid credentials' }, 'login')
   }
   if (data.student) {
-    const verifiedUser = await getCurrentUser()
+    /*
+     * The login response only proves the password was right. If the browser dropped the
+     * session cookie, every later call 401s while the dashboard looks signed in, so the
+     * cookie is confirmed against the server before a user is handed back -- and against
+     * the server rather than against memory, which is why this forces a read.
+     *
+     * The remembered answer is set from the login response first, so the providers that
+     * have already settled on "signed out" agree with it immediately instead of each
+     * finding out for themselves later.
+     */
+    setCurrentUser(data.user)
+    const verifiedUser = await refreshCurrentUser()
     if (!verifiedUser || verifiedUser.role !== 'student') {
+      /*
+       * Refused after the session row was already written. End it here rather than
+       * leaving a live session behind for an account this flow has just decided it cannot
+       * use -- which is what `staffLogin` and `adminLogin` already do on the same branch.
+       */
+      await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => {})
+      clearCurrentUser()
       throw new ApiError(SESSION_NOT_STORED_MESSAGE, { code: 'session-not-stored' })
     }
-    return { user: data.user, student: data.student }
+    return { user: verifiedUser, student: data.student }
   }
   throw new ApiError(
     'Your account is not linked to a student record. Please contact your administrator.',
@@ -142,20 +115,20 @@ export async function studentLogin(studentId, password) {
 }
 
 export async function studentLogout() {
-  if (!BACKEND_URL) return
-  await apiRequest('/api/auth/logout', { method: 'POST' }).catch(() => {})
-}
-
-export async function getCurrentUser() {
-  if (!BACKEND_URL) return null
+  if (!BACKEND_URL) {
+    clearCurrentUser()
+    return
+  }
   try {
-    const { data } = await apiRequest('/api/auth/user')
-    return data?.user || null
-  } catch (error) {
-    if (error?.status === 401) return null
-    throw error
+    await apiRequest('/api/auth/logout', { method: 'POST' })
+  } catch {
+    // The session is being ended either way; the cookie and the memory are cleared below.
+  } finally {
+    clearCurrentUser()
   }
 }
+
+export { getCurrentUser } from './sessionApi'
 
 export async function getCurrentStudent(authUserId) {
   if (!BACKEND_URL || !authUserId) return null

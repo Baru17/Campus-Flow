@@ -11,7 +11,8 @@ import StatusMessage from '../components/StatusMessage'
 import StudentLogin from '../components/StudentLogin'
 import { verifyAttendanceOTP } from '../api/attendanceApi'
 import { getAdvisorAssignment } from '../api/classAdvisorApi'
-import { getCurrentStudent, getCurrentUser } from '../api/authApi'
+import { getCurrentStudent } from '../api/authApi'
+import { refreshCurrentUser } from '../api/sessionApi'
 import { approverLogin } from '../api/odApi'
 import { OTP_LENGTH } from '../constants'
 import { useAuth } from '../hooks/useAuth'
@@ -89,7 +90,7 @@ export default function AuthPage() {
      * reads the approver session itself.
      */
     if (expectedRole === 'contest_coordinator') {
-      await refreshStaffSession()
+      await refreshStaffSession({ force: true })
     }
 
     navigate(home)
@@ -122,7 +123,13 @@ export default function AuthPage() {
     setError(null)
     setVerifying(true)
     try {
-      const currentUser = await getCurrentUser()
+      /*
+       * Asked of the server, not answered from what the shared session read already
+       * knows. This is the check that stops an OTP being submitted from a tab whose
+       * session has gone, so it must not be served from memory even though the
+       * sign-in that got here was verified seconds ago.
+       */
+      const currentUser = await refreshCurrentUser()
       if (!currentUser) {
         setError({
           variant: 'warning',

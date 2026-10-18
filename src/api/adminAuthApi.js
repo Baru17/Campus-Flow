@@ -1,60 +1,15 @@
-import { ApiError } from './attendanceApi'
+import { ApiError, apiRequest, assertBackend, isNetworkError } from './http'
 import { SESSION_NOT_STORED_MESSAGE } from './authApi'
 import { BACKEND_URL } from './backendUrl'
+import { clearCurrentUser, getCurrentUser, refreshCurrentUser, setCurrentUser } from './sessionApi'
 
 const ADMIN_EMAIL = 'admin@kiot.ac.in'
-
-const NOT_CONFIGURED_MESSAGE =
-  'The authentication service is not configured yet. Contact the administrator.'
 
 const NETWORK_MESSAGE = 'Unable to connect to the authentication service. Please try again.'
 
 const INVALID_CREDENTIALS_MESSAGE = 'Invalid admin email or password.'
 
 const UNAUTHORIZED_MESSAGE = 'This account is not authorized to access the admin dashboard.'
-
-function assertBackend() {
-  if (!BACKEND_URL) {
-    throw new ApiError(NOT_CONFIGURED_MESSAGE, { code: 'not-configured' })
-  }
-}
-
-function isNetworkError(error) {
-  const message = String(error?.message || error?.name || '').toLowerCase()
-  return (
-    error instanceof TypeError ||
-    message.includes('failed to fetch') ||
-    message.includes('networkerror') ||
-    message.includes('network error') ||
-    message.includes('load failed') ||
-    message.includes('fetch failed') ||
-    message.includes('unexpected end of json input')
-  )
-}
-
-async function apiRequest(url, options) {
-  try {
-    const response = await fetch(`${BACKEND_URL}${url}`, {
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      ...options,
-    })
-    const body = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      throw new ApiError(body.error || 'Request failed', {
-        status: response.status,
-        code: body.code || null,
-      })
-    }
-    return { data: body, error: body.error || null }
-  } catch (error) {
-    if (error instanceof ApiError) throw error
-    if (isNetworkError(error)) {
-      throw new ApiError(NETWORK_MESSAGE, { code: 'network' })
-    }
-    throw error
-  }
-}
 
 function mapAuthError(error, kind = 'generic') {
   if (isNetworkError(error)) {
@@ -100,31 +55,51 @@ export async function adminLogin(email, password) {
   }
   if (!isAdminUser(data.user)) {
     await apiRequest('/api/auth/admin/logout', { method: 'POST' }).catch(() => {})
+    clearCurrentUser()
     throw new ApiError(UNAUTHORIZED_MESSAGE, { code: 'unauthorized' })
   }
-  const verifiedUser = await getCurrentAdmin()
+  /*
+   * Confirms the session cookie round-tripped against the server rather than against
+   * what this page already knows, and records the new account so the providers that
+   * have already settled on "signed out" agree with this one immediately.
+   */
+  setCurrentUser(data.user)
+  const verifiedUser = await asAdmin(refreshCurrentUser())
   if (!verifiedUser) {
     await apiRequest('/api/auth/admin/logout', { method: 'POST' }).catch(() => {})
+    clearCurrentUser()
     throw new ApiError(SESSION_NOT_STORED_MESSAGE, { code: 'session-not-stored' })
   }
   return { user: verifiedUser }
 }
 
 export async function adminLogout() {
-  if (!BACKEND_URL) return
-  await apiRequest('/api/auth/admin/logout', { method: 'POST' }).catch(() => {})
+  if (!BACKEND_URL) {
+    clearCurrentUser()
+    return
+  }
+  try {
+    await apiRequest('/api/auth/admin/logout', { method: 'POST' })
+  } catch {
+    // The session is being ended either way; the cookie and the memory are cleared below.
+  } finally {
+    clearCurrentUser()
+  }
 }
 
+/*
+ * The shared read, narrowed to an administrator.
+ *
+ * A session that is valid but belongs to somebody else is not an admin session, so it
+ * reads as "no admin" rather than as an error -- which is the same rule the admin route
+ * guard has always applied to this endpoint's answer.
+ */
 export async function getCurrentAdmin() {
-  if (!BACKEND_URL) return null
-  try {
-    const { data } = await apiRequest('/api/auth/user')
-    if (!data?.user) return null
-    return isAdminUser(data.user) ? data.user : null
-  } catch (error) {
-    if (error?.status === 401) return null
-    throw error
-  }
+  return asAdmin(await getCurrentUser())
+}
+
+async function asAdmin(user) {
+  return isAdminUser(user) ? user : null
 }
 
 export async function getCurrentSession() {
