@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">CampusFlow emblem</title>
+  <desc id="description">A navy graduation cap above a blue circular flow surrounding a navy letter C.</desc>
+  <defs>
+    <linearGradient id="flow" x1="102" y1="374" x2="407" y2="193" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#1677FF"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M375 175a165 165 0 0 1-232 231" stroke="url(#flow)" stroke-width="31"/>
+    <path d="M137 346a165 165 0 0 1 232-231" stroke="#1677FF" stroke-width="31"/>
+    <path d="M304 229a78 78 0 1 0 0 118" stroke="#102A43" stroke-width="30"/>
+  </g>
+  <path d="m73 131 183-76 183 76-183 76-183-76Z" fill="#102A43"/>
+  <path d="M135 157v75c69 49 183 49 242 0v-75l-121 50-121-50Z" fill="#102A43"/>
+  <path d="M388 145v98" fill="none" stroke="#1677FF" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="388" cy="252" r="12" fill="#38BDF8"/>
+</svg>

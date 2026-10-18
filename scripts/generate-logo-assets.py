@@ -5,12 +5,17 @@ Usage (from anywhere):
 
     python scripts/generate-logo-assets.py [SOURCE] [--outdir PUBLIC_DIR]
 
-    SOURCE      Logo image to clean up and export.
-                Defaults to public/campusflow-logo.png -- the file to replace
-                for a future logo swap.
+    SOURCE      Logo image to clean up and export. May be SVG (preferred --
+                vector sources are rasterised at 3x for the PNG assets) or a
+                raster format (JPEG/PNG, checkerboard or white background).
+                Defaults to the first of these that exists:
+                    public/campusflow-logo.svg
+                    public/campusflow-logo.png
+                    public/campusflow-logo.jpeg
     PUBLIC_DIR  Output directory (default: <repo>/public).
 
-Requirements: Python 3 with Pillow and numpy.
+Requirements: Python 3 with Pillow, numpy and scipy. SVG sources additionally
+need `pip install resvg-py`.
 
 What it does
 ------------
@@ -18,8 +23,9 @@ What it does
    pixel becomes transparent, including checkerboard cells, white patches
    inside the emblem, and JPEG ringing at the edges. Only the saturated
    brand artwork (navy, electric blue, cyan) and its anti-aliased edges
-   survive. Tuned to this logo family: if a future logo contains genuine
-   white artwork, raise NEUTRAL_MIN_MEAN or exempt those areas.
+   survive. Genuine transparency in the source is preserved. Tuned to this
+   logo family: if a future logo contains genuine white artwork, raise
+   NEUTRAL_MIN_MEAN or exempt those areas.
 2. Crops to the artwork bounding box + small padding. Aspect ratio is
    always preserved downstream via object-fit: contain / contain-fitting.
 3. Writes:
@@ -29,12 +35,14 @@ What it does
        pwa-maskable-192x192.png     Android maskable, solid background
        pwa-maskable-512x512.png     Android maskable, solid background
        apple-touch-icon.png         iOS home-screen icon, solid background
-       favicon.svg                  browser icon (embedded 128px PNG)
+       favicon.svg                  browser icon (vector copy of the source
+                                    when the source is SVG, otherwise an
+                                    embedded 128px PNG)
 4. Verifies the output and exits non-zero if anything looks wrong, so a
    bad source never silently ships.
 
 The original source image is never modified. public/campusflow-logo.jpeg
-is kept as the archival copy of the last supplied source artwork.
+is kept as the archival copy of the last supplied *raster* source artwork.
 """
 
 import argparse
@@ -69,15 +77,27 @@ ICON_BG = (246, 247, 251, 255)  # manifest background_color #f6f7fb
 # --------------------------------------------------------------------------
 
 
-def clean_background(img_rgb):
-    """Return an RGBA image with the background removed globally."""
-    a = np.asarray(img_rgb).astype(np.int16)
-    r, g, b = a[..., 0], a[..., 1], a[..., 2]
-    spread = a.max(-1) - a.min(-1)
-    mean = a.mean(-1)
+def rasterize_svg(path, zoom=3.0):
+    """Render an SVG source to RGBA at a higher resolution via resvg."""
+    import resvg_py
 
-    bg = (spread <= NEUTRAL_MAX_SPREAD) & (mean >= NEUTRAL_MIN_MEAN)
-    art = ~bg
+    png = resvg_py.svg_to_bytes(svg_path=str(path), zoom=zoom)
+    return Image.open(io.BytesIO(png)).convert("RGBA")
+
+
+def clean_background(img):
+    """Return an RGBA image with the background removed globally.
+
+    Works on both fully-opaque sources (JPEG / checkerboard PNGs) and
+    sources with real alpha (SVG renders): existing transparency is kept,
+    and any neutral/white pixels -- opaque or not -- are erased.
+    """
+    src = np.asarray(img.convert("RGBA")).astype(np.int16)
+    rgb, alpha_src = src[..., :3], src[..., 3].astype(np.float64)
+    spread = rgb.max(-1) - rgb.min(-1)
+    mean = rgb.mean(-1)
+
+    bg = (spread <= NEUTRAL_MAX_SPREAD) & (mean >= NEUTRAL_MIN_MEAN) & (alpha_src > 0)
     print(f"  background pixels: {int(bg.sum()):,} ({bg.mean():.1%})")
 
     # Neutral mid-tone pixels bordering the background are JPEG ringing
@@ -85,23 +105,30 @@ def clean_background(img_rgb):
     bg_dilated = np.asarray(
         Image.fromarray((bg * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(7))
     ) > 0
-    fringe = art & (spread <= NEUTRAL_MAX_SPREAD + 4) & (mean >= 60) & bg_dilated
+    fringe = (~bg) & (spread <= NEUTRAL_MAX_SPREAD + 4) & (mean >= 60) & bg_dilated
     print(f"  edge-fringe pixels: {int(fringe.sum()):,}")
 
-    alpha = np.where(bg | fringe, 0, 255).astype(np.uint8)
+    removal = bg | fringe
 
     # Drop isolated noise specks out in the backdrop.
-    lab, n = ndimage.label((~bg) & ~fringe)
+    lab, n = ndimage.label(~removal)
     if n:
         sizes = ndimage.sum(np.ones_like(lab), lab, range(1, n + 1))
         specks = np.isin(lab, np.where(sizes < SPECK_MAX_PX)[0] + 1)
         if specks.any():
             print(f"  noise specks removed: {int((sizes < SPECK_MAX_PX).sum())} "
                   f"blobs ({int(specks.sum()):,} px)")
-            alpha[specks] = 0
+            removal |= specks
 
-    alpha_img = Image.fromarray(alpha).filter(ImageFilter.GaussianBlur(FEATHER_PX))
-    return Image.fromarray(np.dstack([np.asarray(img_rgb), np.asarray(alpha_img)]), "RGBA")
+    # Feather the removal mask, then subtract it from the source alpha so
+    # anti-aliased artwork edges keep their original softness.
+    soft = np.asarray(
+        Image.fromarray((removal * 255).astype(np.uint8)).filter(
+            ImageFilter.GaussianBlur(FEATHER_PX)
+        )
+    ).astype(np.float64) / 255.0
+    alpha_out = np.clip(alpha_src * (1.0 - soft), 0, 255).astype(np.uint8)
+    return Image.fromarray(np.dstack([rgb.astype(np.uint8), alpha_out]), "RGBA")
 
 
 def fitted(logo, size, fill_ratio, background):
@@ -119,28 +146,35 @@ def fitted(logo, size, fill_ratio, background):
     return canvas
 
 
+def default_source():
+    for name in ("campusflow-logo.svg", "campusflow-logo.png", "campusflow-logo.jpeg"):
+        candidate = ROOT / "public" / name
+        if candidate.exists():
+            return candidate
+    raise SystemExit(
+        "FAILED: no default source found -- looked for public/campusflow-logo."
+        "{svg,png,jpeg}. Pass one explicitly: python scripts/generate-logo-assets.py <SOURCE>"
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("source", nargs="?", default=str(ROOT / "public/campusflow-logo.png"))
+    ap.add_argument("source", nargs="?", default=None)
     ap.add_argument("--outdir", default=str(ROOT / "public"))
     args = ap.parse_args()
 
-    src = Path(args.source)
+    src = Path(args.source) if args.source else default_source()
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
     print(f"source: {src}")
 
-    source = Image.open(src)
-    had_alpha = source.mode in ("RGBA", "LA") and np.asarray(source)[..., 3].min() < 250
-    if had_alpha:
-        # Composite onto white first so the same rules apply to exported
-        # "transparent" PNGs whose checkerboard was baked in by an editor.
-        base = Image.new("RGBA", source.size, (255, 255, 255, 255))
-        source = Image.alpha_composite(base, source.convert("RGBA")).convert("RGB")
+    if src.suffix.lower() == ".svg":
+        source_rgba = rasterize_svg(src)
+        print(f"  rasterised SVG at {source_rgba.width}x{source_rgba.height}")
     else:
-        source = source.convert("RGB")
+        source_rgba = Image.open(src).convert("RGBA")
 
-    logo = clean_background(source)
+    logo = clean_background(source_rgba)
 
     ys, xs = np.where(np.asarray(logo)[..., 3] > 16)
     if len(xs) == 0:
@@ -149,7 +183,7 @@ def main():
            min(int(xs.max()) + 1 + PAD_PX, logo.width),
            min(int(ys.max()) + 1 + PAD_PX, logo.height))
     logo = logo.crop(box)
-    print(f"  cropped artwork: {logo.width}x{logo.height} from {source.width}x{source.height}")
+    print(f"  cropped artwork: {logo.width}x{logo.height} from {source_rgba.width}x{source_rgba.height}")
 
     # ---------------------------------------------------------- outputs
     logo.save(out / "campusflow-logo.png", optimize=True)
@@ -159,15 +193,20 @@ def main():
     fitted(logo, 512, MASKABLE_FILL, ICON_BG).save(out / "pwa-maskable-512x512.png", optimize=True)
     fitted(logo, 180, APPLE_FILL, ICON_BG).save(out / "apple-touch-icon.png", optimize=True)
 
-    buf = io.BytesIO()
-    fitted(logo, 128, FAVICON_FILL, (0, 0, 0, 0)).save(buf, "PNG", optimize=True)
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    (out / "favicon.svg").write_text(
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="64" height="64">\n'
-        f'  <image width="128" height="128" href="data:image/png;base64,{b64}"/>\n'
-        "</svg>\n",
-        encoding="utf-8",
-    )
+    if src.suffix.lower() == ".svg":
+        # Vector source: the favicon can be vector too -- sharpest possible
+        # browser-tab icon, no 30KB base64 blob.
+        (out / "favicon.svg").write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        buf = io.BytesIO()
+        fitted(logo, 128, FAVICON_FILL, (0, 0, 0, 0)).save(buf, "PNG", optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        (out / "favicon.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="64" height="64">\n'
+            f'  <image width="128" height="128" href="data:image/png;base64,{b64}"/>\n'
+            "</svg>\n",
+            encoding="utf-8",
+        )
 
     # ------------------------------------------------------ verification
     print("verification:")
