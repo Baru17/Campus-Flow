@@ -98,8 +98,24 @@ export async function getCurrentAdmin() {
   return asAdmin(await getCurrentUser())
 }
 
+/*
+ * `user` is awaited here rather than assumed to be a plain object.
+ *
+ * This is the fix for an admin sign-in that succeeded and then reported that the server
+ * could not verify the session cookie. `adminLogin` hands this function the *promise*
+ * returned by `refreshCurrentUser()`, and an `async` function does not unwrap its
+ * argument -- so `isAdminUser` was being handed a Promise. A Promise is truthy and has
+ * no `.user_name`, so the identifier collapsed to the empty string, the comparison
+ * against the admin address failed, and every admin sign-in was rejected no matter what
+ * the server had just said. The verification request was still made and still succeeded;
+ * its answer was simply discarded.
+ *
+ * Awaiting the argument fixes it for every caller, including the one that was already
+ * correct, and leaves `isAdminUser` receiving what it was always written to receive.
+ */
 async function asAdmin(user) {
-  return isAdminUser(user) ? user : null
+  const resolved = await user
+  return isAdminUser(resolved) ? resolved : null
 }
 
 export async function getCurrentSession() {
