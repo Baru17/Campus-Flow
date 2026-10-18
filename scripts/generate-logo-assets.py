@@ -6,12 +6,10 @@ Usage (from anywhere):
     python scripts/generate-logo-assets.py [SOURCE] [--outdir PUBLIC_DIR]
 
     SOURCE      Logo image to clean up and export. May be SVG (preferred --
-                vector sources are rasterised at 3x for the PNG assets) or a
-                raster format (JPEG/PNG, checkerboard or white background).
-                Defaults to the first of these that exists:
-                    public/campusflow-logo.svg
-                    public/campusflow-logo.png
-                    public/campusflow-logo.jpeg
+                vector sources are rasterised, capped around 2400px) or a
+                raster format (JPEG/PNG).
+                Defaults to the first entry of SOURCE_PREFERENCE that
+                exists in public/ -- currently public/CampusFlow_Logo.jpeg.
     PUBLIC_DIR  Output directory (default: <repo>/public).
 
 Requirements: Python 3 with Pillow, numpy and scipy. SVG sources additionally
@@ -19,13 +17,15 @@ need `pip install resvg-py`.
 
 What it does
 ------------
-1. Removes the image background *globally* -- every neutral (gray/white)
-   pixel becomes transparent, including checkerboard cells, white patches
-   inside the emblem, and JPEG ringing at the edges. Only the saturated
-   brand artwork (navy, electric blue, cyan) and its anti-aliased edges
-   survive. Genuine transparency in the source is preserved. Tuned to this
-   logo family: if a future logo contains genuine white artwork, raise
-   NEUTRAL_MIN_MEAN or exempt those areas.
+1. Removes the image background *dynamically*: the dominant neutral tones
+   found along the image border (checkerboard grays, white, light gray ...)
+   are detected first, then every pixel matching those tones -- anywhere in
+   the image, including patches enclosed inside the emblem -- becomes
+   transparent, together with the anti-aliasing bands chaining them to the
+   brand artwork. Works for white backgrounds, light AND dark checkerboards,
+   and already-transparent sources alike. Tuned to this logo family (navy /
+   electric blue / cyan): if a future logo contains genuine neutral-gray
+   artwork, relax the constants below.
 2. Crops to the artwork bounding box + small padding. Aspect ratio is
    always preserved downstream via object-fit: contain / contain-fitting.
 3. Writes:
@@ -36,13 +36,13 @@ What it does
        pwa-maskable-512x512.png     Android maskable, solid background
        apple-touch-icon.png         iOS home-screen icon, solid background
        favicon.svg                  browser icon (vector copy of the source
-                                    when the source is SVG, otherwise an
-                                    embedded 128px PNG)
+                                    when the source SVG is small, otherwise
+                                    an embedded 128px PNG)
 4. Verifies the output and exits non-zero if anything looks wrong, so a
    bad source never silently ships.
 
-The original source image is never modified. public/campusflow-logo.jpeg
-is kept as the archival copy of the last supplied *raster* source artwork.
+The source file itself is never modified. public/CampusFlow_Logo.jpeg is the
+current master artwork -- swap that file to rebrand, then re-run the script.
 """
 
 import argparse
@@ -57,16 +57,21 @@ from scipy import ndimage
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# --- tuning ---------------------------------------------------------------
-# A pixel is "background" when it is nearly neutral (r ~= g ~= b) and at
-# least this bright on average. Covers checkerboard grays (~195/~230),
-# pure white patches (255) and their light blends.
-NEUTRAL_MAX_SPREAD = 22   # max(r,g,b) - min(r,g,b)
-NEUTRAL_MIN_MEAN = 140    # mean(r,g,b)
-FRINGE_MAX_MEAN = 140     # dark JPEG ringing hugging the background
+# --- background detection -------------------------------------------------
+NEUTRAL_MAX_SPREAD = 30   # max(r,g,b) - min(r,g,b): "gray enough" to be bg/AA
+NEUTRAL_MIN_MEAN = 140    # light neutrals (white patches) are always background
+TONE_TOL = 16             # luminance tolerance when matching a border tone
+TONE_MIN_SHARE = 0.02     # a border cluster must cover 2% of the border row
+CHAIN_FLOOR_CAP = 60      # never chain-absorb neutrals darker than this ...
+CHAIN_FLOOR_RATIO = 0.55  # ... or darker than 55% of the darkest bg tone
 SPECK_MAX_PX = 40         # isolated noise blobs in the backdrop
+BRIGHT_FRINGE_LUM = 140    # near-white pixels this bright, this close to the
+BRIGHT_FRINGE_SPREAD = 48  # edge and this barely-coloured = JPEG ringing, not
+BRIGHT_FRINGE_DIST = 10    # artwork (brand colours stay far more saturated)
 FEATHER_PX = 0.6          # edge softening
 PAD_PX = 8                # crop padding around the artwork
+MAX_RASTER_EDGE = 2400    # SVG rasterisation cap (output pixels)
+VECTOR_FAVICON_MAX = 65 * 1024  # small SVGs become the favicon directly
 
 # icon layout
 ANY_FILL = 0.94           # transparent install icons
@@ -74,43 +79,126 @@ MASKABLE_FILL = 0.60      # inside the 80%-diameter maskable safe zone
 APPLE_FILL = 0.72         # iOS adds its own crop/padding
 FAVICON_FILL = 0.92
 ICON_BG = (246, 247, 251, 255)  # manifest background_color #f6f7fb
+
+# Master source, checked in this order when the script is run with no
+# arguments. Put the file you actually swap FIRST -- everything else in
+# public/ is generated output.
+SOURCE_PREFERENCE = (
+    "CampusFlow_Logo.jpeg",   # <-- the file you edit/swap
+    "campusflow-logo.svg",
+    "campusflow-logo.png",
+    "campusflow-logo.jpeg",
+)
 # --------------------------------------------------------------------------
 
 
-def rasterize_svg(path, zoom=3.0):
-    """Render an SVG source to RGBA at a higher resolution via resvg."""
+def detect_bg_tones(rgb, alpha):
+    """Dominant neutral luminances along the image border = background tones."""
+    h, w, _ = rgb.shape
+    ring = np.concatenate([
+        rgb[:6].reshape(-1, 3), rgb[-6:].reshape(-1, 3),
+        rgb[:, :6].reshape(-1, 3), rgb[:, -6:].reshape(-1, 3),
+    ])
+    ring_a = np.concatenate([
+        alpha[:6].ravel(), alpha[-6:].ravel(),
+        alpha[:, :6].ravel(), alpha[:, -6:].ravel(),
+    ])
+    spread = ring.max(-1) - ring.min(-1)
+    keep = (spread <= NEUTRAL_MAX_SPREAD) & (ring_a > 10)
+    lum = ring[keep].mean(-1)
+    if lum.size < 50:
+        return []
+    hist, edges = np.histogram(lum, bins=range(0, 266, 5))
+    tones = []
+    for i in np.argsort(hist)[::-1]:
+        if hist[i] < TONE_MIN_SHARE * lum.size:
+            break
+        centre = (edges[i] + edges[i + 1]) / 2
+        if all(abs(centre - t) > TONE_TOL * 2 for t in tones):
+            tones.append(centre)
+        if len(tones) >= 3:
+            break
+    return sorted(tones)
+
+
+def rasterize_svg(path):
+    """Render an SVG source to RGBA, capped around MAX_RASTER_EDGE px."""
     import resvg_py
 
+    probe = Image.open(io.BytesIO(resvg_py.svg_to_bytes(svg_path=str(path), zoom=0.1)))
+    native_max = max(probe.width, probe.height, 1) * 10  # probe was rendered at 0.1x
+    zoom = min(3.0, MAX_RASTER_EDGE / native_max)
     png = resvg_py.svg_to_bytes(svg_path=str(path), zoom=zoom)
     return Image.open(io.BytesIO(png)).convert("RGBA")
 
 
 def clean_background(img):
-    """Return an RGBA image with the background removed globally.
+    """Return RGBA with the detected background removed globally.
 
-    Works on both fully-opaque sources (JPEG / checkerboard PNGs) and
-    sources with real alpha (SVG renders): existing transparency is kept,
-    and any neutral/white pixels -- opaque or not -- are erased.
+    Works on fully-opaque sources (JPEG / checkerboard PNGs / traced SVGs)
+    and on sources with real alpha: existing transparency is kept.
     """
     src = np.asarray(img.convert("RGBA")).astype(np.int16)
-    rgb, alpha_src = src[..., :3], src[..., 3].astype(np.float64)
+    rgb, alpha_src = src[..., :3].astype(np.float64), src[..., 3].astype(np.float64)
     spread = rgb.max(-1) - rgb.min(-1)
-    mean = rgb.mean(-1)
+    lum = rgb.mean(-1)
+    neutral = spread <= NEUTRAL_MAX_SPREAD
 
-    bg = (spread <= NEUTRAL_MAX_SPREAD) & (mean >= NEUTRAL_MIN_MEAN) & (alpha_src > 0)
-    print(f"  background pixels: {int(bg.sum()):,} ({bg.mean():.1%})")
+    tones = detect_bg_tones(rgb.astype(np.uint8), alpha_src.astype(np.uint8))
+    floor = min(CHAIN_FLOOR_CAP, CHAIN_FLOOR_RATIO * min(tones)) if tones else None
+    print(f"  detected background tones: {[round(t) for t in tones] or 'none'}"
+          + (f" | chain floor: {floor:.0f}" if tones else ""))
 
-    # Neutral mid-tone pixels bordering the background are JPEG ringing
-    # between the backdrop and the dark navy edge -- feather them out.
-    bg_dilated = np.asarray(
-        Image.fromarray((bg * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(7))
-    ) > 0
-    fringe = (~bg) & (spread <= NEUTRAL_MAX_SPREAD + 4) & (mean >= 60) & bg_dilated
-    print(f"  edge-fringe pixels: {int(fringe.sum()):,}")
+    # Seed = pixel matching a detected tone (anywhere -- catches cells seen
+    # through holes in the emblem too), plus any light neutral (white
+    # patches are background in every source variant seen so far).
+    if tones:
+        tone_match = np.minimum.reduce([np.abs(lum - t) for t in tones]) <= TONE_TOL
+        seeds = (alpha_src > 0) & neutral & tone_match
+    else:
+        seeds = np.zeros(lum.shape, bool)
+    seeds |= (alpha_src > 0) & neutral & (lum >= NEUTRAL_MIN_MEAN)
 
-    removal = bg | fringe
+    removal = seeds.copy()
+    print(f"  seed background pixels: {int(removal.sum()):,} "
+          f"({removal.mean():.1%})")
 
-    # Drop isolated noise specks out in the backdrop.
+    if tones:
+        # Chain-absorb the anti-aliasing bands connecting background to
+        # artwork: expand through neutral pixels down to the floor.
+        allowed = neutral & (lum >= floor) & (alpha_src > 0)
+        prev = -1
+        for _ in range(400):
+            count = int(removal.sum())
+            if count == prev:
+                break
+            prev = count
+            grown = ndimage.binary_dilation(removal, structure=np.ones((3, 3), bool))
+            removal |= grown & allowed
+        print(f"  after chain absorption: {int(removal.sum()):,} "
+              f"({removal.mean():.1%})")
+    else:
+        # No border tones (already-clean transparent source): only feather
+        # light neutrals sitting right next to transparency.
+        if removal.any():
+            dil = ndimage.binary_dilation(removal, structure=np.ones((7, 7), bool))
+            fringe = (~removal) & neutral & (lum >= 60) & (alpha_src > 0) & dil
+            removal |= fringe
+            print(f"  edge-fringe pixels: {int(fringe.sum()):,}")
+
+    # JPEG ringing: bright, barely-coloured pixels hugging the artwork edge.
+    # Real brand artwork is far more saturated (see BRIGHT_FRINGE_SPREAD), so
+    # this only ever strips compression speckle around the silhouette.
+    opaque = alpha_src > 0
+    edge = ndimage.binary_dilation(
+        (~opaque) | removal, structure=np.ones((2 * BRIGHT_FRINGE_DIST + 1,) * 2, bool)
+    )
+    ringing = (~removal) & opaque & edge & (lum >= BRIGHT_FRINGE_LUM) & (spread <= BRIGHT_FRINGE_SPREAD)
+    if ringing.any():
+        print(f"  bright edge-ringing pixels: {int(ringing.sum()):,}")
+        removal |= ringing
+
+    # Drop isolated noise specks in the backdrop.
     lab, n = ndimage.label(~removal)
     if n:
         sizes = ndimage.sum(np.ones_like(lab), lab, range(1, n + 1))
@@ -128,7 +216,11 @@ def clean_background(img):
         )
     ).astype(np.float64) / 255.0
     alpha_out = np.clip(alpha_src * (1.0 - soft), 0, 255).astype(np.uint8)
-    return Image.fromarray(np.dstack([rgb.astype(np.uint8), alpha_out]), "RGBA")
+    return (
+        Image.fromarray(np.dstack([rgb.astype(np.uint8), alpha_out])),
+        tones,
+        floor,
+    )
 
 
 def fitted(logo, size, fill_ratio, background):
@@ -147,13 +239,16 @@ def fitted(logo, size, fill_ratio, background):
 
 
 def default_source():
-    for name in ("campusflow-logo.svg", "campusflow-logo.png", "campusflow-logo.jpeg"):
+    # Edit SOURCE_PREFERENCE to change which file wins when no argument is
+    # given. Keep the master source listed here in sync with your logo file.
+    for name in SOURCE_PREFERENCE:
         candidate = ROOT / "public" / name
         if candidate.exists():
             return candidate
     raise SystemExit(
-        "FAILED: no default source found -- looked for public/campusflow-logo."
-        "{svg,png,jpeg}. Pass one explicitly: python scripts/generate-logo-assets.py <SOURCE>"
+        "FAILED: no default source found -- looked in public/ for "
+        + ", ".join(SOURCE_PREFERENCE)
+        + ". Pass one explicitly: python scripts/generate-logo-assets.py <SOURCE>"
     )
 
 
@@ -174,7 +269,7 @@ def main():
     else:
         source_rgba = Image.open(src).convert("RGBA")
 
-    logo = clean_background(source_rgba)
+    logo, tones, floor = clean_background(source_rgba)
 
     ys, xs = np.where(np.asarray(logo)[..., 3] > 16)
     if len(xs) == 0:
@@ -183,7 +278,8 @@ def main():
            min(int(xs.max()) + 1 + PAD_PX, logo.width),
            min(int(ys.max()) + 1 + PAD_PX, logo.height))
     logo = logo.crop(box)
-    print(f"  cropped artwork: {logo.width}x{logo.height} from {source_rgba.width}x{source_rgba.height}")
+    print(f"  cropped artwork: {logo.width}x{logo.height} "
+          f"from {source_rgba.width}x{source_rgba.height}")
 
     # ---------------------------------------------------------- outputs
     logo.save(out / "campusflow-logo.png", optimize=True)
@@ -193,11 +289,12 @@ def main():
     fitted(logo, 512, MASKABLE_FILL, ICON_BG).save(out / "pwa-maskable-512x512.png", optimize=True)
     fitted(logo, 180, APPLE_FILL, ICON_BG).save(out / "apple-touch-icon.png", optimize=True)
 
-    if src.suffix.lower() == ".svg":
-        # Vector source: the favicon can be vector too -- sharpest possible
-        # browser-tab icon, no 30KB base64 blob.
+    if src.suffix.lower() == ".svg" and src.stat().st_size <= VECTOR_FAVICON_MAX:
+        # Small vector source: the favicon can be vector too.
         (out / "favicon.svg").write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     else:
+        # Large (e.g. traced) SVGs are too heavy for a browser tab -- embed
+        # a crisp raster instead.
         buf = io.BytesIO()
         fitted(logo, 128, FAVICON_FILL, (0, 0, 0, 0)).save(buf, "PNG", optimize=True)
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
@@ -216,14 +313,19 @@ def main():
         print(f"  {f}: {(out / f).stat().st_size:,} bytes")
 
     v = np.asarray(Image.open(out / "campusflow-logo.png")).astype(int)
-    rgb, al = v[..., :3], v[..., 3]
-    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    opaque = al > 200
-    leftover = opaque & ((rgb.max(-1) - rgb.min(-1)) <= NEUTRAL_MAX_SPREAD + 2) \
-        & (rgb.mean(-1) >= NEUTRAL_MIN_MEAN - 20)
-    white = opaque & (r > 235) & (g > 235) & (b > 235)
-    brand = opaque & (b > r) & (b > 120)
-    print(f"  leftover neutral/white opaque px: {int(leftover.sum())} (want 0)")
+    rgb_v, al_v = v[..., :3], v[..., 3]
+    spread_v = rgb_v.max(-1) - rgb_v.min(-1)
+    lum_v = rgb_v.mean(-1)
+    neutral_v = spread_v <= NEUTRAL_MAX_SPREAD + 2
+    opaque = al_v > 200
+    # Anything at/above the midpoint between the chain floor and the darkest
+    # background tone that is still neutral = a background cell that survived.
+    flag = ((floor + min(tones)) / 2) if tones else 120
+    leftover = opaque & neutral_v & (lum_v >= flag)
+    white = opaque & (rgb_v[..., 0] > 235) & (rgb_v[..., 1] > 235) & (rgb_v[..., 2] > 235)
+    brand = opaque & (rgb_v[..., 2] > rgb_v[..., 0]) & (rgb_v[..., 2] > 120)
+    print(f"  leftover background-tone px (flag >= {flag:.0f}): "
+          f"{int(leftover.sum())} (want 0)")
     print(f"  white opaque px: {int(white.sum())} (want 0)")
     print(f"  brand-coloured opaque px: {int(brand.sum()):,} (must be > 0)")
     if leftover.sum() or white.sum() or not brand.any():
