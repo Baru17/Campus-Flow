@@ -80,6 +80,20 @@ APPLE_FILL = 0.72         # iOS adds its own crop/padding
 FAVICON_FILL = 0.92
 ICON_BG = (246, 247, 251, 255)  # manifest background_color #f6f7fb
 
+# --- "C" monogram recolouring --------------------------------------------
+# The central 'C' is navy artwork. Set LETTER_COLOR to a colour to repaint it
+# (e.g. (255, 255, 255) for white); set it to None to keep the source colour.
+# Only navy blobs that sit in the middle of the mark and are roughly
+# letter-sized are touched -- the graduation cap and its tassel are navy too.
+LETTER_COLOR = (255, 255, 255)
+LETTER_NAVY = (60, 90, 130)  # r<60, g<90, b<130 and (b - r) > 0 identifies navy
+LETTER_NAVY_MIN_BR = 0
+LETTER_MIN_SIZE_FRAC = 0.02   # letter must be >= 2% of all opaque pixels
+LETTER_MAX_SIZE_FRAC = 0.20   # ... and <= 20% (the cap is far bigger)
+LETTER_MAX_DIST_FRAC = 0.42   # centre must be within 42% of half-diagonal
+                               # of the artwork centre -- rejects the cap/top
+LETTER_FEATHER_PX = 1.2       # anti-alias the repainted edge
+
 # Master source, checked in this order when the script is run with no
 # arguments. Put the file you actually swap FIRST -- everything else in
 # public/ is generated output.
@@ -223,6 +237,82 @@ def clean_background(img):
     )
 
 
+def recolour_letter(logo):
+    """Repaint the central 'C' monogram to LETTER_COLOR.
+
+    The 'C' is the only navy blob that is (a) letter-sized, (b) near the middle
+    of the artwork. The graduation cap is navy as well but is both much larger
+    and sits at the top, so it is left untouched. Anti-aliased edges of the
+    chosen blob are included, then feathered so the new colour keeps a soft
+    edge instead of a jagged one.
+    """
+    if LETTER_COLOR is None:
+        return logo, None
+
+    src = np.asarray(logo.convert("RGBA")).astype(np.int16)
+    rgb, alpha = src[..., :3].astype(np.float64), src[..., 3].astype(np.float64)
+    opaque = alpha > 128
+    total = int(opaque.sum())
+    if not total:
+        return logo, None
+
+    navy_max_r, navy_max_g, navy_max_b = LETTER_NAVY
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    navy = (opaque & (r < navy_max_r) & (g < navy_max_g) & (b < navy_max_b)
+            & (b - r > LETTER_NAVY_MIN_BR))
+
+    lab, n = ndimage.label(navy, structure=np.ones((3, 3)))
+    if not n:
+        print("  no navy blob found -- 'C' colour unchanged")
+        return logo, None
+
+    h, w = navy.shape
+    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+    diag = (h ** 2 + w ** 2) ** 0.5 / 2.0
+
+    candidates = []
+    for i in range(1, n + 1):
+        blob = lab == i
+        size = int(blob.sum())
+        if not (LETTER_MIN_SIZE_FRAC * total <= size <= LETTER_MAX_SIZE_FRAC * total):
+            continue
+        ys, xs = np.where(blob)
+        dist = (((ys.mean() - cy) ** 2 + (xs.mean() - cx) ** 2) ** 0.5) / diag
+        if dist > LETTER_MAX_DIST_FRAC:
+            continue
+        candidates.append((size, dist, i))
+
+    if not candidates:
+        print("  no central letter-sized navy blob -- 'C' colour unchanged")
+        return logo, None
+
+    # Most central blob wins: the 'C' sits at the heart of the mark, while the
+    # cap and its swoosh sit high and off to one side even when they qualify
+    # on size. Ties break towards the larger blob.
+    size, dist, idx = min(candidates, key=lambda c: (round(c[1], 3), -c[0]))
+    chosen = lab == idx
+    print(f"  'C' monogram: blob #{idx} ({size:,} px, {dist:.0%} off-centre)"
+          f" -> RGB{LETTER_COLOR}")
+
+    # Grow by 1px to swallow the anti-aliased rim of the original colour.
+    mask = ndimage.binary_dilation(chosen, structure=np.ones((3, 3)))
+    soft = np.asarray(
+        Image.fromarray((mask * 255).astype(np.uint8)).filter(
+            ImageFilter.GaussianBlur(LETTER_FEATHER_PX)
+        )
+    ).astype(np.float64) / 255.0
+    # Where the letter is, blend fully to the new colour; leave the rest be.
+    blend = np.clip(soft, 0, 1)[..., None]
+    new_rgb = rgb * (1 - blend) + np.array(LETTER_COLOR, np.float64) * blend
+    painted = (
+        Image.fromarray(
+            np.dstack([np.clip(new_rgb, 0, 255).astype(np.uint8), alpha.astype(np.uint8)])
+        ),
+        soft > 0.02,   # region we intentionally repainted
+    )
+    return painted
+
+
 def fitted(logo, size, fill_ratio, background):
     """Contain-fit the logo centred on a size x size canvas (never stretched)."""
     canvas = Image.new("RGBA", (size, size), background)
@@ -281,6 +371,8 @@ def main():
     print(f"  cropped artwork: {logo.width}x{logo.height} "
           f"from {source_rgba.width}x{source_rgba.height}")
 
+    logo, letter_mask = recolour_letter(logo)
+
     # ---------------------------------------------------------- outputs
     logo.save(out / "campusflow-logo.png", optimize=True)
     fitted(logo, 192, ANY_FILL, (0, 0, 0, 0)).save(out / "pwa-192x192.png", optimize=True)
@@ -318,16 +410,23 @@ def main():
     lum_v = rgb_v.mean(-1)
     neutral_v = spread_v <= NEUTRAL_MAX_SPREAD + 2
     opaque = al_v > 200
+    # The repainted 'C' is meant to be the new colour, so exempt it from the
+    # "no leftover light pixels" checks.
+    exempt = letter_mask if letter_mask is not None else np.zeros_like(opaque)
+    check = opaque & ~exempt
     # Anything at/above the midpoint between the chain floor and the darkest
     # background tone that is still neutral = a background cell that survived.
     flag = ((floor + min(tones)) / 2) if tones else 120
-    leftover = opaque & neutral_v & (lum_v >= flag)
-    white = opaque & (rgb_v[..., 0] > 235) & (rgb_v[..., 1] > 235) & (rgb_v[..., 2] > 235)
+    leftover = check & neutral_v & (lum_v >= flag)
+    white = check & (rgb_v[..., 0] > 235) & (rgb_v[..., 1] > 235) & (rgb_v[..., 2] > 235)
     brand = opaque & (rgb_v[..., 2] > rgb_v[..., 0]) & (rgb_v[..., 2] > 120)
     print(f"  leftover background-tone px (flag >= {flag:.0f}): "
           f"{int(leftover.sum())} (want 0)")
-    print(f"  white opaque px: {int(white.sum())} (want 0)")
+    print(f"  white opaque px outside 'C': {int(white.sum())} (want 0)")
     print(f"  brand-coloured opaque px: {int(brand.sum()):,} (must be > 0)")
+    if letter_mask is not None:
+        print(f"  'C' recoloured px: {int((opaque & exempt).sum()):,} "
+              f"(target {tuple(LETTER_COLOR)})")
     if leftover.sum() or white.sum() or not brand.any():
         raise SystemExit("FAILED: verification did not pass")
     print("OK")
