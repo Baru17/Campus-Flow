@@ -70,11 +70,58 @@ function factsRows(facts: OdRequestFacts): { label: string; value: string }[] {
     { label: "Batch", value: facts.batch },
     { label: "Year", value: String(facts.year) },
     { label: "Section", value: facts.section },
-    { label: "OD dates", value: facts.odDates.join(", ") },
+    { label: "OD dates", value: formatOdDates(facts.odDates) },
     { label: "Number of OD days", value: String(facts.odDays) },
     { label: "Reason", value: facts.reason },
     { label: "Request ID", value: facts.odRequestId },
   ];
+}
+
+/** The separator in a collapsed run. Written as an escape so the file stays ASCII. */
+const RANGE_DASH = "\u2013";
+
+/** Whether `next` is the calendar day immediately after `previous`. */
+function isNextDay(previous: string, next: string): boolean {
+  const a = Date.parse(`${previous}T00:00:00Z`);
+  const b = Date.parse(`${next}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return false;
+  return b - a === 86_400_000;
+}
+
+/**
+ * A request's days as one readable line.
+ *
+ * A request may be filed as a From/To range covering up to fifteen days, and it is
+ * stored -- and still has to be read by four approvers -- as fifteen separate entries.
+ * Listing them one by one is both long and easy to miscount, so a run of consecutive
+ * days is written as its two ends.
+ *
+ * This is presentation only. Nothing here decides which days a request covers: that is
+ * `od_dates`, and attendance eligibility reads the array itself. A non-contiguous
+ * request -- what a record filed before the range picker existed looks like -- is still
+ * listed day by day, exactly as before.
+ */
+export function formatOdDates(dates: readonly string[]): string {
+  const usable = Array.isArray(dates) ? dates.filter((entry) => typeof entry === "string") : [];
+  if (usable.length === 0) return "";
+
+  const runs: string[][] = [];
+  let run: string[] = [usable[0]];
+  for (let index = 1; index < usable.length; index += 1) {
+    if (isNextDay(usable[index - 1], usable[index])) {
+      run.push(usable[index]);
+    } else {
+      runs.push(run);
+      run = [usable[index]];
+    }
+  }
+  runs.push(run);
+
+  return runs
+    .map((days) =>
+      days.length === 1 ? days[0] : `${days[0]} ${RANGE_DASH} ${days[days.length - 1]}`
+    )
+    .join(", ");
 }
 
 /** The closing line for a message that reports something that has already happened. */

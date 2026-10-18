@@ -40,6 +40,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { hashToken } from "../src/utils/auth";
 import { hashDefaultPassword } from "../src/utils/accountProvisioning";
 import { OD_STATUS } from "../src/utils/odWorkflow";
+import { MAX_OD_DAYS } from "../src/utils/odValidation";
 import migration0001 from "../migrations/0001_initial-schema.sql?raw";
 import migration0002 from "../migrations/0002_auth_sessions.sql?raw";
 import migration0003 from "../migrations/0003_add-attendance-session-status.sql?raw";
@@ -346,6 +347,24 @@ async function fileOd(dates = [OD_DATE_A], days = dates.length, reason = "Attend
   return asStudent("/api/student/od", {
     method: "POST",
     body: JSON.stringify({ od_days_requested: days, od_dates: dates, reason }),
+  });
+}
+
+/**
+ * A future OD request from the student, as the range form sends it.
+ *
+ * `extra` is merged into the body so a test can put whatever else it wants in there --
+ * a day count, a day list, an identity field -- and see what the server makes of it.
+ */
+async function fileOdRange(
+  from: string,
+  to: string,
+  reason = "Attending an inter-college technical event",
+  extra: Record<string, unknown> = {}
+) {
+  return asStudent("/api/student/od", {
+    method: "POST",
+    body: JSON.stringify({ od_from_date: from, od_to_date: to, reason, ...extra }),
   });
 }
 
@@ -770,6 +789,225 @@ it("keeps the assignment even though no mentor is notified", async () => {
       expect(second.body.code).toBe("od-request-in-flight");
     });
 
+    /*
+     * The range form, which is what the form sends now.
+     *
+     * These go through the HTTP route rather than calling the validator, because the
+     * claim worth pinning is about what ends up in the row: a range is stored as the
+     * days it covers, the day count is derived from it, and the columns that existed
+     * before it are untouched and still hold the only two facts anyone reads.
+     */
+    describe("filed as a From Date / To Date range", () => {
+      it("stores the days the range covers, both ends included", async () => {
+        await giveMentor();
+        stubEmail();
+
+        const { status, body } = await fileOdRange(futureDate(10), futureDate(12));
+        expect(status).toBe(200);
+        expect(body.request.status).toBe(OD_STATUS.PENDING_MENTOR);
+        expect(body.request.od_dates).toEqual([futureDate(10), futureDate(11), futureDate(12)]);
+
+        const row = await env.DB
+          .prepare("SELECT od_days_requested, od_dates FROM od_requests WHERE od_request_id = ?")
+          .bind(body.request.od_request_id)
+          .first<any>();
+
+        // The stored column is still the JSON array of individual days it has always
+        // been -- no new columns, and nothing downstream has to learn what a range is.
+        expect(JSON.parse(row.od_dates)).toEqual([futureDate(10), futureDate(11), futureDate(12)]);
+        // And the count is the length of that array, not anything the client claimed.
+        expect(row.od_days_requested).toBe(3);
+      });
+
+      it("files a single-day range", async () => {
+        await giveMentor();
+        stubEmail();
+
+        const { status, body } = await fileOdRange(OD_DATE_A, OD_DATE_A);
+        expect(status).toBe(200);
+
+        const row = await env.DB
+          .prepare("SELECT od_days_requested, od_dates FROM od_requests WHERE od_request_id = ?")
+          .bind(body.request.od_request_id)
+          .first<any>();
+        expect(row.od_days_requested).toBe(1);
+        expect(JSON.parse(row.od_dates)).toEqual([OD_DATE_A]);
+      });
+
+      it("crosses a month boundary without losing or repeating a day", async () => {
+        await giveMentor();
+        stubEmail();
+
+        const { status, body } = await fileOdRange("2027-01-30", "2027-02-02");
+        expect(status).toBe(200);
+        expect(body.request.od_dates).toEqual([
+          "2027-01-30",
+          "2027-01-31",
+          "2027-02-01",
+          "2027-02-02",
+        ]);
+      });
+
+      it("refuses a reversed range", async () => {
+        await giveMentor();
+        const { status, body } = await fileOdRange(futureDate(12), futureDate(10));
+        expect(status).toBe(400);
+        expect(body.code).toBe("od-validation-failed");
+        expect(JSON.stringify(body)).toContain("To Date cannot be earlier than From Date");
+      });
+
+      it("refuses a range that is missing an end", async () => {
+        await giveMentor();
+
+        const noEnd = await asStudent("/api/student/od", {
+          method: "POST",
+          body: JSON.stringify({ od_from_date: OD_DATE_A, reason: "A valid reason here" }),
+        });
+        expect(noEnd.status).toBe(400);
+        expect(noEnd.body.details.errors.map((e: any) => e.field)).toContain("od_to_date");
+
+        const noStart = await asStudent("/api/student/od", {
+          method: "POST",
+          body: JSON.stringify({ od_to_date: OD_DATE_B, reason: "A valid reason here" }),
+        });
+        expect(noStart.status).toBe(400);
+        expect(noStart.body.details.errors.map((e: any) => e.field)).toContain("od_from_date");
+      });
+
+      it("refuses a range with an end in the past", async () => {
+        await giveMentor();
+        // `futureDate` is relative to a fixed base, not to the clock, so a genuinely
+        // past end has to be named outright.
+        const { status, body } = await fileOdRange("2020-01-01", OD_DATE_B);
+        expect(status).toBe(400);
+        expect(JSON.stringify(body)).toContain("in the past");
+      });
+
+      it("refuses a range longer than the day cap", async () => {
+        await giveMentor();
+        // The same bound an explicit day list was always held to, applied by arithmetic.
+        const { status, body } = await fileOdRange(futureDate(10), futureDate(10 + MAX_OD_DAYS));
+        expect(status).toBe(400);
+        expect(JSON.stringify(body)).toContain(`${MAX_OD_DAYS} days or fewer`);
+      });
+
+      it("accepts a range of exactly the day cap", async () => {
+        await giveMentor();
+        stubEmail();
+
+        const { status, body } = await fileOdRange(futureDate(10), futureDate(9 + MAX_OD_DAYS));
+        expect(status).toBe(200);
+        expect(body.request.od_dates).toHaveLength(MAX_OD_DAYS);
+      });
+
+      it("derives the count rather than believing one sent alongside the range", async () => {
+        await giveMentor();
+        stubEmail();
+
+        // The form sends the request whole, so a count and a list are in the body too.
+        // A client that sends a two-day range and a fifteen-day list gets two.
+        const { status, body } = await fileOdRange(futureDate(10), futureDate(11), undefined, {
+          od_days_requested: MAX_OD_DAYS,
+          od_dates: Array.from({ length: MAX_OD_DAYS }, (_, i) => futureDate(30 + i)),
+        });
+        expect(status).toBe(200);
+
+        const row = await env.DB
+          .prepare("SELECT od_days_requested, od_dates FROM od_requests WHERE od_request_id = ?")
+          .bind(body.request.od_request_id)
+          .first<any>();
+        expect(row.od_days_requested).toBe(2);
+        expect(JSON.parse(row.od_dates)).toEqual([futureDate(10), futureDate(11)]);
+      });
+
+      it("never takes identity from a range body either", async () => {
+        await giveMentor();
+        stubEmail();
+
+        const { status, body } = await fileOdRange(futureDate(10), futureDate(11), undefined, {
+          student_id: "2K99CS999",
+          student_name: "Someone Else",
+          department: "CSE",
+          mentor_email: IT_MENTOR_EMAIL,
+          od_days_gained_before: 99,
+          submitted_date: "2000-01-01",
+          status: "APPROVED",
+        });
+        expect(status).toBe(200);
+
+        const row = await env.DB
+          .prepare("SELECT * FROM od_requests WHERE od_request_id = ?")
+          .bind(body.request.od_request_id)
+          .first<any>();
+        expect(row.student_id).toBe(STUDENT_ID);
+        expect(row.student_name).toBe(STUDENT_NAME);
+        expect(row.department).toBe(DEPARTMENT);
+        expect(row.mentor_email).toBe(actors.mentor.email);
+        expect(row.od_days_gained_before).toBe(0);
+        expect(row.submitted_date).toBe(new Date().toISOString().slice(0, 10));
+        expect(row.status).toBe(OD_STATUS.PENDING_MENTOR);
+      });
+
+      it("still files a legacy explicit date list", async () => {
+        // Backward compatibility: every request already in the database is in this
+        // shape, and a client built before the range picker would send it too.
+        await giveMentor();
+        stubEmail();
+
+        const { status, body } = await fileOd([OD_DATE_A, futureDate(12)], 2);
+        expect(status).toBe(200);
+        expect(body.request.od_dates).toEqual([OD_DATE_A, futureDate(12)]);
+      });
+
+      it("reads back a legacy record's dates unchanged", async () => {
+        // A row written before the range picker existed still lists its days exactly as
+        // stored, gaps and all.
+        await giveMentor();
+        stubEmail();
+        await fileOd([OD_DATE_A, futureDate(12)], 2);
+
+        const { body } = await asStudent("/api/student/od");
+        expect(body.requests[0].od_dates).toEqual([OD_DATE_A, futureDate(12)]);
+        expect(body.requests[0].od_days_requested).toBe(2);
+      });
+
+      it("approves and counts a range request like any other", async () => {
+        await giveMentor();
+        stubEmail();
+        const { body } = await fileOdRange(futureDate(10), futureDate(12));
+        const id = body.request.od_request_id;
+
+        // The same four stages, in the same order, with the same tokens -- a range is
+        // filed differently and then behaves identically.
+        for (const [stage, token] of [
+          ["MENTOR", "od-mentor-1"],
+          ["CLASS_ADVISOR", "od-advisor-1"],
+          ["CONTEST_COORDINATOR", "od-coord-1"],
+          ["HOD", "od-hod-1"],
+        ] as const) {
+          expect((await decide(token, stage, id, "APPROVED")).status, `${stage} approval`).toBe(200);
+        }
+
+        expect(await currentStatus(id)).toBe(OD_STATUS.APPROVED);
+
+        // Only an APPROVED request counts towards the days banked, and it counts the
+        // days the range covered.
+        const me = await asStudent("/api/student/me");
+        expect(me.body.od_days_gained).toBe(3);
+      });
+
+      it("refuses a second request while a range request is in flight", async () => {
+        // The in-flight guard is about the student, not about the dates, so it applies
+        // identically to the range form.
+        await giveMentor();
+        expect((await fileOdRange(futureDate(10), futureDate(12))).status).toBe(200);
+
+        const second = await fileOdRange(futureDate(20), futureDate(21));
+        expect(second.status).toBe(409);
+        expect(second.body.code).toBe("od-request-in-flight");
+      });
+    });
+
     it("counts only approved requests towards OD gained", async () => {
       // A pending one must not inflate the figure the student is shown.
       const before = await asStudent("/api/student/me");
@@ -1005,7 +1243,10 @@ const row = await env.DB
       expect(mail.text).toContain(`Department: ${DEPARTMENT}`);
       expect(mail.text).toContain("Year: 3");
       expect(mail.text).toContain("Section: A");
-      expect(mail.text).toContain(`${OD_DATE_A}, ${OD_DATE_B}`);
+      // A run of consecutive days is written as its two ends, so a two-day OD reads
+      // "the 11th to the 12th" rather than as a comma-joined list an approver has to
+      // count. The days stored are unchanged; only the line they are shown on is shorter.
+      expect(mail.text).toContain(`${OD_DATE_A} \u2013 ${OD_DATE_B}`);
       expect(mail.text).toContain("Number of OD days: 2");
       expect(mail.text).toContain("fully approved");
       expect(mail.text).not.toContain("review and action this request");

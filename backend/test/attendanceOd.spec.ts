@@ -11,6 +11,7 @@ import {
   classifyAttendanceMark,
 } from "../src/utils/attendance";
 import { OD_STATUS } from "../src/utils/odWorkflow";
+import { expandDateRange } from "../src/utils/odValidation";
 
 /*
  * Day-based OD, as pure logic: which approved request grants credit for which
@@ -86,6 +87,74 @@ describe("OD day eligibility", () => {
       expect(isIsoDate("2026-10-12")).toBe(true);
       expect(isIsoDate("2026-1-2")).toBe(false);
       expect(isIsoDate(20261012)).toBe(false);
+    });
+  });
+
+  /*
+   * A request may now be filed as a From/To range. It is stored as the list of days it
+   * covers, so nothing in this file had to change -- and these are the tests that say
+   * so. Every day inside a range is granted, and a range is not the same thing as "the
+   * first and last day only", which is the mistake that would quietly shorten every
+   * multi-day OD a student is granted.
+   */
+  describe("a request filed as a range", () => {
+    /** What the column holds for a request filed as a range. */
+    function storedRange(from: string, to: string): string[] {
+      return parseOdDateList(JSON.stringify(expandDateRange(from, to)));
+    }
+
+    it("grants OD on every day the range covers, not just its two ends", () => {
+      const stored = storedRange("2026-10-18", "2026-10-20");
+      expect(stored).toEqual(["2026-10-18", "2026-10-19", "2026-10-20"]);
+
+      expect(odCoversDate(stored, "2026-10-18")).toBe(true);
+      expect(odCoversDate(stored, "2026-10-19")).toBe(true); // the interior day
+      expect(odCoversDate(stored, "2026-10-20")).toBe(true);
+    });
+
+    it("grants nothing on either side of the range", () => {
+      const stored = storedRange("2026-10-18", "2026-10-20");
+      expect(odCoversDate(stored, "2026-10-17")).toBe(false);
+      expect(odCoversDate(stored, "2026-10-21")).toBe(false);
+    });
+
+    it("covers the interior days across a month and year boundary", () => {
+      const acrossYear = storedRange("2026-12-30", "2027-01-02");
+      expect(odCoversDate(acrossYear, "2026-12-31")).toBe(true);
+      expect(odCoversDate(acrossYear, "2027-01-01")).toBe(true);
+    });
+
+    it("covers a leap day", () => {
+      expect(odCoversDate(storedRange("2028-02-28", "2028-03-01"), "2028-02-29")).toBe(true);
+    });
+
+    it("covers a one-day range on that day and no other", () => {
+      const single = storedRange("2026-10-18", "2026-10-18");
+      const periods = [{ studentId: "S1", odDates: single }];
+      expect(studentsCoveredByApprovedOd(periods, "2026-10-18")).toEqual(new Set(["S1"]));
+      expect(studentsCoveredByApprovedOd(periods, "2026-10-19")).toEqual(new Set());
+    });
+
+    it("collects the same student once on every day of an overlapping range", () => {
+      // A set, not a count: the finalizer must never grant double credit, or write a
+      // second attendance row, on a day two requests happen to cover.
+      const periods = [
+        { studentId: "S1", odDates: storedRange("2026-10-18", "2026-10-20") },
+        { studentId: "S1", odDates: storedRange("2026-10-19", "2026-10-22") },
+      ];
+      for (const day of ["2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22"]) {
+        expect(studentsCoveredByApprovedOd(periods, day)).toEqual(new Set(["S1"]));
+      }
+    });
+
+    it("leaves a request that predates the range picker reading exactly as it did", () => {
+      // Records already in the database hold the days a student picked one at a time,
+      // and a gap in that list is still a gap. The picker changed what the form asks
+      // for; it must not have changed what a stored list means.
+      const legacy = parseOdDateList('["2026-10-12","2026-10-14"]');
+      expect(odCoversDate(legacy, "2026-10-12")).toBe(true);
+      expect(odCoversDate(legacy, "2026-10-13")).toBe(false);
+      expect(odCoversDate(legacy, "2026-10-14")).toBe(true);
     });
   });
 

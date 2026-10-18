@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import StatusMessage from '../StatusMessage'
 import { fetchApprovedApprovals, fetchPendingApprovals, submitApprovalDecision } from '../../api/odApi'
+import { formatOdDates } from '../../utils/odDateRange'
 import { CheckIcon, ChevronRightIcon, ClockIcon, SearchIcon, XIcon } from '../Icons'
 
 /**
@@ -495,7 +496,7 @@ function RequestDetails({ request }) {
       <Detail label="Section" value={request.section} />
       <Detail label="Mentor" value={request.mentor_email || 'Not assigned'} />
       <Detail label="Number of OD days" value={request.od_days_requested} />
-      <Detail label="OD dates" value={request.od_dates.join(', ')} wide />
+      <Detail label="OD dates" value={formatOdDates(request.od_dates)} wide />
       <Detail label="OD already gained" value={`${request.od_days_gained_before} day(s) before this request`} />
       <Detail label="Submitted" value={request.submitted_date} />
       <Detail label="Current stage" value={STAGE_LABEL[request.status] || request.status} />

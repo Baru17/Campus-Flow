@@ -6,6 +6,7 @@ import StatusMessage from '../components/StatusMessage'
 import { fetchMyOdRequests, fetchStudentMe, submitOdRequest } from '../api/odApi'
 import { useAuth } from '../hooks/useAuth'
 import { MAX_OD_DAYS, MIN_REASON_LENGTH } from '../utils/odValidation'
+import { countDaysInclusive, expandDateRange, formatOdDates } from '../utils/odDateRange'
 import {
   CalendarIcon,
   CheckIcon,
@@ -25,8 +26,12 @@ import {
  * field a student can edit is a field a student can be wrong about, and the OD days
  * already banked is the one that feeds the people deciding the request.
  *
- * What the student does supply is three things: how many days they want, which dates,
- * and why. Those are the only three sent.
+ * What the student does supply is two things: the range of dates they need, and why.
+ * Those are the only two things they decide. How many days that is turns out to be a
+ * consequence of the range rather than a separate question -- asking for the 18th to
+ * the 20th and then typing "2" into a box beside it is a second chance to be wrong
+ * about a thing that was already fully specified, so the count is worked out here,
+ * shown to them, and not asked of them.
  *
  * Validation runs here *and* on the server. That is not belt and braces for its own
  * sake: the browser's copy is what decides whether the button is live, and the
@@ -34,8 +39,9 @@ import {
  * a good-looking value and let the server refuse the rest would be a worse experience,
  * and a form that trusted the browser would be a security hole.
  *
- * The date count is validated against the day count as the student types, because those
- * are two separate inputs and the mismatch is the mistake people actually make.
+ * The range is stored, as it always was, as the list of individual days it covers --
+ * `od_dates` is an array and every part of the feature that reads a request reads that
+ * array. `utils/odDateRange` is the one place the two are converted between.
  */
 
 /** `YYYY-MM-DD`, today, in the browser's own timezone. */
@@ -64,8 +70,8 @@ export default function StudentOdForm() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
 
-  const [days, setDays] = useState('')
-  const [dates, setDates] = useState([])
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState(null)
@@ -110,41 +116,54 @@ export default function StudentOdForm() {
   const submissionDate = today()
 
   /*
-   * The day count is parsed rather than compared as a string, so "2.5", "-1", "0" and
-   * "abc" are all rejected here rather than making a round trip to be rejected there.
+   * The range, worked out from the two dates.
+   *
+   * `rangeDays` is `null` while the range does not yet mean anything -- an end not
+   * chosen, or a To Date before the From Date -- which is what the two pickers, the
+   * day count and the submit button all read, so they cannot disagree with each other
+   * about whether the range is usable.
    */
-  const daysNumber = useMemo(() => {
-    const trimmed = String(days).trim()
-    if (!trimmed) return null
-    if (!/^\d+$/.test(trimmed)) return NaN
-    return Number(trimmed)
-  }, [days])
+  const rangeDays = useMemo(
+    () => countDaysInclusive(fromDate, toDate),
+    [fromDate, toDate]
+  )
+
+  /*
+   * The individual days the range covers. These are what `od_dates` has always held and
+   * what every reader of a request -- attendance finalization included -- still reads,
+   * so nothing downstream has to learn what a range is.
+   */
+  const rangeDates = useMemo(
+    () => (rangeDays === null ? [] : expandDateRange(fromDate, toDate)),
+    [fromDate, toDate, rangeDays]
+  )
 
   const validation = useMemo(() => {
     const errors = {}
     let valid = true
 
-    if (days.trim() === '') {
-      errors.od_days_requested = 'Enter how many OD days you need'
+    if (!fromDate) {
+      errors.od_from_date = 'Choose the date your OD starts'
       valid = false
-    } else if (Number.isNaN(daysNumber)) {
-      errors.od_days_requested = 'Enter a whole number, with no decimal point or sign'
-      valid = false
-    } else if (daysNumber <= 0) {
-      errors.od_days_requested = 'Enter a number greater than 0'
-      valid = false
-    } else if (daysNumber > MAX_OD_DAYS) {
-      errors.od_days_requested = `Enter ${MAX_OD_DAYS} or fewer`
+    } else if (fromDate < submissionDate) {
+      errors.od_from_date = 'From Date cannot be in the past'
       valid = false
     }
 
-    if (dates.length === 0) {
-      errors.od_dates = 'Select at least one OD date'
+    if (!toDate) {
+      errors.od_to_date = 'Choose the date your OD ends'
       valid = false
-    } else if (Number.isFinite(daysNumber) && daysNumber > 0 && dates.length !== daysNumber) {
-      errors.od_dates = `You asked for ${daysNumber} OD ${
-        daysNumber === 1 ? 'day' : 'days'
-      } but selected ${dates.length} ${dates.length === 1 ? 'date' : 'dates'}`
+    } else if (fromDate && toDate < fromDate) {
+      /*
+       * Both ends come out of a `type="date"` input, so they are `YYYY-MM-DD` or
+       * nothing, and ISO dates compare correctly as plain strings -- no parsing and no
+       * timezone to get wrong. The earlier Date is caught before it reaches the count,
+       * which would otherwise be a negative number.
+       */
+      errors.od_to_date = 'To Date cannot be earlier than From Date'
+      valid = false
+    } else if (rangeDays !== null && rangeDays > MAX_OD_DAYS) {
+      errors.od_to_date = `An OD request may cover ${MAX_OD_DAYS} days or fewer`
       valid = false
     }
 
@@ -158,19 +177,7 @@ export default function StudentOdForm() {
     }
 
     return { errors, valid: valid && hasMentor }
-  }, [days, dates, daysNumber, reason, hasMentor])
-
-  const addDate = (value) => {
-    if (!value) return
-    setSubmitError(null)
-    setDates((current) =>
-      current.includes(value) ? current : [...current, value].sort()
-    )
-  }
-
-  const removeDate = (value) => {
-    setDates((current) => current.filter((entry) => entry !== value))
-  }
+  }, [fromDate, toDate, rangeDays, reason, submissionDate, hasMentor])
 
   const handleSubmit = async () => {
     if (!validation.valid || submitting) return
@@ -179,8 +186,10 @@ export default function StudentOdForm() {
     setFieldErrors({})
     try {
       const result = await submitOdRequest({
-        odDaysRequested: daysNumber,
-        odDates: dates,
+        odFromDate: fromDate,
+        odToDate: toDate,
+        odDaysRequested: rangeDates.length,
+        odDates: rangeDates,
         reason: reason.trim(),
       })
       setNotice(
@@ -188,8 +197,8 @@ export default function StudentOdForm() {
           ? `Your OD request was submitted (${result.request.od_request_id}). ${result.warning}`
           : `Your OD request was submitted and sent to your mentor. Reference ${result.request.od_request_id}.`
       )
-      setDays('')
-      setDates([])
+      setFromDate('')
+      setToDate('')
       setReason('')
       await load()
     } catch (err) {
@@ -332,38 +341,34 @@ export default function StudentOdForm() {
 
               {/* ------------------------------------------------------ inputs */}
               <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {/*
+                  * Read-only, because the range below already answers it. Asking for
+                  * the 18th to the 20th and then for a number beside it is two chances
+                  * to disagree with one another, and the count the request is filed
+                  * with has to be the one the range implies.
+                  */}
                 <div>
-                  <label htmlFor="odDays" className="cf-form-label">
-                    Number of OD days required{' '}
-                    <span className="text-red-500" aria-hidden="true">
-                      *
-                    </span>
+                  <label htmlFor="odDayCount" className="cf-form-label">
+                    Number of OD days required
                   </label>
                   <input
-                    id="odDays"
-                    className="cf-input"
-                    type="number"
-                    inputMode="numeric"
-                    min="1"
-                    max={MAX_OD_DAYS}
-                    step="1"
-                    value={days}
-                    onChange={(e) => {
-                      setDays(e.target.value)
-                      setFieldErrors((current) => ({ ...current, od_days_requested: undefined }))
-                    }}
-                    placeholder="e.g. 2"
-                    disabled={!hasMentor}
-                    aria-describedby="odDaysHelp"
+                    id="odDayCount"
+                    className="cf-input bg-slate-100 text-slate-500"
+                    value={
+                      rangeDays === null
+                        ? ''
+                        : String(rangeDays)
+                    }
+                    readOnly
+                    tabIndex={0}
+                    aria-label="Number of OD days required, counted from your date range"
+                    aria-describedby="odDayCountHelp"
                   />
-                  <p id="odDaysHelp" className="mt-1 text-xs text-slate-500">
-                    A whole number from 1 to {MAX_OD_DAYS}.
+                  <p id="odDayCountHelp" className="mt-1 text-xs text-slate-500">
+                    {rangeDays === null
+                      ? 'Counted from the dates below, both ends included.'
+                      : `${rangeDays} calendar ${rangeDays === 1 ? 'day' : 'days'}, from ${fromDate} to ${toDate}. Up to ${MAX_OD_DAYS}.`}
                   </p>
-                  {validation.errors.od_days_requested && (
-                    <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
-                      {validation.errors.od_days_requested}
-                    </p>
-                  )}
                 </div>
 
                 <div>
@@ -398,67 +403,119 @@ export default function StudentOdForm() {
                 </div>
               </div>
 
-              {/* --------------------------------------------------- OD dates */}
+              {/* ------------------------------------------------- OD date range */}
               <div className="mt-5">
-                <label htmlFor="odDate" className="cf-form-label">
-                  OD date{dates.length === 1 ? '' : 's'}{' '}
-                  <span className="text-red-500" aria-hidden="true">
-                    *
-                  </span>
-                </label>
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    id="odDate"
-                    type="date"
-                    className="cf-input w-full max-w-[200px]"
-                    min={submissionDate}
-                    value=""
-                    onChange={(e) => {
-                      addDate(e.target.value)
-                      setFieldErrors((current) => ({ ...current, od_dates: undefined }))
-                    }}
-                    disabled={!hasMentor}
-                    aria-describedby="odDatesHelp"
-                  />
-                  <span className="text-xs text-slate-400">
-                    Add one date per day requested.
-                  </span>
+                <p className="cf-form-label">
+                  OD dates <span className="text-red-500" aria-hidden="true">*</span>
+                </p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="odFromDate" className="cf-form-label">
+                      From Date{' '}
+                      <span className="text-red-500" aria-hidden="true">
+                        *
+                      </span>
+                    </label>
+                    <input
+                      id="odFromDate"
+                      type="date"
+                      className="cf-input w-full"
+                      min={submissionDate}
+                      value={fromDate}
+                      onChange={(e) => {
+                        setSubmitError(null)
+                        setFromDate(e.target.value)
+                        /*
+                         * Moving the start past the end leaves a range nobody meant, so
+                         * the end follows it rather than being left behind to fail.
+                         */
+                        if (e.target.value && toDate && e.target.value > toDate) {
+                          setToDate(e.target.value)
+                        }
+                        setFieldErrors((current) => ({
+                          ...current,
+                          od_from_date: undefined,
+                          od_to_date: undefined,
+                        }))
+                      }}
+                      disabled={!hasMentor}
+                      aria-describedby="odDatesHelp"
+                    />
+                    {validation.errors.od_from_date && (
+                      <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
+                        {validation.errors.od_from_date}
+                      </p>
+                    )}
+                    {/* A refusal the browser did not anticipate still lands next to
+                        the box it belongs to, rather than only in the banner. */}
+                    {fieldErrors.od_from_date && (
+                      <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
+                        {fieldErrors.od_from_date}
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label htmlFor="odToDate" className="cf-form-label">
+                      To Date{' '}
+                      <span className="text-red-500" aria-hidden="true">
+                        *
+                      </span>
+                    </label>
+                    <input
+                      id="odToDate"
+                      type="date"
+                      className="cf-input w-full"
+                      min={fromDate || submissionDate}
+                      value={toDate}
+                      onChange={(e) => {
+                        setSubmitError(null)
+                        setToDate(e.target.value)
+                        setFieldErrors((current) => ({
+                          ...current,
+                          od_to_date: undefined,
+                        }))
+                      }}
+                      disabled={!hasMentor}
+                      aria-describedby="odDatesHelp"
+                    />
+                    {validation.errors.od_to_date && (
+                      <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
+                        {validation.errors.od_to_date}
+                      </p>
+                    )}
+                    {fieldErrors.od_to_date && (
+                      <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
+                        {fieldErrors.od_to_date}
+                      </p>
+                    )}
+                  </div>
                 </div>
 
-                {dates.length > 0 && (
+                {/*
+                  * What the range will actually be stored as. `od_dates` is a list of
+                  * days and always has been, so this is the request as it exists, not
+                  * a summary of something else -- showing it is what stops "both ends
+                  * included" from being a thing the student has to take on trust.
+                  */}
+                {rangeDates.length > 0 && (
                   <ul className="mt-3 flex flex-wrap gap-2">
-                    {dates.map((value) => (
+                    {rangeDates.map((value) => (
                       <li
                         key={value}
                         className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700"
                       >
                         {value}
-                        <button
-                          type="button"
-                          onClick={() => removeDate(value)}
-                          disabled={!hasMentor}
-                          className="text-slate-400 transition-colors hover:text-red-600"
-                          aria-label={`Remove ${value}`}
-                        >
-                          ×
-                        </button>
                       </li>
                     ))}
                   </ul>
                 )}
 
                 <p id="odDatesHelp" className="mt-1 text-xs text-slate-500">
-                  {Number.isFinite(daysNumber) && daysNumber > 0
-                    ? `You have selected ${dates.length} of ${daysNumber} requested ${
-                        daysNumber === 1 ? 'day' : 'days'
-                      }.`
-                    : 'Enter how many days you need, then add that many dates.'}
+                  {rangeDays === null
+                    ? `Pick the first and last day of your OD. Every day in between is included, up to ${MAX_OD_DAYS}.`
+                    : `${rangeDays} ${rangeDays === 1 ? 'day' : 'days'} selected: ${formatOdDates(rangeDates)}.`}
                 </p>
-                {validation.errors.od_dates && (
-                  <p role="alert" className="mt-1 text-xs font-semibold text-red-600">
-                    {validation.errors.od_dates}
-                  </p>
-                )}
               </div>
 
               {fieldErrors.reason && (
@@ -527,7 +584,7 @@ export default function StudentOdForm() {
                       )}
                     </span>
                     <div className="cf-list-meta">
-                      <div className="title">{request.od_dates.join(', ')}</div>
+                      <div className="title">{formatOdDates(request.od_dates)}</div>
                       <div className="sub">
                         {request.od_days_requested} day
                         {request.od_days_requested === 1 ? '' : 's'} · submitted{' '}

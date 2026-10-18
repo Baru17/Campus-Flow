@@ -22,6 +22,7 @@ import migration0014 from "../migrations/0014_cse-2026-2030-test-seed.sql?raw";
 import migration0015 from "../migrations/0015_simplify-subjects.sql?raw";
 import migration0016 from "../migrations/0016_academic_batches.sql?raw";
 import migration0017 from "../migrations/0017_od_requests.sql?raw";
+import { expandDateRange } from "../src/utils/odValidation";
 
 type TestStudent = {
 	studentId: string;
@@ -1187,6 +1188,8 @@ describe("day-based OD finalization", () => {
 	const odSuffix = `${testSuffix}OD`;
 	const OD_DATE = "2026-10-14";
 	const NEIGHBOUR_DATE = "2026-10-15";
+	/* The day in the middle of the `range` request's span -- the one an ends-only reading would miss. */
+	const RANGE_MIDDLE_DATE = "2026-10-13";
 
 	const odSessionIds: string[] = [];
 	const odRequestIds: string[] = [];
@@ -1215,6 +1218,7 @@ describe("day-based OD finalization", () => {
 		"partial",
 		"twice",
 		"present",
+		"range",
 	] as const;
 
 	const roster: Record<string, OdStudent> = {};
@@ -1430,6 +1434,18 @@ describe("day-based OD finalization", () => {
 		});
 		// Approved, but this student scans the OTP anyway: PRESENT must win.
 		await insertOdRequest({ id: `${odSuffix}-present`, student: roster.present });
+		/*
+		 * A request filed as a From Date / To Date range, which is what the form now
+		 * sends. It reaches the finalizer as the list of days it covers, exactly as the
+		 * `multiday` case above reaches it by hand -- so this is the test that the range
+		 * picker did not quietly turn a three-day OD into a two-day one. The 13th is in
+		 * the middle of the span and is the day an ends-only reading would miss.
+		 */
+		await insertOdRequest({
+			id: `${odSuffix}-range`,
+			student: roster.range,
+			dates: expandDateRange(RANGE_MIDDLE_DATE, OD_DATE),
+		});
 	});
 
 	afterAll(async () => {
@@ -1467,6 +1483,8 @@ describe("day-based OD finalization", () => {
 		expect(await statusFor(sessionId, roster.twice.registerNo)).toBe("OD");
 		// This student has an approved day too, and did not scan this session.
 		expect(await statusFor(sessionId, roster.present.registerNo)).toBe("OD");
+		// A request filed as a range covers this day, which is the last day it spans.
+		expect(await statusFor(sessionId, roster.range.registerNo)).toBe("OD");
 
 		// Everything that is not a fully approved request for this exact day stays ABSENT.
 		expect(await statusFor(sessionId, roster.pending.registerNo)).toBe("ABSENT");
@@ -1477,14 +1495,33 @@ describe("day-based OD finalization", () => {
 		expect(await statusFor(sessionId, roster.partial.registerNo)).toBe("ABSENT");
 
 		// The reported split agrees with the rows, and the three parts add up.
-		expect(result.od).toBe(4);
+		expect(result.od).toBe(5);
 		expect(result.present).toBe(0);
 		expect(result.total_students).toBe(CASE_KEYS.length);
 		expect(result.od + result.present + result.absent).toBe(result.total_students);
-		expect(result.absent).toBe(CASE_KEYS.length - 4);
+		expect(result.absent).toBe(CASE_KEYS.length - 5);
 
 		// One row per student per session, still.
 		expect(await rowCount(sessionId)).toBe(CASE_KEYS.length);
+	});
+
+	it("grants OD on a day in the middle of a range, not just its two ends", async () => {
+		/*
+		 * The question the range picker raises. `od_dates` is a list of days, so an
+		 * implementation that read a range as "the first and last day only" would still
+		 * pass every other case in this file while quietly shortening every multi-day
+		 * OD the college grants.
+		 */
+		const sessionId = await createOdSession("611111R", 11, RANGE_MIDDLE_DATE, true);
+
+		const result = await finalizeSession(env.DB, sessionId);
+
+		expect(result.success).toBe(true);
+		expect(await statusFor(sessionId, roster.range.registerNo)).toBe("OD");
+		// And only for the student whose approved request actually spans this day.
+		expect(await statusFor(sessionId, roster.approved.registerNo)).toBe("ABSENT");
+		expect(await statusFor(sessionId, roster.otherday.registerNo)).toBe("ABSENT");
+		expect(result.od).toBe(1);
 	});
 
 	it("grants OD for the right day only, and nothing for the neighbouring one", async () => {
@@ -1633,34 +1670,35 @@ describe("day-based OD finalization", () => {
 
 		const report = body.data?.report ?? "";
 		expect(report).toContain("PRESENT (1)");
-		expect(report).toContain("OD (3)");
+		expect(report).toContain("OD (4)");
 		expect(report).toContain("ABSENT (6)");
 
-		// Names and register numbers, one line each. The roster is register-ordered,
-		// so the OD students appear as APPROVED, MULTIDAY, TWICE.
+		// Names and register numbers, one line each. The roster is register-ordered, so
+		// the OD students appear as APPROVED, MULTIDAY, RANGE, TWICE.
 		expect(report).toContain(`1. PRESENT (${roster.present.registerNo})`);
 		expect(report).toContain(`1. APPROVED (${roster.approved.registerNo})`);
 		expect(report).toContain(`2. MULTIDAY (${roster.multiday.registerNo})`);
-		expect(report).toContain(`3. TWICE (${roster.twice.registerNo})`);
+		expect(report).toContain(`3. RANGE (${roster.range.registerNo})`);
+		expect(report).toContain(`4. TWICE (${roster.twice.registerNo})`);
 
 		// The counts the route reports match the text it produced.
 		expect(body.data?.total_strength).toBe(CASE_KEYS.length);
 		expect(body.data?.present).toBe(1);
-		expect(body.data?.od).toBe(3);
+		expect(body.data?.od).toBe(4);
 		expect(body.data?.absent).toBe(6);
-		// (1 present + 3 on duty) / 10 = 40%.
-		expect(body.data?.percentage).toBe(40);
-		expect(report).toContain("Attendance Percentage: 40%");
+		// (1 present + 4 on duty) / 11 = 45%.
+		expect(body.data?.percentage).toBe(45);
+		expect(report).toContain("Attendance Percentage: 45%");
 
 		// OD is never also listed as an absentee, and PRESENT is not either.
-		const odSection = report.slice(report.indexOf("OD (3)"), report.indexOf("ABSENT (6)"));
+		const odSection = report.slice(report.indexOf("OD (4)"), report.indexOf("ABSENT (6)"));
 		const absentSection = report.slice(report.indexOf("ABSENT (6)"));
 		expect(odSection).toContain(roster.approved.registerNo);
 		expect(absentSection).not.toContain(roster.approved.registerNo);
 		expect(absentSection).not.toContain(roster.present.registerNo);
 
 		// And the PRESENT row is genuinely in the PRESENT section.
-		const presentSection = report.slice(report.indexOf("PRESENT (1)"), report.indexOf("OD (3)"));
+		const presentSection = report.slice(report.indexOf("PRESENT (1)"), report.indexOf("OD (4)"));
 		expect(presentSection).toContain(roster.present.registerNo);
 	});
 
@@ -1694,13 +1732,13 @@ describe("day-based OD finalization", () => {
 		const summary = body.data?.summary;
 		expect(summary?.totalStrength).toBe(CASE_KEYS.length);
 		expect(summary?.presentCount).toBe(0);
-		expect(summary?.odCount).toBe(4);
+		expect(summary?.odCount).toBe(5);
 		expect(summary?.absentCount).toBe(6);
 		// The three marked categories account for the whole class; an OD student is
 		// not an unmarked one.
 		expect(summary?.unmarkedCount).toBe(0);
-		// (0 present + 4 on duty) / 10 = 40%.
-		expect(summary?.percentage).toBe(40);
+		// (0 present + 5 on duty) / 11 = 45%.
+		expect(summary?.percentage).toBe(45);
 
 		const approvedRow = body.data?.students.find(
 			(s) => s.register_no === roster.approved.registerNo,

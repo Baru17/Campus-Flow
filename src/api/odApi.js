@@ -112,15 +112,27 @@ export function assignMentor(staffId, { confirmChange = false } = {}) {
 /**
  * Files an OD request.
  *
- * The three fields below are the whole contract. There is deliberately no `name`,
+ * `odFromDate` and `odToDate` are what the student actually picks. The server derives
+ * the days and the day count from them and stores the days, so `odDaysRequested` and
+ * `odDates` are a restatement of the same range rather than a second claim -- they are
+ * sent so the payload reads as the complete request, and the server is free to ignore
+ * them when a range is present.
+ *
+ * The fields below are still the whole contract. There is deliberately no `name`,
  * `department`, `year`, `section`, `student_id` or `mentor_email` parameter, because
  * the server reads every one of those from the session and would ignore them if they
  * were sent.
  */
-export function submitOdRequest({ odDaysRequested, odDates, reason }) {
+export function submitOdRequest({ odFromDate, odToDate, odDaysRequested, odDates, reason }) {
   return request('/api/student/od', {
     method: 'POST',
-    body: { od_days_requested: odDaysRequested, od_dates: odDates, reason },
+    body: {
+      od_from_date: odFromDate,
+      od_to_date: odToDate,
+      od_days_requested: odDaysRequested,
+      od_dates: odDates,
+      reason,
+    },
   })
 }
 

@@ -36,6 +36,7 @@ import {
   OD_FULLY_APPROVED_SUBJECT,
   OD_REJECTED_HEADLINE,
   OD_REJECTED_SUBJECT,
+  formatOdDates,
   type OdApprovalAction,
   type OdRequestFacts,
 } from "./odEmail";
@@ -814,7 +815,7 @@ export async function applyDecision(
         : stage.key === "HOD"
           ? `Every stage has approved your on-duty request, so the ${facts.odDays} day${
               facts.odDays === 1 ? "" : "s"
-            } on ${facts.odDates.join(", ")} is approved.`
+            } on ${formatOdDates(facts.odDates)} is approved.`
           : `Your OD request has been approved at the ${stage.label} stage by ${decidedBy} and has moved on to the next stage of approval.`,
       {
         note: comment.value || undefined,

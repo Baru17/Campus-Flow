@@ -11,6 +11,7 @@ import {
   odApprovalRequestEmail,
   odDecisionEmail,
   odMentorAssignedEmail,
+  formatOdDates,
   type OdRequestFacts,
 } from "../src/utils/odEmail";
 
@@ -104,6 +105,53 @@ describe("appUrl", () => {
     expect(appUrl("https://campus-flow-cdl.pages.dev", "staff")).toBe(
       "https://campus-flow-cdl.pages.dev/staff"
     );
+  });
+});
+
+describe("formatOdDates", () => {
+  /*
+   * Presentation only. `od_dates` is still a list of days and attendance still reads
+   * that list -- this collapses a run of them into its two ends purely so an approver
+   * reading a mail is not counting to fifteen.
+   */
+  it("leaves a single day alone", () => {
+    expect(formatOdDates(["2026-11-20"])).toBe("2026-11-20");
+  });
+
+  it("collapses a contiguous run to its two ends", () => {
+    expect(formatOdDates(["2026-11-20", "2026-11-21"])).toBe("2026-11-20 \u2013 2026-11-21");
+  });
+
+  it("lists a non-contiguous request day by day", () => {
+    // What a record filed before the range picker existed looks like.
+    expect(formatOdDates(["2026-11-20", "2026-11-22"])).toBe("2026-11-20, 2026-11-22");
+  });
+
+  it("collapses each run in a mixed list", () => {
+    expect(formatOdDates(["2026-11-20", "2026-11-21", "2026-11-22", "2026-11-30"])).toBe(
+      "2026-11-20 \u2013 2026-11-22, 2026-11-30"
+    );
+  });
+
+  it("does not mistake a month, year or leap-day boundary for a gap", () => {
+    expect(formatOdDates(["2026-10-30", "2026-10-31", "2026-11-01"])).toBe(
+      "2026-10-30 \u2013 2026-11-01"
+    );
+    expect(formatOdDates(["2026-12-31", "2027-01-01"])).toBe("2026-12-31 \u2013 2027-01-01");
+    expect(formatOdDates(["2028-02-28", "2028-02-29", "2028-03-01"])).toBe(
+      "2028-02-28 \u2013 2028-03-01"
+    );
+  });
+
+  it("has nothing to say about an empty list", () => {
+    expect(formatOdDates([])).toBe("");
+    expect(formatOdDates(undefined as unknown as string[])).toBe("");
+  });
+
+  it("is what the facts table puts in front of an approver", () => {
+    const message = odApprovalRequestEmail(FACTS, "HOD", HOD_ACTION);
+    expect(message.text).toContain(formatOdDates(FACTS.odDates));
+    expect(message.text).not.toContain("2026-11-20, 2026-11-21");
   });
 });
 

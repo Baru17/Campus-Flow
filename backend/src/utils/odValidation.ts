@@ -20,8 +20,24 @@
  *     current date read-only; a body that names a different one is ignored rather
  *     than honoured, so a request cannot be back-dated into a previous term.
  *
- * Everything else here is what the client is legitimately allowed to send: how
- * many days they want, which dates, and why.
+ * Everything else here is what the client is legitimately allowed to send: the range of
+ * dates they need, and why.
+ *
+ * ## A range, or a list of days
+ *
+ * A request may describe its dates two ways, and both are accepted:
+ *
+ *   - `od_from_date` / `od_to_date` -- what the form asks for. The days and the day
+ *     count are *derived* from the pair here, never taken from the client, so the count
+ *     a request is filed with is the count the range implies.
+ *   - `od_dates` / `od_days_requested` -- the explicit list. This is the shape the
+ *     schema has always held and the shape every record already in the database is in,
+ *     so it stays valid input; it is also what a client built before the range picker
+ *     existed would send.
+ *
+ * Which one arrived is decided by whether either endpoint was sent, and no third shape
+ * exists. A range, once present, is the whole answer: a client that sends both a range
+ * and a longer date list does not get to choose between them.
  */
 
 import { MIN_YEAR, MAX_YEAR } from "./adminValidation";
@@ -48,6 +64,18 @@ export const MIN_REASON_LENGTH = 10;
 /** The longest a reason may be. Keeps one request from becoming a mail body. */
 export const MAX_REASON_LENGTH = 1000;
 
+/** The body fields that describe an OD as a range rather than as a list of days. */
+export const OD_RANGE_FROM_FIELD = "od_from_date";
+export const OD_RANGE_TO_FIELD = "od_to_date";
+
+/**
+ * One day in milliseconds.
+ *
+ * Every UTC day is exactly this long -- no offset changes, no leap seconds -- which is
+ * the whole reason the range is walked in UTC rather than in the Worker's local zone.
+ */
+const MS_PER_DAY = 86_400_000;
+
 /** `YYYY-MM-DD`, and a real calendar date rather than one that only looks right. */
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -72,6 +100,131 @@ export function isRealIsoDate(value: string): boolean {
 /** Today, as `YYYY-MM-DD` in UTC. The server's date is the submission date. */
 export function todayIso(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Days since the epoch for a `YYYY-MM-DD`, or `null` if it is not a real date.
+ *
+ * Parsing the explicit `Z` keeps this UTC, so the division is a whole number and the
+ * value does not move with the Worker's clock settings. Stepping by `MS_PER_DAY` from
+ * here is exact; stepping a *local* `Date` is not, because a daylight-saving boundary
+ * inside the range would drop a day from the middle of it.
+ */
+function dayNumber(iso: string): number | null {
+  if (!isRealIsoDate(iso)) return null;
+  return Date.parse(`${iso}T00:00:00Z`) / MS_PER_DAY;
+}
+
+/**
+ * Days from `from` to `to` counting both ends, `null` if either is not a real date.
+ *
+ * Negative when the range is reversed. Ordering is a *rule* rather than an arithmetic
+ * accident here -- "To Date cannot be earlier than From Date" is the thing being
+ * enforced -- so this private helper reports the raw difference and leaves that decision
+ * to `validateOdDateRange`, while the public `countDaysInclusive` answers the question a
+ * display actually asks.
+ */
+function daysBetweenInclusive(from: unknown, to: unknown): number | null {
+  const a = text(from);
+  const b = text(to);
+  if (!isRealIsoDate(a) || !isRealIsoDate(b)) return null;
+  return (dayNumber(b) as number) - (dayNumber(a) as number) + 1;
+}
+
+/**
+ * How many calendar days a range covers, both ends included, or `null` if it covers none.
+ *
+ * `null` is the answer for all three ways a range can fail to mean anything: an end not
+ * chosen, an end that is not a real date, and a To Date before the From Date. None of
+ * them has a size worth displaying, so none of them gets one.
+ */
+export function countDaysInclusive(from: unknown, to: unknown): number | null {
+  const span = daysBetweenInclusive(from, to);
+  return span !== null && span >= 1 ? span : null;
+}
+
+/**
+ * Every day from `from` to `to`, both ends included, ascending.
+ *
+ * This is what `od_dates` stores, and it is the shape every reader of a request already
+ * expects: attendance eligibility still asks "is this session date in the list", and it
+ * must not have to learn what a range is.
+ */
+export function expandDateRange(from: unknown, to: unknown): string[] {
+  const span = daysBetweenInclusive(from, to);
+  if (span === null || span < 1) return [];
+  const start = dayNumber(text(from)) as number;
+  return Array.from({ length: span }, (_, index) =>
+    new Date((start + index) * MS_PER_DAY).toISOString().slice(0, 10)
+  );
+}
+
+/**
+ * A From Date / To Date pair, validated and expanded into the days it covers.
+ *
+ * Four things can go wrong, and each is reported against the field the student can
+ * actually fix:
+ *
+ *   - an endpoint missing;
+ *   - an endpoint that is not a real date;
+ *   - an endpoint in the past, because an on-duty day is one that has not happened;
+ *   - the end before the start;
+ *
+ * plus the one rule that is about the size of the range rather than its shape: it may
+ * not run for more than `MAX_OD_DAYS` days, the same cap an explicit list was already
+ * held to. `2026-01-01` to `2026-12-31` is refused by arithmetic rather than by an
+ * approver noticing.
+ */
+export function validateOdDateRange(
+  body: Record<string, unknown>,
+  today: string = todayIso()
+): OdValidationResult<{ od_days_requested: number; od_dates: string[] }> {
+  const errors: FieldError[] = [];
+  const from = text(body[OD_RANGE_FROM_FIELD]);
+  const to = text(body[OD_RANGE_TO_FIELD]);
+
+  const endpoints: [string, string, string][] = [
+    [OD_RANGE_FROM_FIELD, from, "From Date"],
+    [OD_RANGE_TO_FIELD, to, "To Date"],
+  ];
+
+  for (const [field, value, label] of endpoints) {
+    if (!value) {
+      errors.push({ field, message: `${label} is required` });
+    } else if (!isRealIsoDate(value)) {
+      errors.push({ field, message: `"${value}" is not a valid date` });
+    } else if (value < today) {
+      errors.push({ field, message: `${value} is in the past` });
+    }
+  }
+
+  const span = daysBetweenInclusive(from, to);
+  if (span !== null && span < 1) {
+    errors.push({ field: OD_RANGE_TO_FIELD, message: "To Date cannot be earlier than From Date" });
+  } else if (span !== null && span > MAX_OD_DAYS) {
+    errors.push({
+      field: OD_RANGE_TO_FIELD,
+      message: `An OD request may cover ${MAX_OD_DAYS} days or fewer`,
+    });
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  return {
+    ok: true,
+    value: { od_days_requested: span as number, od_dates: expandDateRange(from, to) },
+  };
+}
+
+/**
+ * Whether a body describes its dates as a range.
+ *
+ * Either endpoint being present is enough. A half-sent range is a range the student
+ * needs to be told about -- "To Date is required" -- rather than a request quietly
+ * falling back to a day list they did not mean.
+ */
+export function hasOdDateRange(body: Record<string, unknown>): boolean {
+  return Boolean(text(body[OD_RANGE_FROM_FIELD]) || text(body[OD_RANGE_TO_FIELD]));
 }
 
 /**
@@ -268,10 +421,11 @@ export function validateRejectionReason(value: unknown): OdValidationResult<stri
 /**
  * A whole OD request, validated as one unit.
  *
- * The days are validated first because the dates are checked against them: "you
- * selected the wrong number of dates" is only a meaningful message once there is a
- * number to compare against, and `od_days_requested` is the error an admin most
- * needs to see first.
+ * A range, when one was sent, decides the dates and the day count on its own, and the
+ * reason is validated beside it. Otherwise the days are validated first because the
+ * dates are checked against them: "you selected the wrong number of dates" is only a
+ * meaningful message once there is a number to compare against, and `od_days_requested`
+ * is the error an admin most needs to see first.
  *
  * What is deliberately *not* an input: the student, their department, year, section,
  * the mentor, the submission date, and the OD already gained. Those are all derived
@@ -283,6 +437,32 @@ export function validateOdRequest(
   today: string = todayIso()
 ): OdValidationResult<{ od_days_requested: number; od_dates: string[]; reason: string }> {
   const source = (body ?? {}) as Record<string, unknown>;
+  const reason = validateOdReason(source.reason);
+
+  /*
+   * A range is the whole answer when one is present.
+   *
+   * `od_days_requested` and `od_dates` may also be in the body, because the form sends
+   * the request whole -- but they are *not* consulted. A client that sends a range of
+   * three days alongside a list of fifteen gets three, and the pair it sent is
+   * inconsistent rather than authoritative. Deriving is what makes the count safe: it
+   * is no longer something a student can type.
+   */
+  if (hasOdDateRange(source)) {
+    const range = validateOdDateRange(source, today);
+    const rangeErrors = [...(range.ok ? [] : range.errors), ...(reason.ok ? [] : reason.errors)];
+    if (rangeErrors.length > 0) return { ok: false, errors: rangeErrors };
+
+    const derived = (range as { ok: true; value: { od_days_requested: number; od_dates: string[] } }).value;
+    return {
+      ok: true,
+      value: {
+        od_days_requested: derived.od_days_requested,
+        od_dates: derived.od_dates,
+        reason: (reason as { ok: true; value: string }).value,
+      },
+    };
+  }
 
   /*
    * All three fields are checked, and every problem is collected rather than
@@ -298,7 +478,6 @@ export function validateOdRequest(
   const days = validateOdDaysRequested(source.od_days_requested);
   const usableDays = days.ok ? days.value : null;
   const dates = validateOdDates(source.od_dates, usableDays ?? -1, today);
-  const reason = validateOdReason(source.reason);
 
   const errors = [
     ...(days.ok ? [] : days.errors),

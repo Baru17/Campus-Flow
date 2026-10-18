@@ -9,14 +9,20 @@
  *
  * ## Why a set membership test and not a range comparison
  *
- * The master description of the feature talks about a "start date and end date",
- * but the shipped schema does not store a range. `od_requests.od_dates` is a JSON
- * array of `YYYY-MM-DD` strings -- the exact, individually chosen days the
- * approvers granted. See `migrations/0017_od_requests.sql`. A student may ask for
- * the 12th and the 14th and *not* the 13th, and that is a legitimate request. So
- * eligibility is `sessionDate ∈ od_dates`, not `start <= date <= end`. Building a
- * range out of `[min, max]` would silently grant the 13th as well, which is why
- * nothing here does that.
+ * `od_requests.od_dates` is a JSON array of `YYYY-MM-DD` strings -- the exact days the
+ * approvers granted. See `migrations/0017_od_requests.sql`. The form now offers a
+ * From Date / To Date range, but a range is *expanded into its days before it is
+ * stored*, so the column and this rule are unchanged: the array is still the whole
+ * truth, and eligibility is still `sessionDate ∈ od_dates`.
+ *
+ * It has to stay that way, because a stored array may have gaps in it. A student can
+ * ask for the 12th and the 14th and *not* the 13th, and that is a legitimate request
+ * -- it is what every record filed before the range picker existed looks like.
+ * Rebuilding a range out of `[min, max]` would silently grant the 13th as well to
+ * every one of those students, which is why nothing here does that.
+ *
+ * The rule is the same in both directions: a range covers each of its days because
+ * each of those days is in the array, not because it falls between two of them.
  *
  * ## Why `APPROVED` and nothing else
  *
