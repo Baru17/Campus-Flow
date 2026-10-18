@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import InstallPwaButton from './InstallPwaButton'
-import { LogoIcon, LogoutIcon } from './Icons'
+import BrandLogo from './BrandLogo'
+import { LogoutIcon } from './Icons'
 
 export default function Navbar({ title, subtitle, onLogout }) {
   const navigate = useNavigate()
@@ -28,7 +29,7 @@ export default function Navbar({ title, subtitle, onLogout }) {
           aria-label="Campus-Flow home"
         >
           <span className="cf-logo">
-            <LogoIcon size={22} />
+            <BrandLogo size={28} />
           </span>
           <span className="cf-brand-title">
             Campus-<span>Flow</span>

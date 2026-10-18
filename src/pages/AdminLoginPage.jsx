@@ -1,7 +1,7 @@
 import { Navigate, useNavigate } from 'react-router-dom'
 import AdminLogin from '../components/AdminLogin'
 import BrandPanel from '../components/BrandPanel'
-import { LogoIcon } from '../components/Icons'
+import BrandLogo from '../components/BrandLogo'
 import { useAdminAuth } from '../hooks/useAdminAuth'
 
 export default function AdminLoginPage() {
@@ -37,7 +37,7 @@ export default function AdminLoginPage() {
               aria-label="Campus-Flow home"
             >
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-blue-600 to-violet-600 text-white shadow-lg shadow-blue-600/25 transition-shadow group-hover:shadow-blue-600/40">
-                <LogoIcon size={20} />
+                <BrandLogo size={30} />
               </span>
               <span className="text-lg font-extrabold tracking-tight text-slate-900">
                 Campus-

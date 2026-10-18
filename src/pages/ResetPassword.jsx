@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import BrandPanel from '../components/BrandPanel'
-import { CheckIcon, ChevronRightIcon, EyeIcon, EyeOffIcon, KeyIcon, LockIcon, LogoIcon } from '../components/Icons'
+import BrandLogo from '../components/BrandLogo'
+import { CheckIcon, ChevronRightIcon, EyeIcon, EyeOffIcon, KeyIcon, LockIcon } from '../components/Icons'
 import StatusMessage from '../components/StatusMessage'
 import { ApiError } from '../api/attendanceApi'
 import { MIN_PASSWORD_LENGTH } from '../constants'
@@ -121,7 +122,7 @@ export default function ResetPassword() {
               aria-label="Campus-Flow home"
             >
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-blue-600 to-violet-600 text-white shadow-lg shadow-blue-600/25 transition-shadow group-hover:shadow-blue-600/40">
-                <LogoIcon size={20} />
+                <BrandLogo size={30} />
               </span>
               <span className="text-lg font-extrabold tracking-tight text-slate-900">
                 Campus-

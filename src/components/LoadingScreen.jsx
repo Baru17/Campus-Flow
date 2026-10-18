@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { LogoIcon } from './Icons'
+import BrandLogo from './BrandLogo'
 
 const LOADING_DURATION_MS = 2600
 
@@ -17,7 +17,7 @@ export default function LoadingScreen() {
       <div className="loading-logo-ring">
         <span className="loading-ring" aria-hidden="true" />
         <span className="loading-logo">
-          <LogoIcon size={46} />
+          <BrandLogo size={64} />
         </span>
       </div>
       <h1 className="loading-title mb-0">

@@ -1,5 +1,6 @@
 import GlassCard from './GlassCard'
-import { ActivityIcon, CheckIcon, LogoIcon } from './Icons'
+import BrandLogo from './BrandLogo'
+import { ActivityIcon, CheckIcon } from './Icons'
 
 export default function BrandPanel() {
   return (
@@ -24,7 +25,7 @@ export default function BrandPanel() {
       {/* Center branding */}
       <div className="relative z-10 flex items-center gap-4 lg:flex-col lg:gap-5 lg:text-center">
         <div className="glass-tile">
-          <LogoIcon size={32} />
+          <BrandLogo size={44} />
         </div>
         <div>
           <h2 className="text-2xl font-extrabold tracking-tight text-white sm:text-3xl lg:text-4xl">

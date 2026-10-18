@@ -6,28 +6,6 @@ const base = {
   strokeLinejoin: 'round',
 }
 
-export function LogoIcon({ size = 24, className }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
-      <path
-        d="M4 16c2.2 0 2.2-3 4.4-3 2.2 0 2.2 3 4.4 3s2.2-3 4.4-3c.4 0 .7 0 .9.1"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-      <circle cx="5.5" cy="6.5" r="2" fill="currentColor" />
-      <circle cx="18.5" cy="6.5" r="2" fill="currentColor" />
-      <path
-        d="M4 16v2.5M20 16v2.5"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        opacity="0.7"
-      />
-    </svg>
-  )
-}
-
 export function StaffIcon({ size = 28, className }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" {...base} className={className}>

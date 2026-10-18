@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import AttendanceSuccess from '../components/AttendanceSuccess'
 import BrandPanel from '../components/BrandPanel'
-import { ChevronLeftIcon, FingerprintIcon, LogoIcon } from '../components/Icons'
+import { ChevronLeftIcon, FingerprintIcon } from '../components/Icons'
+import BrandLogo from '../components/BrandLogo'
 import OTPInput from '../components/OTPInput'
 import RoleSelection from '../components/RoleSelection'
 import StaffLogin from '../components/StaffLogin'
@@ -317,7 +318,7 @@ export default function AuthPage() {
               aria-label="Campus-Flow home"
             >
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-linear-to-br from-blue-600 to-violet-600 text-white shadow-lg shadow-blue-600/25 transition-shadow group-hover:shadow-blue-600/40">
-                <LogoIcon size={20} />
+                <BrandLogo size={30} />
               </span>
               <span className="text-lg font-extrabold tracking-tight text-slate-900">
                 Campus-

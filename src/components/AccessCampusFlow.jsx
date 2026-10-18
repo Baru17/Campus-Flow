@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { APP_ACCESS_URL } from '../constants'
 import InstallPwaButton from './InstallPwaButton'
-import { CheckIcon, CopyIcon, DownloadIcon, LogoIcon } from './Icons'
+import BrandLogo from './BrandLogo'
+import { CheckIcon, CopyIcon, DownloadIcon } from './Icons'
 
 /*
  * Rendered large enough to survive being photographed off a notice board, and re-encoded
@@ -113,7 +114,7 @@ export default function AccessCampusFlow() {
         className="flex items-center justify-center gap-2 text-lg font-extrabold tracking-tight text-slate-900 sm:justify-start"
       >
         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-linear-to-br from-blue-600 to-violet-600 text-white">
-          <LogoIcon size={15} />
+          <BrandLogo size={20} />
         </span>
         Get CampusFlow
       </h2>
